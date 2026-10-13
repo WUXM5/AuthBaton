@@ -20,7 +20,7 @@ export class Vault extends DurableObject<Env> {
     this.authority = new Authority(store, new OfficialIssuer());
   }
   async fetch(request: Request): Promise<Response> {
-    try { const { action, body, bearer, admin } = await request.json() as any; const result = await this.authority.run(action, body, bearer, admin); await this.schedule(); return json(result); }
+    try { const { action, body, bearer, admin, source } = await request.json() as any; const result = await this.authority.run(action, body, bearer, admin, source); await this.schedule(); return json(result); }
     catch (e) { return json({ error: e instanceof Fault ? e.message : 'service_unavailable' }, e instanceof Fault ? e.status : 503); }
   }
   private async schedule(): Promise<void> { const existing = await this.ctx.storage.getAlarm(); const next = Date.now() + 240000; if (existing === null || existing === undefined || existing > next) await this.ctx.storage.setAlarm(next); }
@@ -43,7 +43,9 @@ export default {
       const action = url.pathname.slice(prefix.length); if (action.startsWith('admin.') !== admin || action === 'maintenance') throw new Fault('forbidden', 403);
       const token = request.headers.get('Authorization')?.replace(/^Bearer /, '') || '';
       const stub = env.VAULT.get(env.VAULT.idFromName('personal-v1'));
-      return await stub.fetch(new Request('https://internal/', { method: 'POST', body: JSON.stringify({ action, body: JSON.parse(raw), bearer: token ? await hash(token) : null, admin }) }));
+      // Cloudflare sets CF-Connecting-IP to the client address; a client cannot supply its own.
+      const source = request.headers.get('CF-Connecting-IP') || '';
+      return await stub.fetch(new Request('https://internal/', { method: 'POST', body: JSON.stringify({ action, body: JSON.parse(raw), bearer: token ? await hash(token) : null, admin, source }) }));
     } catch (e) { return json({ error: e instanceof Fault ? e.message : 'invalid_request' }, e instanceof Fault ? e.status : 400); }
   }
 };

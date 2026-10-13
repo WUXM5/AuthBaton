@@ -2,11 +2,15 @@
 // The a_t and Csn effect bodies are exact source. RPC and mount ownership are
 // synthetic; this does not instantiate a desktop, read credentials or use network.
 import fs from 'node:fs';
-import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
-const sourcePath = process.argv[2] || fileURLToPath(new URL('../../../../tmp/authmanager-hot-switch-20260921/webview/assets/app-initial-a498f911edeb.js',import.meta.url));
+const sourcePath = process.argv[2];
+if (!sourcePath) {
+  console.error('Usage: node --experimental-strip-types scripts/test-selective-lifecycle.ts <bundle>\n'
+    + '  <bundle>: webview/assets/app-initial-*.js extracted from the official Codex desktop app');
+  process.exit(2);
+}
 const source = fs.readFileSync(sourcePath, 'utf8');
 const mountStart = source.indexOf('function a_t(');
 const mountSource = source.slice(mountStart, source.indexOf('function c_t(', mountStart));

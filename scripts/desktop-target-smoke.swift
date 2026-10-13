@@ -26,6 +26,13 @@ import Foundation
         precondition(DesktopTargets.select([main],previous:"stale")=="main")
         precondition(DesktopTargets.select([main,other],previous:"stale")==nil)
         precondition(DesktopTargets.select([.init(id:"bad",supported:false,compact:false,focused:true)],previous:nil)==nil)
+        func listed(_ ids:[String]) -> [[String:Any]] {ids.map{var target=page();target["id"]=$0;return target}}
+        let ids={(targets:[[String:Any]]) in targets.map{$0["id"] as? String}}
+        // The main window was reopened: its old target has gone, so every primary page is probed again.
+        precondition(ids(DesktopTargets.probed(listed(["main-2","other"]),previous:"main"))==["main-2","other"])
+        precondition(DesktopTargets.select([.init(id:"main-2",supported:true,compact:false,focused:false)],previous:"main")=="main-2")
+        precondition(ids(DesktopTargets.probed(listed(["main","other"]),previous:"main"))==["main"])
+        precondition(ids(DesktopTargets.probed(listed(["main","other"]),previous:nil))==["main","other"])
         print("Primary window selected without focus; auxiliary and ambiguous targets rejected; a gone target is chosen afresh")
     }
 }

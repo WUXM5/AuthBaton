@@ -4,7 +4,7 @@ export type Bundle = { provider: Provider; credential: any; identity: any };
 export type Identity = { owner: string; display: string; plan: string; expires_at: number; refresh_expires_at: number | null };
 type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry };
 type Device = { id: string; label: string; secret_hash: string; revoked: boolean; last_seen: number };
-type Pair = { id: string; code: string; label: string; proof: string; expires: number; approved: boolean; device?: Device; token?: string };
+type Pair = { id: string; code: string; label: string; proof: string; expires: number; approved: boolean; source: string; device?: Device; token?: string };
 export type State = { schema: 1; accounts: Entry[]; devices: Device[]; pairs: Pair[] };
 export interface Store { load(): Promise<State | null>; save(state: State): Promise<void>; }
 export interface Issuer { verify(bundle: Bundle): Promise<void>; refresh(bundle: Bundle): Promise<Bundle>; usage(bundle: Bundle): Promise<any>; }
@@ -15,6 +15,12 @@ export async function hash(value: string): Promise<string> { return Array.from(n
 export function text(value: unknown, maximum = 200): string { if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) throw new Fault('invalid_input', 400); return value; }
 function claims(token: string): any { try { return JSON.parse(atob(token.split('.')[1].replaceAll('-', '+').replaceAll('_', '/'))); } catch { throw new Fault('invalid_credential', 400); } }
 function finite(value: unknown): number { if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new Fault('invalid_expiry', 400); return value; }
+// Pairing is limited per IPv4 address or IPv6 /48, since one host or free tunnel commonly holds a whole IPv6 prefix.
+function network(ip: string): string {
+  if (!ip.includes(':')) return ip;
+  const [head, tail = ''] = ip.split('::'); const left = head.split(':').filter(Boolean), right = tail.split(':').filter(Boolean);
+  return [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right].slice(0, 3).join(':') + '::/48';
+}
 function mask(email: string): string { const [name, domain] = email.split('@'); return domain ? `${name.slice(0, 1)}***@${domain}` : '未提供邮箱'; }
 export function identity(bundle: Bundle): Identity {
   if (bundle.provider === 'codex') {
@@ -43,20 +49,23 @@ function safe(a: Entry): any { return { id: a.id, provider: a.bundle.provider, l
 export class Authority {
   store: Store; issuer: Issuer; clock: () => number; tail: Promise<unknown> = Promise.resolve();
   constructor(store: Store, issuer: Issuer, clock = epoch) { this.store = store; this.issuer = issuer; this.clock = clock; }
-  async run(action: string, body: any, bearer: string | null, admin = false): Promise<any> {
-    const task = this.tail.then(() => this.operation(action, body, bearer, admin));
+  async run(action: string, body: any, bearer: string | null, admin = false, source = ''): Promise<any> {
+    const task = this.tail.then(() => this.operation(action, body, bearer, admin, network(source)));
     this.tail = task.catch(() => {}); return task;
   }
-  private async operation(action: string, body: any, bearer: string | null, admin: boolean): Promise<any> {
+  private async operation(action: string, body: any, bearer: string | null, admin: boolean, source: string): Promise<any> {
     const s = await this.store.load() || { schema: 1, accounts: [], devices: [], pairs: [] } as State;
     if (s.schema !== 1) throw new Fault('schema_unavailable', 503);
     const now = this.clock();
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Fault('invalid_input', 400);
     s.pairs = s.pairs.filter(p => p.expires > now);
     if (action === 'pair.begin') {
-      if (s.pairs.length >= 24) throw new Fault('pair_limit', 429);
+      // Anonymous: a new device has no credential yet. A few pending pairs per network keep one host from
+      // filling the directory, and a refused request writes nothing.
       const proof = text(body.proof, 128); if (!/^[a-f0-9]{64}$/.test(proof)) throw new Fault('invalid_proof', 400);
-      const p: Pair = { id: crypto.randomUUID(), code: random().slice(0, 12).toUpperCase(), label: text(body.label, 80), proof: await hash(proof), expires: now + 600, approved: false };
+      const label = text(body.label, 80);
+      if (s.pairs.length >= 100 || s.pairs.filter(p => !p.approved && p.source === source).length >= 3) throw new Fault('pair_limit', 429);
+      const p: Pair = { id: crypto.randomUUID(), code: random().slice(0, 12).toUpperCase(), label, proof: await hash(proof), expires: now + 600, approved: false, source };
       s.pairs.push(p); await this.store.save(s); return { id: p.id, code: p.code, expires_at: p.expires };
     }
     if (action === 'pair.poll') {
@@ -64,7 +73,7 @@ export class Authority {
       if (!p) throw new Fault('pair_expired', 401);
       return p.approved ? { state: 'paired', device_id: p.device!.id, device_token: p.token } : { state: 'pending' };
     }
-    if (action === 'admin.pairs' && admin) return { pairs: s.pairs.filter(p => !p.approved).map(p => ({ id: p.id, code: p.code, label: p.label, expires_at: p.expires })) };
+    if (action === 'admin.pairs' && admin) return { pairs: s.pairs.filter(p => !p.approved).map(p => ({ id: p.id, code: p.code, label: p.label, expires_at: p.expires, source: p.source, same_network: p.source === source })) };
     if (action === 'admin.approve' && admin) {
       const p = s.pairs.find(p => p.id === body.id && p.code === body.code);
       if (!p) throw new Fault('pair_expired');
@@ -152,8 +161,16 @@ export class Authority {
     await this.verifyRotated(s, a);
   }
   private async verifyRotated(s: State, a: Entry): Promise<void> {
+    if (a.retry_at > this.clock()) throw new Fault('verification_pending', 503);
     try { await this.issuer.verify(a.bundle); }
-    catch { a.error = 'verification_pending'; await this.store.save(s); throw new Fault('verification_pending', 503); }
+    catch (e) {
+      // The rotated grant stays; the one it replaced is never sent again. The issuer refusing the access it
+      // just issued, or a foreign identity, only reauthorization can fix. Anything else is verified again later.
+      const code = e instanceof Fault ? e.message : '';
+      const refused = code === 'issuer_unauthorized' || code === 'identity_mismatch';
+      a.state = refused ? 'reauthorization_required' : 'verification_pending'; a.error = refused ? code : 'verification_pending';
+      a.retry_at = this.clock() + 60; await this.store.save(s); throw new Fault(a.error, refused ? 409 : 503);
+    }
     a.state = 'ready'; a.error = null; await this.store.save(s);
   }
 }

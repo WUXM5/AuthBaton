@@ -73,6 +73,13 @@ const failed: TurnCompleteInput = {
   isAborted: false,
   turnId: 't1',
 }
+// Claude Code's own resume at the reset time. It keeps one per session and moves it to each new limit.
+const official = {
+  text: 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.',
+  wait: false,
+  origin: { kind: 'auto-continuation' as const },
+}
+const DROPPED = { drop: 'AuthManager 已换号并续上了这个任务，跳过额度重置时的自动继续' }
 
 describe('authmanager', () => {
   test('desktop sessions neither report nor resume', async ($, on) => {
@@ -181,16 +188,41 @@ describe('authmanager', () => {
     await $.turn.complete(failed)
     await clock.advance(40_000)
     expect(seen.prompts).toHaveLength(1)
-    const official = {
-      text: 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.',
-      wait: false,
-      origin: { kind: 'auto-continuation' as const },
-    }
-    expect(await $.prompt.submit(official)).toEqual({
-      drop: 'AuthManager 已换号并续上了这个任务，跳过额度重置时的自动继续',
-    })
+    expect(await $.prompt.submit(official)).toEqual(DROPPED)
     await $.prompt.submit(official)
     expect(seen.prompts).toHaveLength(2)
+  })
+
+  test("a later limit AuthManager cannot cure keeps Claude Code's own resume for it", async ($, on) => {
+    const { seen, clock } = world(on, 'cli', () => ({ at: T0 / 1000, kind: 'switch', label: 'B' }))
+    await $.session.measure(measure(100))
+    await $.turn.complete(failed)
+    await clock.advance(40_000)
+    expect(seen.prompts).toHaveLength(1)
+    // B runs out too, before A's reset, and AuthManager has nothing left to change.
+    await clock.advance(1_200_000)
+    await $.turn.complete(failed)
+    await clock.advance(600_000)
+    expect(seen.toasts).toEqual(['AuthManager 没有换号或重置；额度恢复时 Claude Code 会自己继续'])
+    // Claude Code's one resume now belongs to B's limit, which nothing resumed.
+    await $.prompt.submit(official)
+    expect(seen.prompts.map(p => p.text)).toEqual([expect.stringContaining('Usage is available again'), official.text])
+  })
+
+  test("two limits cured in one session drop Claude Code's single resume once", async ($, on) => {
+    let change: Change = { at: T0 / 1000, kind: 'switch', label: 'B' }
+    const { seen, clock } = world(on, 'cli', () => change)
+    await $.session.measure(measure(100))
+    await $.turn.complete(failed)
+    await clock.advance(40_000)
+    await clock.advance(1_200_000)
+    change = { at: (T0 + 1_240_000) / 1000, kind: 'switch', label: 'C' }
+    await $.turn.complete(failed)
+    await clock.advance(40_000)
+    expect(seen.prompts).toHaveLength(2)
+    expect(await $.prompt.submit(official)).toEqual(DROPPED)
+    await $.prompt.submit(official)
+    expect(seen.prompts).toHaveLength(3)
   })
 
   test('a -p run reports its limit but cannot outlive the login cache to resume', async ($, on) => {

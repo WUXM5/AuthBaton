@@ -23,8 +23,7 @@ struct DesktopBridge {
             var choices:[([String:Any],CDP)]=[]
             var observations:[DesktopTargets.Observation]=[]
             defer {choices.forEach{$0.1.close()}}
-            for target in candidates {
-                if let previous, target["id"] as? String != previous {continue}
+            for target in DesktopTargets.probed(candidates,previous:previous) {
                 guard let address=target["webSocketDebuggerUrl"] as? String, let u=URL(string:address), u.scheme=="ws",
                       ["127.0.0.1","localhost"].contains(u.host ?? ""), u.port==port, u.path.hasPrefix("/devtools/page/") else {continue}
                 let cdp=CDP(url:u)
