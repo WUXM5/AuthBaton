@@ -519,6 +519,7 @@ pub(crate) fn pipe_status_with_cancel(
         .envs(environment.iter().map(|(key, value)| (key, value)));
     pipe_status_of(command, input, timeout, cancel)
 }
+pub const SPAWN_FAILED: &str = "无法启动原生操作";
 /// Runs a prepared command with `input` on stdin, collecting at most 5 MiB of stdout; stderr is
 /// dropped. The status is None when the command was stopped for the timeout or cancellation.
 pub(crate) fn pipe_status_of(
@@ -532,7 +533,7 @@ pub(crate) fn pipe_status_of(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "无法启动原生操作")?;
+        .map_err(|_| SPAWN_FAILED)?;
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let bytes = input.to_vec();

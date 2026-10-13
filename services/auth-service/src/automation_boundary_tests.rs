@@ -115,7 +115,9 @@ if request['operation'].startswith('auto_'):
         print(json.dumps({'ok':True,'instance':'synthetic-instance','cancelled':True}));sys.exit(0)
     statefile.write_text(json.dumps(tasks))
     if (root/('fail-'+op)).exists():
-        print(json.dumps({'ok':False,'code':'resume_unconfirmed' if op=='auto_resume' else 'task_probe_failed'}));sys.exit(0)
+        code = (root/('fail-'+op)).read_text()
+        if code != 'tasks_waiting': code = 'resume_unconfirmed' if op=='auto_resume' else 'task_probe_failed'
+        print(json.dumps({'ok':False,'code':code}));sys.exit(0)
     print(json.dumps({'ok':True,'tasks':tasks,'owner':owner,'target':'synthetic-target','instance':'synthetic-instance','hash':'synthetic','mode':'chatgptAuthTokens','boundOwner':owner}));sys.exit(0)
 "#;
 
@@ -171,6 +173,25 @@ fn lost_prepare_reply_keeps_batch_id_and_can_be_cancelled() {
             .collect::<Vec<_>>(),
         vec!["auto_prepare", "auto_cancel"]
     );
+}
+#[test]
+fn tasks_awaiting_input_delay_the_switch_without_stopping_anything_else() {
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    fs::write(f.root.join("fail-auto_prepare"), b"tasks_waiting").unwrap();
+    settle(&mut m);
+    // The bridge refused before it made a batch: nothing was paused, so nothing waits on the user.
+    assert!(m.db.automation.run.is_none());
+    assert!(m.db.automation.config.enabled);
+    assert!(m.automation.message.contains("延后"));
+    assert!(m.quota_paused().is_none());
+    assert!(m.request_quota(Some("b")).is_ok());
+    // Once the tasks are answered, the strategy switches on its own.
+    fs::remove_file(f.root.join("fail-auto_prepare")).unwrap();
+    m.automation.next_check = 0;
+    settle(&mut m);
+    assert!(m.db.automation.run.is_none());
+    assert!(m.db.accounts[1].native);
 }
 #[test]
 fn lost_resume_reply_restart_and_missing_renderer_never_replay() {

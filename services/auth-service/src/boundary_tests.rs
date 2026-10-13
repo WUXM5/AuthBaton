@@ -13,6 +13,8 @@ mod claude_guard_tests;
 mod cloud_boundary_tests;
 #[path = "desktop_boundary_tests.rs"]
 mod desktop_boundary_tests;
+#[path = "interrupted_boundary_tests.rs"]
+mod interrupted_boundary_tests;
 #[path = "pi_boundary_tests.rs"]
 mod pi_boundary_tests;
 #[path = "reset_boundary_tests.rs"]
@@ -191,6 +193,22 @@ fn account(id: &str, bundle: &Bundle, native: bool) -> Account {
     }
 }
 
+fn finish_account_job(manager: &mut Accounts) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while manager
+        .job
+        .as_ref()
+        .is_some_and(|j| !j.handle.is_finished())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "account job did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    manager.finish_job();
+}
+
 fn hold_unsaved(manager: &mut Accounts, old: &Bundle, next: &Bundle) {
     let result = Outcome {
         bundle: old.clone(),
@@ -354,6 +372,7 @@ fn recovery_repairs_known_identity_without_overwriting_previous_account() {
         previous: Some("a".into()),
     });
     manager.recover().unwrap();
+    finish_account_job(&mut manager);
     assert_eq!(fixture.platform.vault_read("a").unwrap(), old.encoded());
     assert_eq!(
         native.read(&fixture.platform).unwrap().encoded(),
@@ -390,13 +409,21 @@ fn recovery_rejects_unknown_credentials_without_clearing_journal() {
         .unwrap();
     manager.db.accounts = vec![account("a", &old, true), account("b", &target, false)];
     manager.native_override = Some(native.clone());
+    manager.profile_transport = Some(|_, _, _, _| {
+        Ok((
+            200,
+            json!({"account":{"uuid":"c"},"organization":{"uuid":"synthetic-org"}}),
+        ))
+    });
     manager.db.switch = Some(Switch {
         desktop: false,
         provider: "claude".into(),
         target: "b".into(),
         previous: Some("a".into()),
     });
-    assert!(manager.recover().is_err());
+    manager.recover().unwrap();
+    finish_account_job(&mut manager);
+    assert!(manager.notice.as_deref().unwrap().contains("未登记"));
     assert!(manager.db.switch.is_some());
     assert_eq!(read_json(&native.config).unwrap().unwrap(), original_config);
     assert_eq!(fixture.platform.vault_read("a").unwrap(), old.encoded());
@@ -851,7 +878,10 @@ fn cancelled_login_with_different_identity_never_overwrites_original() {
     });
     manager.finish_login(&mut login);
     assert_eq!(fixture.platform.vault_read("a").unwrap(), old.encoded());
-    assert_eq!(manager.db.accounts[0].state, "attention");
+    // Another identity's login can never be saved here, so the account is left as it was.
+    assert_eq!(login.state.unwrap().phase, "failed");
+    assert_eq!(manager.db.accounts[0].state, "saved");
+    assert!(manager.db.accounts[0].pending_profile.is_none());
 }
 
 static REFRESH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

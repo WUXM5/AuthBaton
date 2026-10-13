@@ -1,4 +1,4 @@
-use crate::credentials::{Bundle, Metadata, NativeStore, external_client_running};
+use crate::credentials::{Bundle, Metadata, NativeStore, SIGNED_OUT, external_client_running};
 use crate::login::LoginManager;
 use crate::maintenance::{Outcome, Quota, Work};
 use crate::platform::{Platform, Result, private_dir, random_id};
@@ -68,6 +68,7 @@ enum JobResult {
     Observed(Bundle, Option<&'static str>),
     ReadError(&'static str),
     Recovery(Result<(Bundle, bool)>),
+    Switch(Result<Option<Bundle>>),
 }
 #[derive(Clone)]
 struct CheckRequest {
@@ -107,6 +108,8 @@ pub struct Accounts {
     claude_reset_transport: Option<crate::claude_resets::Transport>,
     #[cfg(test)]
     native_override: Option<NativeStore>,
+    #[cfg(test)]
+    profile_transport: Option<crate::maintenance::Transport>,
 }
 impl Accounts {
     pub fn open(
@@ -223,6 +226,8 @@ impl Accounts {
             claude_reset_transport: None,
             #[cfg(test)]
             native_override: None,
+            #[cfg(test)]
+            profile_transport: None,
         };
         for account in &mut manager.db.accounts {
             if account.provider == "claude" && account.native && account.state == "delegated" {
@@ -250,6 +255,23 @@ impl Accounts {
         if manager.db.switch.is_some() {
             manager.notice =
                 Some("上次切换尚未确认，请先核对原账号，或结束任务后重试上次切换".into());
+        }
+        // No login survives a restart: keep a staged result that can still be saved, drop the rest.
+        let pending: Vec<String> = manager
+            .db
+            .accounts
+            .iter()
+            .filter(|a| a.pending_profile.is_some())
+            .map(|a| a.id.clone())
+            .collect();
+        for id in pending {
+            if matches!(manager.staged_login(&id), Ok(Some(_))) {
+                let a = manager.db.accounts.iter_mut().find(|a| a.id == id).unwrap();
+                a.state = "attention".into();
+                a.message = "上次登录已完成但尚未保存；请点「本地检查」完成保存".into();
+            } else if let Err(message) = manager.discard_login(&id, None) {
+                manager.notice = Some(message.into());
+            }
         }
         Ok(manager)
     }
@@ -506,11 +528,41 @@ impl Accounts {
             });
             self.db.accounts.len() - 1
         };
-        self.db.accounts[index].pending_profile = Some(profile);
+        let id = self.db.accounts[index].id.clone();
+        let previous = self.db.accounts[index].pending_profile.replace(profile);
         self.save()?;
-        login.start(provider, &binary, &location.directory)?;
-        self.pending_login = Some(self.db.accounts[index].id.clone());
+        if let Err(message) = login.start(provider, &binary, &location.directory) {
+            // The official login never started, so nothing may wait on it.
+            self.discard_login(&id, previous)?;
+            return Err(message);
+        }
+        self.pending_login = Some(id);
         Ok(())
+    }
+    /// Ends a login attempt that left nothing to save: its staging goes, and an account that
+    /// never received an identity goes with it, so no account is left waiting on the attempt.
+    fn discard_login(&mut self, id: &str, restore: Option<String>) -> Result<()> {
+        let index = self
+            .db
+            .accounts
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or("账号不存在")?;
+        let account = self.db.accounts[index].clone();
+        if let Some(profile) = &account.pending_profile {
+            let staging = self.staging(&account.provider, profile)?;
+            staging.remove_staging(&self.platform)?;
+            remove_owned_profile(&staging.directory)?;
+        }
+        if account.metadata.is_none() {
+            self.db.accounts.remove(index);
+            if self.cloud.config.reauthorizations.remove(id).is_some() {
+                self.cloud.save()?;
+            }
+        } else {
+            self.db.accounts[index].pending_profile = restore;
+        }
+        self.save()
     }
     pub fn finish_login(&mut self, login: &mut LoginManager) {
         let Some(id) = self.pending_login.clone() else {
@@ -522,9 +574,15 @@ impl Accounts {
         self.pending_login = None;
         let result = self.capture_login(&id);
         if let Err(message) = result {
-            if let Ok(index) = self.index(&id) {
-                self.db.accounts[index].state = "attention".into();
-                self.db.accounts[index].message = message.into();
+            // A staged login is kept only while it can still be saved, e.g. once the official
+            // client quits; a cancelled, failed or foreign login leaves the account as it was.
+            if matches!(self.staged_login(&id), Ok(Some(_))) {
+                if let Ok(index) = self.index(&id) {
+                    self.db.accounts[index].state = "attention".into();
+                    self.db.accounts[index].message = message.into();
+                }
+            } else if let Err(cleanup) = self.discard_login(&id, None) {
+                self.notice = Some(cleanup.into());
             }
             if let Some(state) = &mut login.state {
                 state.phase = "failed".into();
@@ -545,12 +603,16 @@ impl Accounts {
             self.notice = Some(message.into());
         }
     }
-    fn capture_login(&mut self, id: &str) -> Result<()> {
-        let index = self.index(id)?;
-        let account = self.db.accounts[index].clone();
+    /// The login waiting in this account's staging, when it can still be saved to the account.
+    fn staged_login(&self, id: &str) -> Result<Option<Bundle>> {
+        let account = &self.db.accounts[self.index(id)?];
         let profile = account.pending_profile.as_ref().ok_or("没有待确认的登录")?;
-        let native = self.staging(&account.provider, profile)?;
-        let bundle = native.read(&self.platform)?;
+        let Some(bundle) = self
+            .staging(&account.provider, profile)?
+            .login(&self.platform)?
+        else {
+            return Ok(None);
+        };
         let metadata = bundle.metadata()?;
         if account
             .metadata
@@ -580,17 +642,23 @@ impl Accounts {
         }) {
             return Err("该身份已在列表中，请使用原账号的重新登录操作");
         }
+        Ok(Some(bundle))
+    }
+    fn capture_login(&mut self, id: &str) -> Result<()> {
+        let index = self.index(id)?;
+        let account = self.db.accounts[index].clone();
+        let bundle = self
+            .staged_login(id)?
+            .ok_or("官方登录没有完成，未取得新授权")?;
+        let metadata = bundle.metadata()?;
+        let native = self.staging(&account.provider, account.pending_profile.as_ref().unwrap())?;
         let mut backup = None;
         let replacing = if account.native {
             if (self.client_running)(&account.provider) {
                 return Err("新授权暂存成功；请退出官方客户端后点本地检查完成保存");
             }
             let target = self.native(&account.provider)?;
-            let old = match target.read(&self.platform) {
-                Ok(value) => Some(value),
-                Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => None,
-                Err(message) => return Err(message),
-            };
+            let old = target.login(&self.platform)?;
             if let Some(old) = &old {
                 if !old.same_owner(&bundle)? {
                     return Err("原生账号已变化，未应用重新登录结果");
@@ -625,16 +693,19 @@ impl Accounts {
         a.state = "saved".into();
         a.message = "账号已保存，等待在线检查".into();
         a.next_check = now() + 30;
+        // The credential commits succeeded; the staging reference goes with the metadata commit.
+        a.pending_profile = None;
         self.unsaved.remove(id);
-        // Keep the staging reference until both credential and metadata commits have succeeded.
         self.save()?;
-        native.remove_staging(&self.platform)?;
         if let Some(key) = backup {
             let _ = self
                 .platform
                 .delete_key("io.github.wuxm5.authbaton.vault", &key);
         }
-        self.db.accounts[index].pending_profile = None;
+        // The login is saved; a staging copy that fails to clear is leftover, not pending work.
+        if native.remove_staging(&self.platform).is_err() {
+            self.notice = Some("新登录已保存，但临时授权未能清理；可在钥匙串中手动删除".into());
+        }
         Ok(())
     }
     pub fn local_check(&mut self, id: &str) -> Result<()> {
@@ -866,6 +937,7 @@ impl Accounts {
         if target.native {
             return Ok(());
         }
+        switch_target_ready(&target)?;
         if target.provider != "claude" && (self.client_running)(&target.provider) {
             return Err("检测到官方客户端仍在运行，请先退出后再切换");
         }
@@ -894,11 +966,7 @@ impl Accounts {
             .then(|| crate::claude::SwitchLocks::acquire(&native))
             .transpose()?;
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
-        let old = match native.read(&self.platform) {
-            Ok(bundle) => Some(bundle),
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => None,
-            Err(message) => return Err(message),
-        };
+        let old = native.login(&self.platform)?;
         let next = Bundle::decode(self.platform.vault_read(&target.id)?)?;
         if let Some(old) = &old {
             // Keeps the source's latest material, including a refresh an official client just saved.
@@ -992,11 +1060,19 @@ impl Accounts {
             });
             return Ok(());
         }
-        let (previous, next) = self
-            .unsaved
-            .get(id)
-            .cloned()
-            .ok_or("未保留可恢复的新凭据；请重新登录此账号")?;
+        let account = &self.db.accounts[index];
+        let (previous, next) = match self.unsaved.get(id).cloned() {
+            Some(held) => held,
+            // After a restart, a Codex check's renewed credential may still be in its profile.
+            None if account.provider == "codex" && !account.native => {
+                let current = self.bundle(account)?;
+                let profile = self.root.join("profiles").join(format!("check-{id}"));
+                let next = crate::maintenance::codex_leftover(&profile, &current)
+                    .ok_or("未保留可恢复的新凭据；请重新登录此账号")?;
+                (current, next)
+            }
+            None => return Err("未保留可恢复的新凭据；请重新登录此账号"),
+        };
         let current = self.bundle(&self.db.accounts[index])?;
         if current != next {
             if current != previous {
@@ -1039,15 +1115,47 @@ impl Accounts {
             candidates.push(Bundle::decode(self.platform.vault_read(id)?)?);
         }
         let native = self.native(&operation.provider)?;
-        let locks = (operation.provider == "claude")
-            .then(|| crate::claude::SwitchLocks::acquire(&native))
-            .transpose()?;
-        let bundle = native.recover_known(&self.platform, &candidates)?;
-        if let Some(locks) = &locks {
-            locks.check()?;
+        let platform = self.platform.clone();
+        #[cfg(test)]
+        let transport = self
+            .profile_transport
+            .unwrap_or(|_, _, _, _| Err("test transport not configured"));
+        #[cfg(not(test))]
+        let transport = crate::maintenance::http;
+        // Placing a Claude login an official client renewed meanwhile may take a profile request.
+        self.job = Some(Job {
+            id: operation.target.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            handle: std::thread::spawn(move || {
+                JobResult::Switch((|| {
+                    let locks = (native.provider == "claude")
+                        .then(|| crate::claude::SwitchLocks::acquire(&native))
+                        .transpose()?;
+                    let found = native.recover_switch(&platform, &candidates, &|bundle| {
+                        crate::maintenance::claude_owner(transport, bundle)
+                    })?;
+                    if let Some(locks) = &locks {
+                        locks.check()?;
+                    }
+                    Ok(found)
+                })())
+            }),
+        });
+        Ok(())
+    }
+    fn finish_recover(&mut self, found: Result<Option<Bundle>>) -> Result<()> {
+        let operation = self.db.switch.clone().ok_or("没有待恢复的切换")?;
+        match found? {
+            Some(bundle) => self.adopt_native(bundle, "恢复的原生账号")?,
+            // The store holds no login, so no account is the default one.
+            None => {
+                for a in &mut self.db.accounts {
+                    if a.provider == operation.provider {
+                        a.native = false;
+                    }
+                }
+            }
         }
-        drop(locks);
-        self.adopt_native(bundle, "恢复的原生账号")?;
         self.db.switch = None;
         self.notice = None;
         self.save()?;
@@ -1128,7 +1236,15 @@ impl Accounts {
             return;
         };
         self.active_check = None;
-        let result = job.handle.join();
+        let result = match job.handle.join() {
+            Ok(JobResult::Switch(found)) => {
+                if let Err(message) = self.finish_recover(found) {
+                    self.notice = Some(format!("上次切换仍待恢复：{message}"));
+                }
+                return;
+            }
+            result => result,
+        };
         let Ok(index) = self.index(&job.id) else {
             return;
         };
@@ -1195,6 +1311,7 @@ impl Accounts {
                 a.failures = a.failures.saturating_add(1);
                 a.next_check = now() + backoff(a.failures);
             }
+            Ok(JobResult::Switch(_)) => unreachable!("handled before the account lookup"),
             Ok(JobResult::Recovery(result)) => {
                 let a = &mut self.db.accounts[index];
                 match result {
@@ -1404,7 +1521,7 @@ fn read_account_bundle(
     native: Option<&NativeStore>,
 ) -> Result<Bundle> {
     let bundle = if let Some(native) = native {
-        native.read(platform)?
+        native.login(platform)?.ok_or(SIGNED_OUT)?
     } else {
         Bundle::decode(platform.vault_read(&account.id)?)?
     };
@@ -1417,6 +1534,17 @@ fn read_account_bundle(
         return Err("原生登录身份已变化，请重新纳管当前登录");
     }
     Ok(bundle)
+}
+/// A target whose saved login is known to be stale or rejected would replace a working default
+/// login and hide the problem.
+fn switch_target_ready(account: &Account) -> Result<()> {
+    if account.metadata.is_none() || account.pending_profile.is_some() {
+        return Err("目标账号的登录尚未完成");
+    }
+    if matches!(account.state.as_str(), "reauth" | "unsaved" | "uncertain") {
+        return Err("请先处理目标账号的登录或凭据保存状态");
+    }
+    Ok(())
 }
 fn remove_owned_profile(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {

@@ -506,7 +506,7 @@ impl Accounts {
         self.automation.job = Some(AutoJob {
             stage: "prepare",
             handle: std::thread::spawn(move || {
-                client.call("auto_prepare",json!({"batchId":id,"owner":source_owner,"targetOwner":target_meta.owner,"retireBatch":retired}))
+                client.raw("auto_prepare",json!({"batchId":id,"owner":source_owner,"targetOwner":target_meta.owner,"retireBatch":retired}))
             }),
         });
         Ok(())
@@ -526,6 +526,19 @@ impl Accounts {
     fn finish_automation(&mut self, stage: &str, result: Result<Value>) -> Result<()> {
         if stage == "prepare" {
             let value = result?;
+            if value["ok"] != true {
+                // The bridge refuses before it makes a batch, so nothing was paused. Busy tasks
+                // only delay the switch; any other refusal still asks the user to check.
+                if !crate::desktop::declined_for_tasks(&value) {
+                    return Err(crate::desktop::error_message(value["code"].as_str()));
+                }
+                self.db.automation.run = None;
+                self.automation.message = crate::desktop::refusal(&value);
+                self.db.automation.last_message = self.automation.message.clone();
+                self.db.automation.last_at = Some(now());
+                self.automation.next_check = now() + 30;
+                return self.save();
+            }
             let run = self
                 .db
                 .automation

@@ -3,6 +3,7 @@ use crate::platform::{Platform, Result, private_dir, read_json, write_json};
 use crate::status::now;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -97,12 +98,32 @@ impl Work {
     }
     fn codex_check(&self, force_refresh: bool) -> Outcome {
         let mut outcome = Outcome::failed(self.bundle.clone(), "Codex 在线检查未完成，稍后重试");
+        if self.native.is_none()
+            && let Some(left) = codex_leftover(&self.profile, &self.bundle)
+        {
+            if let Err(message) = self.save(&self.bundle, &left) {
+                outcome.state = "unsaved".into();
+                outcome.message = message.into();
+                outcome.pending = Some((self.bundle.clone(), left));
+                return outcome;
+            }
+            let renewed = Self {
+                bundle: left,
+                ..self.clone()
+            };
+            let mut outcome = renewed.codex_check(force_refresh);
+            outcome.refreshed = true;
+            return outcome;
+        }
         let result = (|| -> Result<Vec<Quota>> {
             let binary = self.codex.as_ref().ok_or("未找到 Codex CLI")?;
             let home = if let Some(native) = &self.native {
                 native.directory.clone()
             } else {
                 private_dir(&self.profile)?;
+                // Names the vault generation this check starts from; see `codex_leftover`.
+                std::fs::write(self.profile.join("base"), generation(&self.bundle))
+                    .map_err(|_| "无法写入检查目录")?;
                 write_json(&self.profile.join("auth.json"), &self.bundle.credential)?;
                 self.profile.clone()
             };
@@ -286,8 +307,8 @@ impl Work {
                     }
                     return result;
                 }
-                Err(crate::network::NOT_SENT) => {
-                    result.message = crate::network::NOT_SENT.into();
+                Err(message) if crate::network::not_sent(message) => {
+                    result.message = message.into();
                     return result;
                 }
                 Err(_) => {
@@ -385,6 +406,49 @@ impl Work {
             }
         }
         result
+    }
+}
+pub(crate) fn generation(bundle: &Bundle) -> String {
+    format!("{:x}", Sha256::digest(bundle.credential.to_string()))
+}
+/// The renewed credential that an interrupted Codex check left in its profile: the official CLI
+/// rotates it there, and a crash before the save leaves it as the only copy. It is newer than the
+/// vault only while the vault still holds the generation that check started from.
+pub fn codex_leftover(profile: &Path, current: &Bundle) -> Option<Bundle> {
+    if std::fs::read_to_string(profile.join("base")).ok()? != generation(current) {
+        return None;
+    }
+    let left = Bundle {
+        provider: "codex".into(),
+        credential: read_json(&profile.join("auth.json")).ok()??,
+        identity: Value::Null,
+    };
+    (left != *current && current.same_owner(&left).unwrap_or(false)).then_some(left)
+}
+/// The Claude account that owns `bundle`'s access token, as its `claude:<account>:<organization>`
+/// owner key. A read-only profile request; used only when local evidence cannot tell.
+pub fn claude_owner(transport: Transport, bundle: &Bundle) -> Result<String> {
+    let token = bundle.credential["accessToken"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .ok_or("原生 Claude 登录缺少访问凭据")?;
+    match transport(
+        "https://api.anthropic.com/api/oauth/profile",
+        Some(token),
+        None,
+        false,
+    ) {
+        Ok((200, profile)) => match (
+            profile["account"]["uuid"].as_str(),
+            profile["organization"]["uuid"].as_str(),
+        ) {
+            (Some(account), Some(organization)) => Ok(format!("claude:{account}:{organization}")),
+            _ => Err("Claude 身份接口未返回账号；稍后重试恢复"),
+        },
+        Ok((401, _)) => {
+            Err("原生 Claude 登录已失效，无法确认属于哪个账号；请在官方客户端重新登录后再恢复")
+        }
+        _ => Err("暂时无法确认原生 Claude 登录属于哪个账号；稍后重试恢复"),
     }
 }
 fn validate_codex_account(value: &Value) -> Result<()> {
