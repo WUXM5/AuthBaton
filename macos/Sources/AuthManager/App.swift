@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.applicationIconImage = BrandArtwork.appIcon
+        // The service runs with the app, not with the window: closing the window must not cut its start short.
+        Task { await ServiceController.shared.start() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -33,7 +35,6 @@ struct AuthManagerApp: App {
     var body: some Scene {
         Window("AuthManager", id: "main") {
             ManagedWindow(delegate: delegate).environmentObject(service)
-                .task { await service.start() }
         }
         .defaultSize(width: 1200, height: 780)
         .commands {

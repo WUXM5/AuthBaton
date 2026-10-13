@@ -33,6 +33,7 @@ extension ManagedAccount {
     var recoverable: Bool {
         (provider == "claude" && native && ["unsaved", "backup_pending", "attention"].contains(state)) || state == "unsaved"
     }
+    var recoverTitle: String { provider == "claude" && native ? "恢复同步" : "重试保存" }
 
     var primaryWindows: [AccountQuota] { usage?.windows.filter { $0.kind == nil } ?? [] }
     var extraWindows: [AccountQuota] { usage?.windows.filter { $0.kind != nil } ?? [] }
@@ -50,6 +51,9 @@ extension ManagedAccount {
         case "uncertain": return Health(tone: .warning, title: "等待重新确认", detail: message)
         case "attention": return Health(tone: .danger, title: "需要处理", detail: message)
         case "backup_pending": return Health(tone: .warning, title: "备份待同步", detail: message)
+        // Handed to the cloud: this Mac no longer renews it, and its local login dates are stale.
+        case "cloud_transfer": return Health(tone: .warning, title: "云端交接未完成", detail: message)
+        case "cloud_managed": return Health(tone: .neutral, title: "由云端维护", detail: message)
         default: break
         }
         if let notice = loginNotice, notice.needsAttention {
@@ -63,7 +67,9 @@ extension ManagedAccount {
         // "当前" is already a tag next to the name, so health only says whether the login is usable.
         case "delegated": return Health(tone: .success, title: "可用", detail: "由官方客户端续期；额度独立查询，无需退出客户端。")
         case "saved": return Health(tone: .neutral, title: "已保存", detail: "已保存在本机，尚未在线验证。")
-        default: return Health(tone: .success, title: "可用", detail: nil)
+        case "healthy": return Health(tone: .success, title: "可用", detail: nil)
+        // A state this build does not know says nothing about whether the login works.
+        default: return Health(tone: .warning, title: "状态未识别", detail: message)
         }
     }
 
@@ -200,7 +206,29 @@ extension AccountDirectory {
         !account.native || (account.provider == "codex" && desktop?.enabled == true && desktop?.selected != account.id)
     }
 
+    // The service refuses every local operation naming an account handed to the cloud, strategy rules included.
+    func cloudBound(_ id: String) -> Bool { cloud?.transfers.contains { $0.localId == id } == true }
+
+    // The one thing an account's main button offers. The inspector and the menu bar share it,
+    // so neither offers a switch to an account whose saved login is broken or unconfirmed.
+    func primaryAction(for account: ManagedAccount) -> PrimaryAction {
+        if ["cloud_transfer", "cloud_managed"].contains(account.state) { return .wait }
+        if account.recoverable { return .recover }
+        if account.state == "reauth" || account.loginNotice?.needsAttention == true { return .relogin }
+        guard canSwitch(to: account) else { return .current }
+        // An unanswered renewal may already have replaced the saved refresh token.
+        return account.state == "uncertain" ? .wait : .switchTo
+    }
+
     var attentionCount: Int { accounts.filter(\.needsAction).count + (recoveryNeeded ? 1 : 0) }
+}
+
+enum PrimaryAction {
+    case recover    // 恢复同步 / 重试保存
+    case relogin    // 重新登录
+    case switchTo   // 设为当前，或接管 Codex 桌面
+    case wait       // nothing to do yet; health says why
+    case current    // already the current default
 }
 
 // Plain-language preview of what the strategy would do for the current Codex account right now.

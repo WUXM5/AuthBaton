@@ -60,7 +60,8 @@ struct AccountInspector: View {
             if let detail = account.health.detail ?? (account.message.isEmpty ? nil : account.message) {
                 Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if account.provider == "codex", !account.native, directory.switchRoute(for: account) == .desktopDisconnected {
+            if account.provider == "codex", directory.primaryAction(for: account) == .switchTo, !account.native,
+               directory.switchRoute(for: account) == .desktopDisconnected {
                 Text("热切换开着但 Codex 桌面没连上，现在切不过去。点按钮看两种处理办法。")
                     .font(.caption).foregroundStyle(Palette.warning).fixedSize(horizontal: false, vertical: true)
             }
@@ -82,16 +83,20 @@ struct AccountInspector: View {
     }
 
     @ViewBuilder private func primaryButton(_ account: ManagedAccount) -> some View {
-        if account.recoverable {
-            wide(account.provider == "claude" && account.native ? "恢复同步" : "重试保存", icon: "arrow.triangle.2.circlepath") { open(.recover(account.id)) }
+        switch directory.primaryAction(for: account) {
+        case .recover:
+            wide(account.recoverTitle, icon: "arrow.triangle.2.circlepath") { open(.recover(account.id)) }
                 .disabled(locked)
-        } else if account.state == "reauth" || account.loginNotice?.needsAttention == true {
+        case .relogin:
             wide("重新登录", icon: "person.badge.key") { open(.login(provider: account.provider, accountID: account.id)) }
                 .disabled(locked)
-        } else if directory.canSwitch(to: account) {
+        case .switchTo:
             wide(account.native ? "接管 Codex 桌面" : "设为 \(account.providerName) 当前账号", icon: "arrow.left.arrow.right") { open(.switchTo(account.id)) }
                 .disabled(locked)
-        } else {
+        case .wait:
+            // The detail line below says what it is waiting for.
+            wide(account.health.title, icon: "hourglass") {}.disabled(true)
+        case .current:
             wide("当前默认账号", icon: "checkmark.circle") {}.disabled(true)
         }
     }

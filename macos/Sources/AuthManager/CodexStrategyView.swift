@@ -12,8 +12,14 @@ struct AutomationPage: View {
     @State private var sheet: AccountSheet?
     @State private var saving = false
 
+    // automation.rs validate(): the service refuses a strategy with more rules than this.
+    static let ruleLimit = 32
     private var status: CodexStrategyStatus? { service.directory?.strategy }
-    private var accounts: [ManagedAccount] { service.directory?.accounts.filter { ["codex", "claude"].contains($0.provider) } ?? [] }
+    // Accounts a rule may name. One rule for an account handed to the cloud makes the service refuse them all.
+    private var accounts: [ManagedAccount] {
+        guard let directory = service.directory else { return [] }
+        return directory.accounts.filter { ["codex", "claude"].contains($0.provider) && !directory.cloudBound($0.id) }
+    }
     private func isClaude(_ id: String) -> Bool { accounts.first { $0.id == id }?.provider == "claude" }
     private var dirty: Bool { baseline != nil && draft != baseline }
     private var editable: Bool { status?.run == nil && status?.busy != true }
@@ -64,17 +70,20 @@ struct AutomationPage: View {
 
     private func sync() {
         guard let config = status?.config else { return }
+        // Saved rules for accounts that can still have one; leftovers would make every save fail.
+        let kept = config.accounts.filter { rule in accounts.contains { $0.id == rule.id } }
+        let fresh = ["codex", "claude"].flatMap { provider in
+            accounts.filter { account in account.provider == provider && !kept.contains { $0.id == account.id } }
+        }
+        // New accounts never spend credits until the user opts in; past the limit they stay out.
+        let added = fresh.prefix(max(0, Self.ruleLimit - kept.count)).map { account in
+            account.provider == "codex" ? CodexStrategyConfig.Rule(id: account.id, participate: true)
+                                        : CodexStrategyConfig.Rule(id: account.id, order: .resetOnly, participate: false)
+        }
         var next = config
         // Codex rules first, then Claude rules, each group in its stored priority.
         next.accounts = ["codex", "claude"].flatMap { provider in
-            let group = accounts.filter { $0.provider == provider }
-            var rules = config.accounts.filter { rule in group.contains { $0.id == rule.id } }
-            // New accounts never spend credits until the user opts in.
-            for account in group where !rules.contains(where: { $0.id == account.id }) {
-                rules.append(provider == "codex" ? .init(id: account.id, participate: true)
-                                                 : .init(id: account.id, order: .resetOnly, participate: false))
-            }
-            return rules
+            (kept + added).filter { rule in accounts.contains { $0.id == rule.id && $0.provider == provider } }
         }
         draft = next
         baseline = next
@@ -96,6 +105,11 @@ struct AutomationPage: View {
                         message: "Codex 的自动换号要靠连上的桌面来暂停和接续会话；Claude 换号和各账号的自动重置不受影响，照常进行。") {
                     Button("去连接桌面") { AppNavigation.shared.show(.desktop) }.controlSize(.small)
                 }
+            }
+            let left = accounts.filter { account in !draft.accounts.contains { $0.id == account.id } }
+            if draft.accounts.count >= Self.ruleLimit, !left.isEmpty {
+                Callout(icon: "info.circle", tone: .warning, title: "规则最多包含 \(Self.ruleLimit) 个账号",
+                        message: "\(left.map(\.displayName).joined(separator: "、")) 不在规则里，不会自动换号或重置。要让它们参与，先从 AuthManager 移除不用的账号。")
             }
             if let run = status.run { runCard(run, status: status) }
             if !status.message.isEmpty {
@@ -289,8 +303,11 @@ struct AutomationPage: View {
 
     private func save() {
         saving = true
+        // An account handed to the cloud or removed while the draft was open can no longer have a rule.
+        var config = draft
+        config.accounts.removeAll { rule in !accounts.contains { $0.id == rule.id } }
         Task {
-            await service.accountOperation("accounts.strategy", params: LoginParams(confirm: true, strategy: draft.input))
+            await service.accountOperation("accounts.strategy", params: LoginParams(confirm: true, strategy: config.input))
             saving = false
             if service.accountError == nil { sync() }
         }

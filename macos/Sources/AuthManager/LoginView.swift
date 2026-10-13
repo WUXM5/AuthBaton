@@ -11,7 +11,12 @@ struct LoginView: View {
     @State private var authorizationCode = ""
 
     private var name: String { provider == "codex" ? "Codex" : "Claude Code" }
-    private var attempt: LoginAttempt? { service.login?.provider == provider ? service.login : nil }
+    // Only the attempt started for this very account; another account's result is not this one's.
+    private var attempt: LoginAttempt? {
+        guard service.login?.provider == provider,
+              service.loginTarget == LoginTarget(accountID: account?.id, cloudAccountID: cloudAccountID) else { return nil }
+        return service.login
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
