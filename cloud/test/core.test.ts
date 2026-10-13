@@ -369,10 +369,41 @@ test('new grant is durable before verify awaits; a failed verify survives restar
   assert.equal(f.store.value!.accounts[0].version, 2);
   assert.equal(f.store.value!.accounts[0].bundle.credential.refreshToken, 'SYNTHETIC-refresh-2');
   release.resolve(); await assert.rejects(operation, code('verification_pending'));
-  issuer.beforeVerify = undefined;
+  issuer.beforeVerify = undefined; f.advance(61);
   const result = await new Authority(f.store, issuer, f.clock).run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer);
   assert.equal(result.version, 2); assert.equal(issuer.refreshes, 1); assert.equal(issuer.verifies, 3);
 });
+
+test('a failed verification keeps the rotated grant pending and verifies it again only after backoff', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+  issuer.beforeVerify = async () => { throw new Fault('issuer_network_error', 503); };
+  await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer), code('verification_pending'));
+  issuer.beforeVerify = undefined;
+  await assert.rejects(f.authority.run('lease', { id: f.id }, f.device.bearer), code('verification_pending'));
+  await f.authority.run('maintenance', {}, null, true);
+  assert.equal(issuer.verifies, 2); assert.equal(f.store.value!.accounts[0].state, 'verification_pending');
+  f.advance(61);
+  assert.equal((await f.authority.run('lease', { id: f.id }, f.device.bearer)).version, 2);
+  assert.equal(issuer.verifies, 3); assert.equal(issuer.refreshes, 1);
+});
+
+for (const refusal of ['issuer_unauthorized', 'identity_mismatch']) {
+  test(`verification refused with ${refusal} after a rotation requires reauthorization instead of staying pending`, async () => {
+    const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+    issuer.beforeVerify = async () => { throw new Fault(refusal, refusal === 'identity_mismatch' ? 409 : 503); };
+    await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer), code(refusal));
+    const account = f.store.value!.accounts[0];
+    assert.equal(account.state, 'reauthorization_required'); assert.equal(account.version, 2);
+    assert.equal(account.bundle.credential.refreshToken, 'SYNTHETIC-refresh-2', 'The rotated grant is kept; the old one is never restored');
+    for (let n = 0; n < 3; n++) { f.advance(240); await f.authority.run('maintenance', {}, null, true); }
+    await assert.rejects(f.authority.run('lease', { id: f.id }, f.device.bearer), code(refusal));
+    assert.equal(issuer.refreshes, 1); assert.equal(issuer.verifies, 2);
+    issuer.beforeVerify = undefined;
+    await f.authority.run('import', { operation: 'reauthorized', replace_id: f.id, label: 'New', bundle: bundle('claude', 100) }, f.device.bearer);
+    await f.authority.run('import.commit', { id: f.id, operation: 'reauthorized' }, f.device.bearer);
+    assert.equal((await f.authority.run('lease', { id: f.id }, f.device.bearer)).access_token, 'SYNTHETIC-access-100');
+  });
+}
 
 test('a failed error-state save after verify failure still retains the rotated credential for recovery', async () => {
   const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
@@ -403,7 +434,7 @@ test('alarm maintenance recovers verification_pending without another grant', as
   const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
   issuer.beforeVerify = async () => { throw new Fault('issuer_network_error', 503); };
   await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer), code('verification_pending'));
-  issuer.beforeVerify = undefined;
+  issuer.beforeVerify = undefined; f.advance(61);
   await new Authority(f.store, issuer, f.clock).run('maintenance', {}, null, true);
   assert.equal(f.store.value!.accounts[0].state, 'ready'); assert.equal(f.store.value!.accounts[0].version, 2);
   assert.equal(issuer.refreshes, 1); assert.equal(issuer.verifies, 3);
@@ -418,7 +449,7 @@ test('one account failing pending verification cannot starve another due account
   const second = await f.authority.run('import', { operation: 'second-operation', label: 'Second', bundle: secondBundle }, f.device.bearer);
   await f.authority.run('import.commit', { id: second.id, operation: 'second-operation' }, f.device.bearer);
   issuer.verify = async value => { issuer.verifies++; if (value.identity.accountUuid === 'synthetic-user') throw new Fault('issuer_network_error', 503); };
-  await new Authority(f.store, issuer, f.clock).run('maintenance', {}, null, true);
+  f.advance(61); await new Authority(f.store, issuer, f.clock).run('maintenance', {}, null, true);
   assert.equal(f.store.value!.accounts[0].state, 'verification_pending');
   assert.equal(f.store.value!.accounts[1].state, 'ready'); assert.equal(f.store.value!.accounts[1].version, 2);
   assert.equal(issuer.refreshes, 2);

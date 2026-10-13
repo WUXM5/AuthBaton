@@ -152,8 +152,16 @@ export class Authority {
     await this.verifyRotated(s, a);
   }
   private async verifyRotated(s: State, a: Entry): Promise<void> {
+    if (a.retry_at > this.clock()) throw new Fault('verification_pending', 503);
     try { await this.issuer.verify(a.bundle); }
-    catch { a.error = 'verification_pending'; await this.store.save(s); throw new Fault('verification_pending', 503); }
+    catch (e) {
+      // The rotated grant stays; the one it replaced is never sent again. The issuer refusing the access it
+      // just issued, or a foreign identity, only reauthorization can fix. Anything else is verified again later.
+      const code = e instanceof Fault ? e.message : '';
+      const refused = code === 'issuer_unauthorized' || code === 'identity_mismatch';
+      a.state = refused ? 'reauthorization_required' : 'verification_pending'; a.error = refused ? code : 'verification_pending';
+      a.retry_at = this.clock() + 60; await this.store.save(s); throw new Fault(a.error, refused ? 409 : 503);
+    }
     a.state = 'ready'; a.error = null; await this.store.save(s);
   }
 }
