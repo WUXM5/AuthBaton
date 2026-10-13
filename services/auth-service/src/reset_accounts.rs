@@ -197,9 +197,11 @@ impl Accounts {
             && latch.request_id == request_id
         {
             latch.created_at = now();
-            if outcome == ResetOutcome::NotSent {
+            // Nothing was spent, so another credit may still serve this episode.
+            if matches!(outcome, ResetOutcome::NotSent | ResetOutcome::NoCredit) {
                 self.db.automation.latches.remove(&id);
-                self.automation.retry_after.insert(id.clone(), now() + 60);
+                let retry = self.reset_retry_after(&id);
+                self.automation.retry_after.insert(id.clone(), retry);
             }
             self.automation
                 .account_messages

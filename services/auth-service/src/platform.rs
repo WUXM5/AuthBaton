@@ -197,8 +197,9 @@ impl Platform {
         service: &str,
         account: &str,
         value: &Value,
+        allow_large: bool,
     ) -> Result<()> {
-        native_write_plan(service, account, value, true).map(|_| ())
+        native_write_plan(service, account, value, allow_large).map(|_| ())
     }
     fn write_native_key_guarded(
         &self,

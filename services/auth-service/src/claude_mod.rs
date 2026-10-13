@@ -13,7 +13,7 @@ use std::os::unix::{
     net::{UnixListener, UnixStream},
 };
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Deserialize)]
 pub struct Report {
@@ -96,10 +96,13 @@ impl Drop for Listener {
 fn serve(stream: &mut UnixStream, handle: impl FnOnce(Report) -> Value) -> io::Result<()> {
     // An accepted socket inherits the listener's non-blocking flag on macOS.
     stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_millis(400)))?;
     stream.set_write_timeout(Some(Duration::from_millis(400)))?;
     same_user(stream)?;
-    let (status, body) = match read_request(stream) {
+    let request = Deadline {
+        stream,
+        until: Instant::now() + Duration::from_secs(1),
+    };
+    let (status, body) = match read_request(request) {
         Ok(body) => match serde_json::from_slice::<Report>(&body) {
             Ok(report) => ("200 OK", handle(report)),
             Err(_) => ("400 Bad Request", json!({"error": "invalid report"})),
@@ -114,8 +117,26 @@ fn serve(stream: &mut UnixStream, handle: impl FnOnce(Report) -> Value) -> io::R
     )
 }
 
+/// One deadline for the whole request. The service loop waits on it, and a read timeout alone
+/// would let a client that sends a byte at a time hold that loop for as long as it likes.
+struct Deadline<'a> {
+    stream: &'a UnixStream,
+    until: Instant,
+}
+impl Read for Deadline<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buffer)
+    }
+}
+
 /// Reads `POST /v1/report` with a Content-Length body of at most 4 KiB.
-fn read_request(stream: &mut UnixStream) -> Result<Vec<u8>, &'static str> {
+fn read_request(stream: impl Read) -> Result<Vec<u8>, &'static str> {
     const BAD: &str = "400 Bad Request";
     let mut reader = BufReader::new(stream.take(8192));
     let mut line = String::new();
@@ -221,5 +242,28 @@ mod tests {
             assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{reply}");
             assert!(seen.is_none());
         }
+    }
+
+    #[test]
+    fn a_client_sending_a_byte_at_a_time_cannot_hold_the_service_past_one_second() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || {
+            for byte in b"POST /v1/report HTTP/1.1\r\n".iter().take(20) {
+                std::thread::sleep(Duration::from_millis(300));
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let started = Instant::now();
+        let mut seen = false;
+        let _ = serve(&mut server, |_| {
+            seen = true;
+            json!({})
+        });
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(!seen);
+        drop(server);
+        writer.join().unwrap();
     }
 }

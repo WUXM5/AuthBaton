@@ -163,6 +163,7 @@ fn cleared_claude_slot(credential: &Value) -> bool {
 fn claude_signed_out(payload: &Value) -> bool {
     payload["claudeAiOauth"].is_null() || cleared_claude_slot(&payload["claudeAiOauth"])
 }
+pub const CODEX_KEYCHAIN_TOO_LARGE: &str = "Codex 登录超过 Keychain 写入工具的单行上限，无法写入官方 Keychain；可在 Codex 的 config.toml 设 cli_auth_credentials_store = \"file\" 后再操作";
 pub const SIGNED_OUT: &str = "默认登录已退出或被清空；可重新登录此账号，或切换到其他账号";
 impl NativeStore {
     pub fn codex(directory: &Path, force_file: bool) -> Result<Self> {
@@ -564,9 +565,33 @@ impl NativeStore {
     pub fn preflight_claude_refresh(&self, platform: &Platform) -> Result<()> {
         let (payload, keyring) = self.payload(platform)?;
         if keyring {
-            platform.preflight_native_write(&self.service, &self.account, &payload)?;
+            platform.preflight_native_write(&self.service, &self.account, &payload, true)?;
         }
         Ok(())
+    }
+    /// Refuses a Codex login the official Keychain writer cannot hold before any journal names
+    /// it. `security -i` takes one 4096-byte line, and only Claude's writer may use argv instead.
+    pub fn preflight_write(&self, platform: &Platform, target: &Bundle) -> Result<()> {
+        if self.provider != "codex" || self.mode == "file" {
+            return Ok(());
+        }
+        let keyring = match self.payload(platform) {
+            Ok((_, keyring)) => keyring,
+            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => true,
+            Err(message) => return Err(message),
+        };
+        if !keyring {
+            return Ok(());
+        }
+        match platform.preflight_native_write(
+            &self.service,
+            &self.account,
+            &target.credential,
+            false,
+        ) {
+            Err("原生 Keychain 数据超出当前写入限制") => Err(CODEX_KEYCHAIN_TOO_LARGE),
+            result => result,
+        }
     }
     fn write_key(&self, platform: &Platform, value: &Value) -> Result<()> {
         if self.provider == "claude" {

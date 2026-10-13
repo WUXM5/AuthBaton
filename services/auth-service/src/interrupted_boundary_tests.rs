@@ -518,3 +518,101 @@ fn retry_save_after_a_restart_recovers_a_codex_rotation_from_the_profile() {
     assert_eq!(fixture.platform.vault_read("a").unwrap(), rotated.encoded());
     assert_eq!(manager.db.accounts[0].state, "saved");
 }
+
+fn codex_login_for(user: &str, padding: usize) -> Bundle {
+    let mut bundle = codex_bundle();
+    bundle.credential["tokens"]["id_token"] = json!(format!(
+        "x.{}.x",
+        URL_SAFE_NO_PAD.encode(
+            json!({"https://api.openai.com/auth":{
+                "chatgpt_user_id":user,"chatgpt_account_id":"synthetic-account"},
+                "padding":"x".repeat(padding)})
+            .to_string()
+        )
+    ));
+    bundle
+}
+
+#[test]
+fn a_codex_login_too_large_for_the_keychain_writer_is_refused_before_the_switch_starts() {
+    let fixture = Fixture::new();
+    let mut manager = fixture.manager();
+    let home = manager.sources.codex_home.clone();
+    private_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "cli_auth_credentials_store = \"keyring\"\n",
+    )
+    .unwrap();
+    let native = NativeStore::codex(&home, false).unwrap();
+    let current = codex_login_for("synthetic-user-a", 0);
+    let large = codex_login_for("synthetic-user-b", 3000);
+    let small = codex_login_for("synthetic-user-c", 0);
+    fixture
+        .platform
+        .write_key(&native.service, &native.account, &current.credential)
+        .unwrap();
+    for (id, bundle) in [("a", &current), ("b", &large), ("c", &small)] {
+        fixture.platform.vault_write(id, &bundle.encoded()).unwrap();
+        manager.db.accounts.push(account(id, bundle, id == "a"));
+    }
+    manager.save().unwrap();
+
+    assert_eq!(
+        manager.activate("b", true),
+        Err(crate::credentials::CODEX_KEYCHAIN_TOO_LARGE)
+    );
+    assert!(manager.db.switch.is_none());
+    assert!(fixture.manager().db.switch.is_none());
+    assert_eq!(
+        fixture
+            .platform
+            .read_key(&native.service, &native.account)
+            .unwrap(),
+        Some(current.credential.clone())
+    );
+
+    // A login the writer can hold still switches.
+    manager.activate("c", true).unwrap();
+    assert!(manager.db.switch.is_none());
+    assert_eq!(
+        fixture
+            .platform
+            .read_key(&native.service, &native.account)
+            .unwrap(),
+        Some(small.credential)
+    );
+}
+
+#[test]
+fn switching_back_to_a_codex_default_writes_the_renewal_its_official_client_made() {
+    let fixture = Fixture::new();
+    let mut manager = fixture.manager();
+    let home = manager.sources.codex_home.clone();
+    private_dir(&home).unwrap();
+    let saved = codex_login_for("synthetic-user-a", 0);
+    let mut renewed = saved.clone();
+    renewed.credential["tokens"]["refresh_token"] = json!("SYNTHETIC_OFFICIAL_RENEWAL");
+    write_json(&home.join("auth.json"), &renewed.credential).unwrap();
+    fixture.platform.vault_write("a", &saved.encoded()).unwrap();
+    manager.db.accounts.push(account("a", &saved, true));
+    manager.save().unwrap();
+
+    // A scheduled check of the default account only observes what the official client keeps.
+    manager.check("a", false).unwrap();
+    finish_account_job(&mut manager);
+    assert_eq!(manager.db.accounts[0].state, "delegated");
+    assert_eq!(fixture.platform.vault_read("a").unwrap(), renewed.encoded());
+
+    // The user then logs in to another account outside AuthManager and later switches back.
+    let other = codex_login_for("synthetic-user-x", 0);
+    write_json(&home.join("auth.json"), &other.credential).unwrap();
+    manager.check("a", false).unwrap();
+    finish_account_job(&mut manager);
+    assert!(!manager.db.accounts[0].native);
+    manager.activate("a", true).unwrap();
+    assert_eq!(
+        read_json(&home.join("auth.json")).unwrap().unwrap(),
+        renewed.credential
+    );
+}

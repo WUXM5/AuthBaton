@@ -166,15 +166,18 @@ impl Accounts {
         };
         db.version = 8;
         db.automation.config.validate()?;
-        // A POST is only possible after its Attempt is durable. Orphan admission / NotSent
-        // receipts prove no consumption and must not lock an account's reset indefinitely.
+        // A POST is only possible after its Attempt is durable. Orphan admission, NotSent and
+        // NoCredit receipts prove no consumption and must not lock an account's reset indefinitely.
         // A switch latch has no Attempt; it holds until the account's quota recovers.
         db.automation.latches.retain(|id, latch| {
             latch.kind == crate::automation::LatchKind::Switch
                 || db.reset_attempts.iter().any(|a| {
                     a.account_id == *id
                         && a.request_id == latch.request_id
-                        && a.outcome != crate::resets::Outcome::NotSent
+                        && !matches!(
+                            a.outcome,
+                            crate::resets::Outcome::NotSent | crate::resets::Outcome::NoCredit
+                        )
                 })
         });
         if let Some(run) = &mut db.automation.run {
@@ -659,6 +662,7 @@ impl Accounts {
             }
             let target = self.native(&account.provider)?;
             let old = target.login(&self.platform)?;
+            target.preflight_write(&self.platform, &bundle)?;
             if let Some(old) = &old {
                 if !old.same_owner(&bundle)? {
                     return Err("原生账号已变化，未应用重新登录结果");
@@ -968,6 +972,7 @@ impl Accounts {
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
         let old = native.login(&self.platform)?;
         let next = Bundle::decode(self.platform.vault_read(&target.id)?)?;
+        native.preflight_write(&self.platform, &next)?;
         if let Some(old) = &old {
             // Keeps the source's latest material, including a refresh an official client just saved.
             self.adopt_native(old.clone(), "原生账号")?;
@@ -1143,6 +1148,28 @@ impl Accounts {
         });
         Ok(())
     }
+    /// The official client renews the default Codex login in place. Keeping the account's own
+    /// copy current means switching back later never writes a refresh token it already rotated.
+    fn sync_native_codex(&mut self, index: usize, bundle: &Bundle) {
+        let account = &self.db.accounts[index];
+        if !account.native
+            || account.provider != "codex"
+            || account.metadata.as_ref().map(|m| &m.owner)
+                != bundle.metadata().ok().as_ref().map(|m| &m.owner)
+        {
+            return;
+        }
+        let saved = self
+            .platform
+            .vault_read(&account.id)
+            .and_then(Bundle::decode);
+        if saved.is_ok_and(|saved| saved == *bundle) {
+            return;
+        }
+        if let Err(message) = self.platform.vault_write(&account.id, &bundle.encoded()) {
+            self.notice = Some(format!("未能保存官方客户端续期后的 Codex 凭据：{message}"));
+        }
+    }
     fn finish_recover(&mut self, found: Result<Option<Bundle>>) -> Result<()> {
         let operation = self.db.switch.clone().ok_or("没有待恢复的切换")?;
         match found? {
@@ -1253,6 +1280,7 @@ impl Accounts {
                 if let Some(pending) = result.pending {
                     self.unsaved.insert(job.id.clone(), pending);
                 }
+                self.sync_native_codex(index, &result.bundle);
                 let a = &mut self.db.accounts[index];
                 a.metadata = result.bundle.metadata().ok();
                 a.last_local = Some(now());
@@ -1278,6 +1306,7 @@ impl Accounts {
                 };
             }
             Ok(JobResult::Observed(bundle, delegated)) => {
+                self.sync_native_codex(index, &bundle);
                 let a = &mut self.db.accounts[index];
                 a.metadata = Some(bundle.metadata().expect("observed bundle was validated"));
                 a.last_local = Some(now());

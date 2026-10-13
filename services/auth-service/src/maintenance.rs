@@ -633,12 +633,16 @@ impl CodexRpc {
             json!({"id":id,"method":method,"params":params})
         )
         .map_err(|_| "Codex 连接中断")?;
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(25) {
-            let value = self.output.recv_timeout(Duration::from_secs(1));
-            if let Ok(value) = value
-                && value["id"] == id
-            {
+        let deadline = std::time::Instant::now() + Duration::from_secs(25);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let value = match self.output.recv_timeout(left) {
+                Ok(value) => value,
+                Err(mpsc::RecvTimeoutError::Timeout) => return Err("Codex 在线检查超时"),
+                // The app-server closed its output, so no reply can arrive.
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Codex 连接中断"),
+            };
+            if value["id"] == id {
                 if value.get("error").is_some() {
                     let message = value["error"]["message"]
                         .as_str()
@@ -662,7 +666,6 @@ impl CodexRpc {
                 return Ok(value["result"].clone());
             }
         }
-        Err("Codex 在线检查超时")
     }
 }
 impl Drop for CodexRpc {
@@ -692,5 +695,24 @@ mod tests {
         assert_eq!(next.credential["refreshTokenExpiresAt"], 999999999);
         assert_eq!(next.credential["expiresAt"], 3700000);
         assert!(merge_refresh(&bundle, &json!({"access_token":"new"}), 100).is_err());
+    }
+
+    #[test]
+    fn an_app_server_that_exits_ends_the_call_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "authmanager-rpc-{}",
+            crate::platform::random_id().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary = root.join("exiting-codex");
+        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let started = std::time::Instant::now();
+        let result = CodexRpc::start(&binary, &root, true).map(|_| ());
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(result, Err("Codex 连接中断"));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     }
 }

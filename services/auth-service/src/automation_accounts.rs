@@ -332,6 +332,7 @@ impl Accounts {
                 }
             }
             let action = self.strategy_action(&account, &observation);
+            let resetting = matches!(action, Action::Reset(_));
             let result = match action {
                 Action::None => {
                     let message = self.strategy_waiting(&account, &observation);
@@ -357,13 +358,37 @@ impl Accounts {
                     self.automation
                         .account_messages
                         .insert(id.clone(), message.into());
-                    self.automation.retry_after.insert(id, now() + 60);
+                    let retry = if resetting {
+                        self.reset_retry_after(&id)
+                    } else {
+                        now() + 60
+                    };
+                    self.automation.retry_after.insert(id, retry);
                     if self.storage_fault.get() || self.db.automation.run.is_some() {
                         return;
                     }
                 }
             }
         }
+    }
+    /// When `id` may try an automatic reset again. Each attempt in a row that spent nothing
+    /// doubles the wait, up to about an hour, so a claim the server keeps refusing is not
+    /// resent, and logged, every minute.
+    pub(super) fn reset_retry_after(&self, id: &str) -> u64 {
+        let unspent = self
+            .db
+            .reset_attempts
+            .iter()
+            .rev()
+            .filter(|a| a.account_id == id)
+            .take_while(|a| {
+                matches!(
+                    a.outcome,
+                    crate::resets::Outcome::NotSent | crate::resets::Outcome::NoCredit
+                )
+            })
+            .count() as u32;
+        now() + (60 << unspent.saturating_sub(1).min(6))
     }
     fn start_strategy_reset(
         &mut self,
