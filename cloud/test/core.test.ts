@@ -83,6 +83,28 @@ test('pairing requires both owner approval and the original private proof', asyn
   assert.equal((await authority.run('pair.poll', { id: p.id }, await hash(proof))).state, 'paired');
 });
 
+test('anonymous pairing is limited per network, refusals write nothing, and the owner sees where each request came from', async () => {
+  const store = new Memory(); const authority = new Authority(store, new SyntheticIssuer());
+  const begin = (n: number, source: string) => authority.run('pair.begin', { proof: n.toString(16).padStart(64, '0'), label: 'MacBook Pro' }, null, false, source);
+  for (let n = 0; n < 3; n++) await begin(n, '203.0.113.7');
+  // One host rotating addresses inside its IPv6 /48 is still one network.
+  for (let n = 3; n < 6; n++) await begin(n, `2001:db8:5:${n}::1`);
+  const saves = store.saves;
+  await assert.rejects(begin(6, '203.0.113.7'), code('pair_limit'));
+  await assert.rejects(begin(7, '2001:db8:5::'), code('pair_limit'));
+  assert.equal(store.saves, saves);
+  const own = await begin(8, '198.51.100.1');
+  const pairs = (await authority.run('admin.pairs', {}, null, true, '198.51.100.1')).pairs;
+  assert.deepEqual(pairs.map((p: any) => p.source), [...Array(3).fill('203.0.113.7'), ...Array(3).fill('2001:db8:5::/48'), '198.51.100.1']);
+  assert.deepEqual(pairs.filter((p: any) => p.same_network).map((p: any) => p.id), [own.id]);
+  // An approved pair no longer holds its network's place.
+  await authority.run('admin.approve', { id: pairs[0].id, code: pairs[0].code }, null, true);
+  await begin(9, '203.0.113.7');
+  // Many networks together are still bounded, which bounds the anonymous writes too.
+  for (let n = 10; store.value!.pairs.length < 100; n++) await begin(n, `192.0.2.${n}`);
+  await assert.rejects(begin(200, '198.51.100.2'), code('pair_limit'));
+});
+
 test('expired pairing cannot release an approved device credential', async () => {
   let time = Math.floor(Date.now() / 1000); const authority = new Authority(new Memory(), new SyntheticIssuer(), () => time);
   const d = await pair(authority); time += 601;
