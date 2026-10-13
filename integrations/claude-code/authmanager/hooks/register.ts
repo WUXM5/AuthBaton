@@ -25,8 +25,10 @@ type State = {
   entry: string | undefined | null
   windows: SessionRateLimit[]
   episode?: Episode
-  // Claude Code's own resume at the old account's reset time; a plugin prompt does not cancel it.
-  dropOfficial: boolean
+  // The limit AuthManager's switch or reset resumed. Claude Code keeps one timed resume per session and
+  // moves it to each new limit; a plugin prompt does not cancel it. So it is this limit's to drop, once,
+  // until a later limit takes it over.
+  resumed?: Episode
 }
 
 async function active(s: State, $: EngineInterface): Promise<boolean> {
@@ -67,8 +69,8 @@ function end(s: State, $: EngineInterface, notice?: string) {
 }
 
 async function resume(s: State, $: EngineInterface) {
+  s.resumed = s.episode
   end(s, $)
-  s.dropOfficial = true
   await $.prompt.submit({ text: CONTINUE, asUser: true })
 }
 
@@ -103,6 +105,7 @@ async function check(s: State, $: EngineInterface) {
 async function startEpisode(s: State, $: EngineInterface) {
   const now = await $.clock.now()
   s.episode = { limitedAt: now, deadline: now + GIVE_UP_MS }
+  s.resumed = undefined
   $.ui.status('额度见底，等待 AuthManager 换号或重置…')
   await check(s, $)
   if (s.episode !== undefined && s.episode.resume === undefined) {
@@ -111,7 +114,7 @@ async function startEpisode(s: State, $: EngineInterface) {
 }
 
 export const register: Register = on => {
-  const s: State = { entry: null, windows: [], dropOfficial: false }
+  const s: State = { entry: null, windows: [] }
 
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
@@ -142,13 +145,13 @@ export const register: Register = on => {
   on('prompt.submit', ($, e, next) => {
     // An origin left out means the person's own prompt.
     const origin = e.origin?.kind ?? 'composer'
-    if (origin === 'auto-continuation' && s.dropOfficial && /usage/i.test(e.text)) {
-      s.dropOfficial = false
+    if (origin === 'auto-continuation' && s.resumed !== undefined && /usage/i.test(e.text)) {
+      s.resumed = undefined
       return { drop: 'AuthManager 已换号并续上了这个任务，跳过额度重置时的自动继续' }
     }
     if (['composer', 'sdk', 'bridge'].includes(origin)) {
       // The person's own prompt takes over, and Claude Code cancels its timed resume too.
-      s.dropOfficial = false
+      s.resumed = undefined
       if (s.episode !== undefined) {
         end(s, $)
       }
