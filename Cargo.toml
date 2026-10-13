@@ -1,0 +1,3 @@
+[workspace]
+members = ["services/auth-service"]
+resolver = "2"

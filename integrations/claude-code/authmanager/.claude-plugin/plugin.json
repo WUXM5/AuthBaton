@@ -1,0 +1,1 @@
+{ "name": "authmanager", "version": "0.1.0", "description": "AuthManager companion: brings the quota check forward and resumes a turn the usage limit cut off once AuthManager has switched or reset the Claude account" }
