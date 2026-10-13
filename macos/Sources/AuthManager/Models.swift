@@ -61,6 +61,12 @@ struct LoginParams: Encodable, Sendable {
 
 struct LoginResult: Decodable, Sendable { let attempt: LoginAttempt? }
 
+// Who a login was started for: an existing account, a cloud account, or (both nil) a new account.
+struct LoginTarget: Equatable, Sendable {
+    var accountID: String?
+    var cloudAccountID: String?
+}
+
 struct LoginAttempt: Decodable, Sendable {
     let attemptId: String
     let provider: String

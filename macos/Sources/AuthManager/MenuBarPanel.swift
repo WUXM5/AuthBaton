@@ -24,8 +24,10 @@ struct MenuBarPanel: View {
                 automationLine(directory)
             } else if let cloud = directory?.cloud, !local {
                 cloudSummary(cloud)
+            } else if service.isConnected {
+                Text("正在载入账号…").font(.callout).foregroundStyle(.secondary).padding(8)
             } else {
-                Text(service.isConnected ? "正在载入账号…" : "后台服务未连接").font(.callout).foregroundStyle(.secondary).padding(8)
+                disconnected
             }
             footer
         }
@@ -52,6 +54,18 @@ struct MenuBarPanel: View {
             Button(action: openWindow) { Image(systemName: "macwindow") }.buttonStyle(.borderless).help("打开 AuthManager")
         }
         .padding(.horizontal, 4)
+    }
+
+    // Nothing from a lost service is shown as current; say so and offer the way back.
+    private var disconnected: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(service.isConnecting ? "正在连接后台服务…" : "后台服务未连接").font(.callout.weight(.medium))
+            if let error = service.errorText {
+                Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            ReconnectButton().controlSize(.small)
+        }
+        .padding(8)
     }
 
     @ViewBuilder private func attention(_ directory: AccountDirectory) -> some View {
@@ -143,7 +157,10 @@ struct MenuBarPanel: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    if expanded == account.id { confirm(account, directory: directory) }
+                    if expanded == account.id {
+                        let action = directory.primaryAction(for: account)
+                        if action == .switchTo { confirm(account, directory: directory) } else { unavailable(account, action) }
+                    }
                 }
             }
         }
@@ -206,6 +223,38 @@ struct MenuBarPanel: View {
         }
         .padding(10)
         .background((blocked ? Palette.warning : Palette.accent).opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 4).padding(.bottom, 4)
+    }
+
+    // Same way out as the window's inspector: its main button, one click away in the window.
+    private func unavailable(_ account: ManagedAccount, _ action: PrimaryAction) -> some View {
+        let text: String = switch action {
+        case .recover: "\(account.health.title)：现在切过去会写入旧的登录。先在窗口里\(account.recoverTitle)，再切换。"
+        case .relogin: "\(account.health.title)：先在窗口里重新登录，再切换。"
+        default: "\(account.health.title)，现在不能切换。" + (account.health.detail ?? account.message)
+        }
+        let fix: String? = switch action {
+        case .recover: account.recoverTitle + "…"
+        case .relogin: "重新登录…"
+        default: nil
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(text).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Spacer()
+                Button("取消") { expanded = nil }
+                if let fix {
+                    Button(fix) {
+                        AppNavigation.shared.show(.accounts, select: account.id)
+                        openWindow()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .padding(.horizontal, 4).padding(.bottom, 4)
     }
 
@@ -293,10 +342,11 @@ struct MenuBarLabel: View {
         let lowest = local ? directory?.current("codex")?.lowestPrimary : nil
         let urgent = local && ((directory?.attentionCount ?? 0) > 0)
         let reminded = local && !ExpiryReminder.all(directory?.accounts ?? [], dismissed: ReminderStore.dismissed()).isEmpty
+        let offline = !service.isConnected && !service.isConnecting
         HStack(spacing: 3) {
-            Image(nsImage: BrandArtwork.menuIcon(badge: urgent ? .systemRed : reminded ? .systemOrange : nil))
+            Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))
             if let lowest { Text("\(lowest)%").monospacedDigit() }
         }
-        .accessibilityLabel(urgent ? "AuthManager，有需要处理的事项" : "AuthManager")
+        .accessibilityLabel(offline ? "AuthManager，后台服务未连接" : urgent ? "AuthManager，有需要处理的事项" : "AuthManager")
     }
 }

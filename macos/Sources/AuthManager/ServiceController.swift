@@ -8,7 +8,10 @@ final class ServiceController: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorText: String?
     @Published private(set) var isConnected = false
+    @Published private(set) var isConnecting = false
     @Published private(set) var login: LoginAttempt?
+    // The attempt only names its provider; this is the account the app started it for.
+    @Published private(set) var loginTarget: LoginTarget?
     @Published private(set) var loginBusy = false
     @Published private(set) var loginError: String?
     @Published private(set) var directory: AccountDirectory?
@@ -23,30 +26,30 @@ final class ServiceController: ObservableObject {
     private var process: Process?
     private var lifetimePipe: Pipe?
     private var loginTask: Task<Void, Never>?
-    private var started = false
+    private var connectionFailures = 0
+    private var cloudRefreshAt: Double = 0
 
     var socketPath: String {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AuthManager/service.sock").path
     }
 
+    // Restarting cancels an official login and would cut off an operation in flight.
+    var canRestart: Bool {
+        !isConnecting && !isRefreshing && login?.isActive != true && !loginBusy && directory?.busy != true && !accountBusy
+    }
+
     func start() async {
-        guard !started else { return }
-        started = true
+        guard !isConnecting, !isConnected, process == nil else { return }
+        isConnecting = true
+        defer { isConnecting = false }
+        // The service belongs to the app: a caller that stops waiting must not abandon the handshake.
+        await Task { await connect() }.value
+    }
+
+    private func connect() async {
         do {
-            try launchService()
-            let path = socketPath
-            var ready = false
-            // A stale socket can remain after SIGTERM; readiness is an RPC fact.
-            for _ in 0..<30 {
-                if (try? await Task.detached { try IPCClient.ping(socketPath: path) }.value) != nil {
-                    ready = true
-                    break
-                }
-                if let process, !process.isRunning { throw ServiceError.connection }
-                try await Task.sleep(for: .milliseconds(50))
-            }
-            guard ready else { throw ServiceError.connection }
+            try await launchUntilReady()
             await refresh()
             await reloadAccounts()
             watchAccounts()
@@ -55,6 +58,24 @@ final class ServiceController: ObservableObject {
         } catch {
             errorText = error.localizedDescription
         }
+    }
+
+    // A service that was just told to quit keeps the lock while it stops its jobs, and a new one
+    // exits at once until then. Each retry starts only after our previous child has exited.
+    private func launchUntilReady() async throws {
+        let path = socketPath
+        for attempt in 0..<8 {
+            if attempt > 0 { try await Task.sleep(for: .seconds(1)) }
+            let child = try launchService()
+            // A stale socket can remain after SIGTERM; readiness is an RPC fact.
+            for _ in 0..<30 {
+                if (try? await Task.detached { try IPCClient.ping(socketPath: path) }.value) != nil { return }
+                if !child.isRunning { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            if child.isRunning { throw ServiceError.connection }
+        }
+        throw ServiceError.connection
     }
 
     func refresh() async {
@@ -68,24 +89,25 @@ final class ServiceController: ObservableObject {
             }.value
             snapshot = result
             errorText = nil
-            isConnected = true
+            reached(nil)
             await reloadAccounts()
         } catch {
             errorText = error.localizedDescription
-            isConnected = false
+            reached(error)
         }
     }
 
     func restart() async {
-        guard !isRefreshing, login?.isActive != true, !loginBusy, directory?.busy != true, !accountBusy else { return }
+        guard canRestart else { return }
+        isConnecting = true
+        defer { isConnecting = false }
         stop()
-        started = false
         // Wait for our own child to exit before starting another lock owner.
         if let process, process.isRunning {
             await Task.detached { process.waitUntilExit() }.value
         }
         self.process = nil
-        await start()
+        await connect()
     }
 
     func stop() {
@@ -94,7 +116,41 @@ final class ServiceController: ObservableObject {
         // EOF tells the Rust owner to cancel and reap its official login child.
         try? lifetimePipe?.fileHandleForWriting.close()
         lifetimePipe = nil
+        disconnect(nil)
+    }
+
+    // Every answer shows the service is there. A few connection failures in a row mean it is not,
+    // and what it published earlier must not stay on screen as if it were current.
+    private func reached(_ error: Error?) {
+        guard let error else {
+            connectionFailures = 0
+            if !isConnected { isConnected = true; errorText = nil }
+            return
+        }
+        guard case ServiceError.connection = error else { return }
+        connectionFailures += 1
+        if connectionFailures >= 3, isConnected {
+            disconnect("后台服务没有响应，账号和额度暂停显示；恢复后会自动刷新，也可以重新连接后台服务。")
+        }
+    }
+
+    // Accounts, quota and login attempts all live in the service; without it none of them is current.
+    private func disconnect(_ message: String?) {
         isConnected = false
+        directory = nil
+        login = nil
+        errorText = message
+    }
+
+    // A child that exits without stop() having closed its pipe has crashed or quit on its own.
+    // It is not restarted behind the user's back: whatever made it exit may need a look first.
+    // While connecting, the handshake judges its own child.
+    private func exited(_ child: Process) {
+        guard child === process else { return }
+        process = nil
+        guard lifetimePipe != nil, !isConnecting else { return }
+        stop()
+        errorText = "后台服务已退出，账号和额度不再更新。重新连接后台服务后恢复。"
     }
     func resetHistory(accountID: String?, before: String? = nil) async throws -> ResetHistoryPage {
         let path = socketPath
@@ -108,6 +164,7 @@ final class ServiceController: ObservableObject {
         await accountOperation("accounts.login", params: LoginParams(provider: provider, id: accountID, label: label, cloud_account_id: cloudAccountID))
         loginBusy = false
         loginError = accountError
+        if accountError == nil { loginTarget = LoginTarget(accountID: accountID, cloudAccountID: cloudAccountID) }
         watchLogin()
     }
 
@@ -125,6 +182,7 @@ final class ServiceController: ObservableObject {
     func clearLogin() {
         guard login?.isActive != true else { return }
         login = nil
+        loginTarget = nil
         loginError = nil
     }
 
@@ -186,16 +244,29 @@ final class ServiceController: ObservableObject {
         let path = socketPath
         do {
             let result = try await Task.detached { try IPCClient.accounts(socketPath: path) }.value
+            // A poll that stop() cancelled must not bring back the state of the service it left.
+            guard !Task.isCancelled else { return }
+            reached(nil)
             directory = result.directory
             directoryError = nil
             if result.attempt?.isActive == true || (login != nil && login?.attemptId == result.attempt?.attemptId) { login = result.attempt }
-        } catch { directoryError = error.localizedDescription }
+        } catch {
+            guard !Task.isCancelled else { return }
+            directoryError = error.localizedDescription
+            reached(error)
+        }
     }
 
     func refreshQuotaIfNeeded() async {
         guard isConnected else { return }
-        if directory?.cloud?.mode == "cloud" {
-            if directory?.cloud?.paired == true && directory?.cloud?.busy != true { await cloudAction("refresh") }
+        if let cloud = directory?.cloud, cloud.mode == "cloud" {
+            // The service refreshes the cloud directory itself every 30 s while idle, and a refresh holds
+            // its writer slot. App activation only fills a longer gap, and never while an operation runs.
+            let now = Date().timeIntervalSince1970
+            guard cloud.paired, !cloud.busy, directory?.busy != true, !accountBusy,
+                  now - max(cloud.checkedAt ?? 0, cloudRefreshAt) >= 60 else { return }
+            cloudRefreshAt = now
+            await cloudAction("refresh")
             return
         }
         await checkQuota()
@@ -240,7 +311,7 @@ final class ServiceController: ObservableObject {
         }
     }
 
-    private func launchService() throws {
+    private func launchService() throws -> Process {
         guard let directory = Bundle.main.executableURL?.deletingLastPathComponent() else {
             throw ServiceError.missingExecutable
         }
@@ -255,8 +326,12 @@ final class ServiceController: ObservableObject {
         child.standardInput = pipe
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
+        child.terminationHandler = { [weak self] child in
+            Task { @MainActor in self?.exited(child) }
+        }
         try child.run()
         lifetimePipe = pipe
         process = child
+        return child
     }
 }
