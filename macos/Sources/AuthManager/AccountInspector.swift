@@ -91,7 +91,7 @@ struct AccountInspector: View {
             wide("重新登录", icon: "person.badge.key") { open(.login(provider: account.provider, accountID: account.id)) }
                 .disabled(locked)
         case .switchTo:
-            wide(account.native ? "接管 Codex 桌面" : "设为 \(account.providerName) 当前账号", icon: "arrow.left.arrow.right") { open(.switchTo(account.id)) }
+            wide(account.native ? "由 AuthManager 接管当前登录" : "设为 \(account.providerName) 当前账号", icon: "arrow.left.arrow.right") { open(.switchTo(account.id)) }
                 .disabled(locked)
         case .wait:
             // The detail line below says what it is waiting for.

@@ -33,8 +33,13 @@ struct DesktopPage: View {
                 .padding(24).frame(maxWidth: 900, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .pageBar("Codex 桌面", subtitle: desktop.map { $0.enabled ? ($0.connected ? "实验性 · 已连接" : "实验性 · 未连接") : "实验性 · 已关闭" })
+        .pageBar("Codex 桌面", subtitle: desktop.map { "实验性 · " + Self.status($0) })
         .onAppear { port = String(desktop?.port ?? 9522) }
+    }
+
+    // Connected only means the debug port answers; taken over means AuthManager supplies the login.
+    static func status(_ desktop: DesktopConnection) -> String {
+        !desktop.enabled ? "热切换已关闭" : !desktop.connected ? "未连接" : desktop.managed ? "已连接 · 已接管" : "已连接 · 未接管"
     }
 
     private var statusCard: some View {
@@ -43,7 +48,7 @@ struct DesktopPage: View {
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(!enabled ? "热切换已关闭" : connected ? "已连接" : "未连接").font(.headline)
+                    Text(desktop.map(Self.status) ?? "未连接").font(.headline)
                     Text(desktop?.message ?? "").font(.callout).foregroundStyle(enabled && !connected ? Palette.warning : Palette.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }

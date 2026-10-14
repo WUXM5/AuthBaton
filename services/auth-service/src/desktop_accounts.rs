@@ -61,14 +61,51 @@ impl Accounts {
         self.db.accounts[index].native
             && self.db.desktop.enabled
             && self.db.desktop.selected.as_deref() == Some(id)
-            && self.desktop.connected
+            && self.desktop_managed()
+            && !(self.desktop.other_clients)()
+    }
+    // AuthManager supplies the desktop's login: the desktop is connected in external mode and
+    // bound to the selected account. Connected alone only means its debug port answers.
+    pub(super) fn desktop_managed(&self) -> bool {
+        let Some(index) = self
+            .db
+            .desktop
+            .selected
+            .as_deref()
+            .and_then(|id| self.index(id).ok())
+        else {
+            return false;
+        };
+        self.desktop.connected
             && self.desktop.bound
             && self.desktop.mode.as_deref() == Some("chatgptAuthTokens")
             && self.db.accounts[index]
                 .metadata
                 .as_ref()
                 .is_some_and(|m| Some(&m.owner) == self.desktop.owner.as_ref())
-            && !(self.desktop.other_clients)()
+    }
+    pub(super) fn desktop_snapshot(&self) -> Value {
+        let mut value = self.desktop.snapshot(&self.db.desktop);
+        value["managed"] = json!(self.desktop_managed());
+        value
+    }
+    // A short local record of what AuthManager asked of the desktop and why, so a reload or a
+    // second login can be traced afterwards. Only the time, the operation, the account id and a
+    // fixed reason: never credentials, responses or task names.
+    pub(super) fn desktop_log(&self, op: &str, account: Option<&str>, reason: &str) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self.root.join("desktop-log.jsonl");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 512 * 1024) {
+            let _ = std::fs::rename(&path, self.root.join("desktop-log.1.jsonl"));
+        }
+        let line = json!({"at":now(),"op":op,"account":account,"reason":reason}).to_string();
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| writeln!(file, "{line}"));
     }
     pub(super) fn activate_desktop(&mut self, id: &str, recover: bool) -> Result<()> {
         self.desktop_switch_ready(id)?;
@@ -76,6 +113,15 @@ impl Accounts {
         let id = id.to_string();
         self.desktop.message = "正在检查桌面连接与任务状态；尚未开始切换".into();
         self.desktop.action_feedback(&id, "checking");
+        self.desktop_log(
+            "preflight",
+            Some(&id),
+            if recover {
+                "恢复上次切换前检查桌面"
+            } else {
+                "切换或接管前检查桌面"
+            },
+        );
         self.desktop.job = Some(std::thread::spawn(move || Completion::Preflight {
             id,
             recover,
@@ -105,6 +151,7 @@ impl Accounts {
         let (relaunch, port, id) = (self.desktop.relaunch, self.db.desktop.port, id.to_string());
         self.desktop.message = "正在以调试模式重启 Codex 桌面；没有任务在运行".into();
         self.desktop.action_feedback(&id, "relaunching");
+        self.desktop_log("relaunch", Some(&id), "以调试模式重启桌面，连上后切换");
         self.desktop.job = Some(std::thread::spawn(move || Completion::Relaunch {
             id,
             result: relaunch(port),
@@ -194,6 +241,7 @@ impl Accounts {
         let id = id.to_string();
         self.desktop.message = "正在确认桌面身份并更新全局默认".into();
         self.desktop.action_feedback(&id, "switching");
+        self.desktop_log("apply", Some(&id), "把这个账号登录到桌面并写入默认文件");
         self.desktop.job = Some(std::thread::spawn(move || {
             let result = (|| {
                 let mut value = client.call(
@@ -237,6 +285,15 @@ impl Accounts {
             // before quitting, as it did before.
             let _ = (self.desktop.skip_quit_confirmation)(skip);
             self.desktop.quit_confirmation_skipped = Some(skip);
+            self.desktop_log(
+                "quit_confirmation",
+                None,
+                if skip {
+                    "热切换开启：登录会话跳过桌面退出确认"
+                } else {
+                    "热切换关闭：撤回跳过退出确认"
+                },
+            );
         }
         if self.desktop.job.as_ref().is_some_and(|j| j.is_finished()) {
             // Retry delay starts at completion, so slow/unavailable bridges cannot
@@ -263,6 +320,15 @@ impl Accounts {
                         ),
                     };
                     if let Some(message) = failure {
+                        self.desktop_log(
+                            "preflight_failed",
+                            Some(&id),
+                            if declined {
+                                "桌面有任务在运行"
+                            } else {
+                                "检查未通过"
+                            },
+                        );
                         if !declined {
                             self.desktop.connected = false;
                             self.desktop.target = None;
@@ -297,6 +363,15 @@ impl Accounts {
                             }
                             self.db.desktop.selected = Some(id.clone());
                             self.db.switch = None;
+                            self.desktop_log(
+                                "apply_done",
+                                Some(&id),
+                                if value["contextPreserved"] == false {
+                                    "已切换；部分页面状态未保留"
+                                } else {
+                                    "已切换"
+                                },
+                            );
                             if let Ok(i) = self.index(&id) {
                                 let a = &mut self.db.accounts[i];
                                 a.metadata = serde_json::from_value(value["metadata"].clone()).ok();
@@ -328,6 +403,7 @@ impl Accounts {
                         }
                     }
                     Err(message) => {
+                        self.desktop_log("apply_failed", Some(&id), message);
                         self.desktop.connected = false;
                         self.desktop.message = format!("{message}；请恢复当前登录状态");
                         self.desktop.action_feedback(&id, "failed");
@@ -377,6 +453,7 @@ impl Accounts {
                                     Completion::Update(client.call("bind", json!({"owner":owner})))
                                 }));
                                 self.desktop.message = "正在恢复桌面续期回调".into();
+                                self.desktop_log("bind", Some(&id), "恢复桌面续期回调");
                                 return;
                             }
                             self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();
@@ -385,6 +462,7 @@ impl Accounts {
                                 && let Some(request) =
                                     value["requests"].as_array().and_then(|r| r.first())
                             {
+                                self.desktop_log("refresh_requested", Some(&id), "桌面请求续期");
                                 self.desktop.refresh = Some(Refresh {
                                     id: request["id"].clone(),
                                     epoch: request["epoch"].clone(),
@@ -433,6 +511,7 @@ impl Accounts {
                         self.desktop.message = "Codex 桌面已以调试模式重新启动".into();
                     }
                     Err(message) => {
+                        self.desktop_log("restart_failed", None, message);
                         // Never retry in a loop: the person restarts it once instead.
                         self.desktop.restart_failed = true;
                         self.desktop.message =
@@ -442,16 +521,14 @@ impl Accounts {
                 Ok(Completion::Reply(result)) => {
                     if let Err(e) = result {
                         self.desktop.message = e.into();
-                    } else {
-                        self.desktop.dirty = false;
                     }
                 }
                 Ok(Completion::Update(result)) => match result {
                     Ok(value) if value["confirmed"] == true => {
                         let _ = self.desktop.observed(&value);
-                        self.desktop.dirty = false;
                     }
                     _ => {
+                        self.desktop_log("update_unconfirmed", None, "桌面更新尚未确认");
                         self.desktop.connected = false;
                         self.desktop.message = "新凭据已保存，桌面更新尚未确认".into();
                     }
@@ -479,55 +556,40 @@ impl Accounts {
                 self.reply_refresh(None);
                 return;
             }
-            if self.job.is_none() {
-                if let Ok(index) = self.index(&refresh.account_id)
-                    && let Ok(bundle) = self.bundle(&self.db.accounts[index])
-                {
-                    use sha2::{Digest, Sha256};
-                    let hash = format!(
-                        "{:x}",
-                        Sha256::digest(
-                            bundle.credential["tokens"]["access_token"]
-                                .as_str()
-                                .unwrap_or("")
-                                .as_bytes()
-                        )
-                    );
-                    if hash != refresh.hash && self.desktop_owns(&refresh.account_id) {
-                        self.reply_refresh(desktop::external_auth(&bundle).ok());
-                        return;
-                    }
-                    if refresh.attempted {
-                        self.reply_refresh(None);
-                        return;
-                    }
-                    if let Some(r) = self.desktop.refresh.as_mut() {
-                        r.attempted = true;
-                    }
-                    self.start_desktop_refresh(&refresh.account_id);
-                } else {
-                    self.reply_refresh(None);
-                }
+            let Ok(bundle) = self
+                .index(&refresh.account_id)
+                .and_then(|index| self.bundle(&self.db.accounts[index]))
+            else {
+                self.reply_refresh(None);
+                return;
+            };
+            use sha2::{Digest, Sha256};
+            let hash = format!(
+                "{:x}",
+                Sha256::digest(
+                    bundle.credential["tokens"]["access_token"]
+                        .as_str()
+                        .unwrap_or("")
+                        .as_bytes()
+                )
+            );
+            // A renewal is never pushed to the desktop: logging it in again rebuilds its windows.
+            // Codex asks only after a 401 and then retries once, so it gets the newer token here,
+            // at once and offline, even while another account's check holds the job slot.
+            if hash != refresh.hash && self.desktop_owns(&refresh.account_id) {
+                self.reply_refresh(desktop::external_auth(&bundle).ok());
+                return;
             }
-            return;
-        }
-        if self.desktop.dirty
-            && self.job.is_none()
-            && self.db.switch.is_none()
-            && let Some(id) = self.db.desktop.selected.clone()
-            && self.desktop_owns(&id)
-            && let Ok(i) = self.index(&id)
-            && let Ok(bundle) = self.bundle(&self.db.accounts[i])
-            && let Ok(auth) = desktop::external_auth(&bundle)
-        {
-            let owner = bundle.metadata().unwrap().owner;
-            let client = self.desktop.client(&self.db.desktop);
-            self.desktop.job = Some(std::thread::spawn(move || {
-                Completion::Update(client.call(
-                    "update",
-                    json!({"owner":owner,"previousOwner":owner,"auth":auth}),
-                ))
-            }));
+            if self.job.is_none() {
+                if refresh.attempted {
+                    self.reply_refresh(None);
+                    return;
+                }
+                if let Some(r) = self.desktop.refresh.as_mut() {
+                    r.attempted = true;
+                }
+                self.start_desktop_refresh(&refresh.account_id);
+            }
             return;
         }
         // Also while a switch waits for recovery: recovering it needs the debug port.
@@ -578,6 +640,11 @@ impl Accounts {
             return false;
         }
         let (relaunch, port) = (self.desktop.relaunch, self.db.desktop.port);
+        self.desktop_log(
+            "restart",
+            None,
+            "桌面没带调试端口，启动完成且没有任务，以调试模式重开",
+        );
         self.desktop.message = "Codex 桌面没有开启热切换，正在以调试模式重新启动".into();
         self.desktop.job = Some(std::thread::spawn(move || {
             Completion::Restart(relaunch(port))
@@ -619,15 +686,28 @@ impl Accounts {
             });
             Ok(())
         })();
-        if let Err(e) = result {
-            self.desktop.message = e.into();
-            self.reply_refresh(None);
+        match result {
+            Ok(()) => self.desktop_log("refresh_start", Some(id), "联网续期以回复桌面"),
+            Err(e) => {
+                self.desktop_log("refresh_unavailable", Some(id), e);
+                self.desktop.message = e.into();
+                self.reply_refresh(None);
+            }
         }
     }
     fn reply_refresh(&mut self, auth: Option<Value>) {
         let Some(r) = self.desktop.refresh.take() else {
             return;
         };
+        self.desktop_log(
+            "refresh_reply",
+            Some(&r.account_id),
+            if auth.is_some() {
+                "回复新令牌"
+            } else {
+                "没有回复令牌（超时、账号已变或续期失败）"
+            },
+        );
         let client = self.desktop.client(&self.db.desktop);
         self.desktop.job = Some(std::thread::spawn(move || {
             Completion::Reply(client.call(

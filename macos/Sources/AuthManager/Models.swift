@@ -266,6 +266,8 @@ struct DesktopConnection: Decodable, Sendable {
     let port: UInt16
     let selected: String?
     let connected: Bool
+    // AuthManager supplies the desktop's login. Connected alone only means its debug port answers.
+    let managed: Bool
     let busy: Bool
     let message: String
     let action: Action?

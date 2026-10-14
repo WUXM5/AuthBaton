@@ -116,7 +116,7 @@ enum Fixture {
                                 "message": "已使用 1 次额度重置；用量和剩余次数将重新查询", "unresolved": false, "started_at": now - 5 * 86400]
         var data: [String: Any] = [
             "accounts": accounts, "busy": false, "checks_blocked": false, "recovery_needed": false, "maintenance_running": true, "notice": NSNull(),
-            "desktop": ["enabled": true, "port": 9522, "connected": false, "busy": false, "message": "调试端口未监听；请使用调试模式启动 Codex 桌面"],
+            "desktop": ["enabled": true, "port": 9522, "connected": false, "managed": false, "busy": false, "message": "调试端口未监听；请使用调试模式启动 Codex 桌面"],
             "cloud": ["mode": "local", "endpoint": "", "label": "我的 Mac", "paired": false, "accounts": [], "devices": [], "selected": [:], "busy": false, "transfers": []],
             "strategy": ["config": ["enabled": true, "accounts": [
                 ["id": "synthetic-orbit", "order": "switch_first", "participate": true, "below": 3],
@@ -129,9 +129,11 @@ enum Fixture {
         ]
         switch scenario {
         case "connected":
-            data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+            data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+        case "unmanaged":
+            data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": false, "busy": false, "message": "桌面连接就绪；选择账号后将更新全局默认"]
         case "plain":
-            data["desktop"] = ["enabled": false, "port": 9522, "connected": false, "busy": false, "message": ""]
+            data["desktop"] = ["enabled": false, "port": 9522, "connected": false, "managed": false, "busy": false, "message": ""]
             data["strategy"] = NSNull()
         case "empty":
             data["accounts"] = []
@@ -706,6 +708,15 @@ extension NSWindow {
 
     }
     section(7, "Codex 桌面页：启动与关闭热切换") {
+        print("  → 已连接但桌面还在用自己的登录：写明未接管，当前账号给出接管按钮")
+        Fixture.load("unmanaged", into: state)
+        select(.desktop)
+        check.expect(Driver.visible("已连接 · 未接管"), "已连接但未接管时写明「已连接 · 未接管」")
+        select(.accounts, "synthetic-orbit")
+        check.expect(Driver.visible("由 AuthManager 接管当前登录"), "当前账号的按钮写明由 AuthManager 接管当前登录")
+        Fixture.load("connected", into: state)
+        select(.desktop)
+        check.expect(Driver.visible("已连接 · 已接管"), "接管后写明「已连接 · 已接管」")
         Fixture.load("default", into: state)
         select(.desktop)
         state.calls.removeAll()

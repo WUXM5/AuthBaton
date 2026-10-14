@@ -62,6 +62,10 @@ if request['operation'] == 'apply':
 if request['operation'] == 'apply' and (root / 'rotate-to.json').exists():
     (root / 'home/.codex/auth.json').write_text((root / 'rotate-to.json').read_text())
     (root / 'rotate-to.json').unlink()
+if request['operation'] == 'poll' and (root / 'poll.json').exists():
+    print((root / 'poll.json').read_text());sys.exit(0)
+if request['operation'] == 'reply':
+    (root / 'reply-hash').write_text(hashlib.sha256(auth.get('accessToken','').encode()).hexdigest())
 owner = params.get('owner', 'codex:a:workspace-a')
 print(json.dumps({'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':hashlib.sha256(auth.get('accessToken','').encode()).hexdigest(),'requests':[]}))
 "#;
@@ -665,6 +669,127 @@ fn a_slow_startup_counts_as_just_started_from_when_it_finished() {
     manager.desktop_tick();
     finish(&mut manager);
     assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
+fn desktop_log(fixture: &Fixture) -> Vec<Value> {
+    fs::read_to_string(fixture.root.join("desktop-log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+fn sent(fixture: &Fixture) -> Vec<String> {
+    fs::read_to_string(fixture.root.join("desktop-operations"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+// The desktop's next poll: bound to `id`, still holding `held`, asking for a token after a 401.
+fn refresh_request(fixture: &Fixture, id: &str, held: &Bundle) {
+    use sha2::{Digest, Sha256};
+    let token = held.credential["tokens"]["access_token"].as_str().unwrap();
+    let owner = format!("codex:{id}:workspace-{id}");
+    fs::write(
+        fixture.root.join("poll.json"),
+        json!({"ok":true,"owner":owner,"boundOwner":owner,"mode":"chatgptAuthTokens","target":"synthetic-target","instance":"synthetic-instance","hash":format!("{:x}",Sha256::digest(token.as_bytes())),"requests":[{"id":7,"epoch":1,"ageMs":100}]}).to_string(),
+    )
+    .unwrap();
+}
+fn renewed(manager: &mut Accounts, fixture: &Fixture, id: &str) -> Bundle {
+    // A renewal of the current account writes the default file and the Vault.
+    let next = bundle(id, 2, now() + 7200);
+    fixture.platform.vault_write(id, &next.encoded()).unwrap();
+    write_json(
+        &manager.sources.codex_home.join("auth.json"),
+        &next.credential,
+    )
+    .unwrap();
+    let outcome = crate::maintenance::Outcome {
+        bundle: next.clone(),
+        online: true,
+        refreshed: true,
+        state: "healthy".into(),
+        message: "synthetic renewal".into(),
+        quota: vec![],
+        pending: None,
+    };
+    manager.job = Some(Job {
+        id: id.into(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        handle: std::thread::spawn(move || JobResult::Check(Box::new(outcome))),
+    });
+    manager.finish_job();
+    next
+}
+
+#[test]
+fn a_switch_is_logged_without_credentials_and_reports_takeover() {
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    assert_eq!(manager.snapshot()["desktop"]["managed"], false);
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
+    assert_eq!(manager.snapshot()["desktop"]["managed"], true);
+    // Connected, but logged in by the desktop itself: not taken over.
+    manager.desktop.mode = Some("chatgpt".into());
+    assert_eq!(manager.snapshot()["desktop"]["managed"], false);
+    let ops: Vec<_> = desktop_log(&fixture)
+        .iter()
+        .map(|e| e["op"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ops,
+        ["preflight", "quit_confirmation", "apply", "apply_done"]
+    );
+    let text = fs::read_to_string(fixture.root.join("desktop-log.jsonl")).unwrap();
+    for secret in ["SYNTHETIC-", "x.ey", "example.invalid", "workspace-"] {
+        assert!(!text.contains(secret), "{secret}");
+    }
+}
+
+#[test]
+fn a_renewal_is_never_pushed_and_the_desktops_next_request_gets_it_at_once() {
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new();
+    let (mut manager, _, b) = setup(&fixture);
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    let next = renewed(&mut manager, &fixture, "b");
+    // No push: the desktop keeps working with what it holds.
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(sent(&fixture), ["preflight", "apply"]);
+    // After a 401 it asks; it gets the renewed token at once, without going online, even while
+    // another account's check holds the job slot.
+    manager.job = Some(Job {
+        id: "a".into(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        handle: std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            JobResult::ReadError("synthetic check still running")
+        }),
+    });
+    refresh_request(&fixture, "b", &b);
+    manager.desktop.last_poll = 0;
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(sent(&fixture), ["preflight", "apply", "poll", "reply"]);
+    let token = next.credential["tokens"]["access_token"].as_str().unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("reply-hash")).unwrap(),
+        format!("{:x}", Sha256::digest(token.as_bytes()))
+    );
+    let log = desktop_log(&fixture);
+    let ops: Vec<_> = log.iter().map(|e| e["op"].as_str().unwrap()).collect();
+    assert!(
+        ops.ends_with(&["renewed", "refresh_requested", "refresh_reply"]),
+        "{ops:?}"
+    );
+    assert_eq!(log.last().unwrap()["reason"], "回复新令牌");
+    assert!(!ops.contains(&"refresh_start"));
 }
 
 static SESSION_SWITCH: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());

@@ -192,7 +192,6 @@ pub struct Runtime {
     pub last_poll: u64,
     pub job: Option<JoinHandle<Completion>>,
     pub refresh: Option<Refresh>,
-    pub dirty: bool,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -233,7 +232,6 @@ impl Default for Runtime {
             last_poll: 0,
             job: None,
             refresh: None,
-            dirty: false,
         }
     }
 }
