@@ -375,20 +375,7 @@ impl Accounts {
                             }
                             self.db.desktop.selected = Some(id.clone());
                             self.db.switch = None;
-                            // The account is confirmed either way; an open task that did not resume
-                            // only needs opening again, so the page is not held for recovery.
-                            let unresumed = value["threadsResumed"] == false;
-                            self.desktop_log(
-                                "apply_done",
-                                Some(&id),
-                                if unresumed {
-                                    "已切换；打开的任务没有自动重连"
-                                } else if value["contextPreserved"] == false {
-                                    "已切换；部分页面状态未保留"
-                                } else {
-                                    "已切换"
-                                },
-                            );
+                            self.desktop_log("apply_done", Some(&id), "已切换");
                             if let Ok(i) = self.index(&id) {
                                 let a = &mut self.db.accounts[i];
                                 a.metadata = serde_json::from_value(value["metadata"].clone()).ok();
@@ -398,16 +385,7 @@ impl Accounts {
                                     "桌面与全局默认已切换；由 AuthManager 维护桌面凭据".into();
                                 a.state = "saved".into();
                             }
-                            self.desktop.message = if unresumed {
-                                "账号与默认文件已切换；页面里打开的任务没有自动重连，切到别的任务再切回来即可".into()
-                            } else if value["contextPreserved"] == false {
-                                "账号与默认文件已切换，但部分页面状态未能保留；请核对草稿".into()
-                            } else {
-                                "桌面与全局默认一致，实验连接已接管".into()
-                            };
-                            if value["contextPreserved"] == false {
-                                self.notice = Some(self.desktop.message.clone());
-                            }
+                            self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();
                             if let Err(e) = self.save() {
                                 self.desktop.message = e.into();
                                 self.desktop.action_feedback(&id, "failed");

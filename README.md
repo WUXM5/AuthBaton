@@ -78,13 +78,13 @@ open dist/AuthManager.app
 ```bash
 cargo test --locked --offline -- --test-threads=1      # 必须串行：部分测试共用全局场景
 cargo clippy --locked --offline --all-targets -- -D warnings
-for t in scripts/test-desktop-*.ts scripts/test-automatic-*.ts scripts/test-selective-re*.ts; do node --experimental-strip-types "$t"; done
+for t in scripts/test-desktop-*.ts scripts/test-automatic-*.ts; do node --experimental-strip-types "$t"; done
 node --test cloud/test/*.test.ts
 (cd integrations/pi && node --experimental-strip-types --test test-*.ts)   # 需要全局安装 pi
 bash scripts/accounts-preview/render.sh interact        # 编译生产界面接合成服务，用 OCR 驱动交互检查
 ```
 
-需要真实环境的测试默认跳过：`cargo test --locked --offline native_ -- --ignored --test-threads=1` 先要构建好 App，会读写系统 Keychain（只用合成账号）；`scripts/claude-protocol/live-hot-switch.py` 用隔离的 `CLAUDE_CONFIG_DIR` 驱动真实 Claude CLI；`scripts/test-selective-lifecycle.ts` 需要传入官方桌面的页面脚本路径。
+需要真实环境的测试默认跳过：`cargo test --locked --offline native_ -- --ignored --test-threads=1` 先要构建好 App，会读写系统 Keychain（只用合成账号）；`scripts/claude-protocol/live-hot-switch.py` 用隔离的 `CLAUDE_CONFIG_DIR` 驱动真实 Claude CLI。
 
 ## 集成
 

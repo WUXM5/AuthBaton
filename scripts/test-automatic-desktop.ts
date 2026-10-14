@@ -6,7 +6,7 @@ import {webcrypto} from 'node:crypto';
 
 const source=fs.readFileSync(new URL('../macos/Sources/DesktopBridge/automatic.js',import.meta.url),'utf8');
 function fixture() {
-  let owner='A',ready=true,fail='',batch='batch-1';
+  let owner='A',fail='',batch='batch-1';
   const calls:string[]=[];
   const threads=new Map(['active-1','active-2','idle','manual-paused','completed'].map((id,i)=>[id,{
     status:i<2?'active':'idle',flags:[] as string[],turn:{id:`turn-${id}`,status:i<2?'inProgress':i===3?'interrupted':'completed'},
@@ -36,12 +36,11 @@ function fixture() {
   };
   const context=vm.createContext({crypto:webcrypto,setTimeout,Date,globalThis:undefined});
   context.globalThis=context;
-  context.__authManagerSelectiveUIV1={ready:()=>ready,validate:()=>true,state:()=>({phase:'idle'})};
   vm.runInContext(source,context);
   const run=context.__authManagerTasksV1({rpc,instance:'renderer-1',status:async()=>({owner,mode:'chatgptAuthTokens'}),idle:async()=>{
     if([...threads.values()].some(t=>t.status!=='idle'))throw Error('tasks_active');
   }});
-  return {threads,calls,owner:(v:string)=>{owner=v},ready:(v:boolean)=>{ready=v},fail:(v:string)=>{fail=v},
+  return {threads,calls,owner:(v:string)=>{owner=v},fail:(v:string)=>{fail=v},
     call:(op:string,params:any={})=>run(`auto_${op}`,{batchId:batch,instance:'renderer-1',owner:'A',targetOwner:'B',...params}),
   };
 }
@@ -67,9 +66,8 @@ await test('a systemError thread counts only while its latest turn is still runn
   await assert.rejects(g.call('prepare'),/tasks_waiting/);
   assert(!g.calls.some(c=>c.startsWith('turn/interrupt')));
 });
-await test('missing UI adapter or pending approval stops before interruption',async()=>{
-  const f=fixture();f.ready(false);await assert.rejects(f.call('prepare'),/ui_adapter_unavailable/);
-  f.ready(true);f.threads.get('active-2')!.flags=['waitingOnApproval'];
+await test('pending approval stops before interruption',async()=>{
+  const f=fixture();f.threads.get('active-2')!.flags=['waitingOnApproval'];
   await assert.rejects(f.call('prepare'),/tasks_waiting/);
   assert(!f.calls.some(c=>c.startsWith('turn/interrupt')));
 });

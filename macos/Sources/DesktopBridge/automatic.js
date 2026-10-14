@@ -1,6 +1,6 @@
 // Desktop-only task coordination. No auth material, storage, process restart or UI navigation.
 (() => {
-  if (globalThis.__authManagerTasksV1?.revision===2) return true;
+  if (globalThis.__authManagerTasksV1?.revision===3) return true;
   globalThis.__authManagerTasksV1 = ({rpc, status, idle, instance}) => {
     let batch = null, generation = 0, preparing = null;
     const valid = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -43,8 +43,6 @@
         const epoch=generation;preparing=p.batchId;
         try {
         const current=await identity(p.owner);
-        const ui=globalThis.__authManagerSelectiveUIV1;
-        if(!ui?.ready() || !ui.validate())throw Error('ui_adapter_unavailable');
         if(epoch!==generation)throw Error('batch_unavailable');
         if(batch)return output(current);
         const tasks=[];
@@ -109,8 +107,6 @@
       }
       if(operation==='auto_resume') {
         const current=await identity(b.targetOwner);alive(b);
-        const ui=globalThis.__authManagerSelectiveUIV1;
-        if(!ui?.ready() || ui.state().phase!=='idle')throw Error('ui_services_unavailable');
         const task=b.tasks.find(t=>t.thread_id===p.threadId);
         if(!task)throw Error('invalid_batch');
         if(task.state!=='paused')return output(current);
@@ -132,6 +128,6 @@
       } finally {b.working=false;}
     };
   };
-  globalThis.__authManagerTasksV1.revision = 2;
+  globalThis.__authManagerTasksV1.revision = 3;
   return true;
 })();
