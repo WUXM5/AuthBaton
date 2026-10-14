@@ -22,7 +22,7 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 
 - 凭据只出现在 AuthManager 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC 或日志。
 - 命令行参数只有一个例外：写入 Claude 或 Codex 官方 Keychain 条目时，如果内容超出 `security -i` 的 4096 字节单行上限，会改作 `/usr/bin/security` 的命令行参数传入。写入的那一刻，同一 macOS 用户下的进程能在进程列表里看到它。
-- 开启 Codex 桌面热切换后，AuthManager 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 AuthManager 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；AuthManager 自己打开的桌面传入 `=0`，退出时照常确认。
+- 开启 Codex 桌面热切换后，AuthManager 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 AuthManager 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；AuthManager 自己打开的桌面传入 `=0`，退出时照常确认。重启前会在 Codex 桌面自己的日志（`~/Library/Logs/com.openai.codex/`）里查找该进程「启动完成」的那一行，启动完成前不会让它退出；只读这一行，不保存日志内容。
 - 界面进程拿不到凭据；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
 - 除你为某个 Claude 账号开启的预热外，AuthManager 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。

@@ -544,8 +544,9 @@ impl Accounts {
         }));
     }
     // While AuthManager runs, a desktop that starts without the debug port (opened from the Dock,
-    // or restarted by its updater) is restarted in debug mode before any turn starts in it. One
-    // that has run for a while is left alone: the person may be in the middle of work.
+    // or restarted by its updater) is restarted in debug mode once it has finished starting and
+    // before any turn starts in it. One that has run for a while is left alone: the person may be
+    // in the middle of work.
     fn restart_undebugged_desktop(&mut self) -> bool {
         if self.desktop.restart_failed
             || self.desktop.pending_switch.is_some()
@@ -557,8 +558,19 @@ impl Accounts {
         let Ok(Some((pid, age))) = (self.desktop.undebugged)(self.db.desktop.port) else {
             return false;
         };
-        if self.desktop.settled_pid.replace(pid) == Some(pid)
-            || age > desktop::FRESH_DESKTOP_SECS
+        if self.desktop.settled_pid == Some(pid) {
+            return false;
+        }
+        // Quitting a desktop before its startup finishes makes it show "failed to start" and stay
+        // open, so look again on the next round.
+        let Some(started) = (self.desktop.startup_finished)(&self.home, pid, age) else {
+            if age > desktop::STARTUP_WAIT_SECS {
+                self.desktop.settled_pid = Some(pid);
+            }
+            return false;
+        };
+        self.desktop.settled_pid = Some(pid);
+        if now().saturating_sub(started) > desktop::FRESH_DESKTOP_SECS
             // `ps` rounds the age down to whole seconds.
             || desktop::turns_started_since(&self.sources.codex_home, now().saturating_sub(age + 1))
                 .unwrap_or(true)

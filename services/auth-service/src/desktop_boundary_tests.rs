@@ -607,6 +607,66 @@ fn a_failed_restart_is_not_retried() {
     assert!(manager.desktop.job.is_none());
 }
 
+// Seconds since the desktop finished starting; u64::MAX while it is still starting.
+static STARTED_AGO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+fn started_ago(_: &std::path::Path, _: u32, _: u64) -> Option<u64> {
+    let ago = STARTED_AGO.load(std::sync::atomic::Ordering::SeqCst);
+    (ago != u64::MAX).then(|| now() - ago)
+}
+
+#[test]
+fn a_desktop_is_restarted_only_once_its_startup_has_finished() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    manager.desktop.startup_finished = started_ago;
+    DESKTOP_AGE.store(1, SeqCst);
+    STARTED_AGO.store(u64::MAX, SeqCst);
+    let before = RESTARTS.load(SeqCst);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    assert_eq!(manager.desktop.settled_pid, None);
+    STARTED_AGO.store(0, SeqCst);
+    manager.desktop.last_watch = 0;
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
+#[test]
+fn a_slow_startup_counts_as_just_started_from_when_it_finished() {
+    use crate::desktop::{FRESH_DESKTOP_SECS, STARTUP_WAIT_SECS};
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    manager.desktop.startup_finished = started_ago;
+    let before = RESTARTS.load(SeqCst);
+    // Finished starting a while ago: the person may be using it.
+    DESKTOP_AGE.store(200, SeqCst);
+    STARTED_AGO.store(FRESH_DESKTOP_SECS + 1, SeqCst);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    // Still starting long after launch: left alone for good.
+    manager.desktop.settled_pid = None;
+    manager.desktop.last_watch = 0;
+    DESKTOP_AGE.store(STARTUP_WAIT_SECS + 1, SeqCst);
+    STARTED_AGO.store(u64::MAX, SeqCst);
+    manager.desktop_tick();
+    assert_eq!(manager.desktop.settled_pid, Some(4242));
+    // A slow startup that has just finished.
+    manager.desktop.settled_pid = None;
+    manager.desktop.last_watch = 0;
+    DESKTOP_AGE.store(200, SeqCst);
+    STARTED_AGO.store(5, SeqCst);
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
 static SESSION_SWITCH: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
 fn recorded_switch(skip: bool) -> Result<()> {
     SESSION_SWITCH.lock().unwrap().push(skip);
