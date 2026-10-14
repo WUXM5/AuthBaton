@@ -1,5 +1,5 @@
 // Run with Node; reads only the already-extracted official JavaScript bundle.
-// The a_t and Csn effect bodies are exact source. RPC and mount ownership are
+// The Qst mount and account-input effect bodies are exact source. RPC and mount ownership are
 // synthetic; this does not instantiate a desktop, read credentials or use network.
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -8,28 +8,29 @@ import assert from 'node:assert/strict';
 const sourcePath = process.argv[2];
 if (!sourcePath) {
   console.error('Usage: node --experimental-strip-types scripts/test-selective-lifecycle.ts <bundle>\n'
-    + '  <bundle>: webview/assets/app-initial-*.js extracted from the official Codex desktop app');
+    + '  <bundle>: webview/assets/app-shared-*.js extracted from the official Codex desktop app');
   process.exit(2);
 }
 const source = fs.readFileSync(sourcePath, 'utf8');
-const mountStart = source.indexOf('function a_t(');
-const mountSource = source.slice(mountStart, source.indexOf('function c_t(', mountStart));
-const effectStart = source.indexOf('Csn=af(') + 'Csn='.length;
-const effectSource = source.slice(effectStart, source.indexOf(',ly=', effectStart));
+// Qst and the $st/ect disposal helpers that follow it.
+const mountStart = source.indexOf('function Qst(');
+const mountSource = source.slice(mountStart, source.indexOf('function tct(', mountStart));
+const effectStart = source.indexOf('tq=Wk(') + 'tq='.length;
+const effectSource = source.slice(effectStart, source.indexOf(',nq=', effectStart));
 assert(mountStart >= 0 && effectStart > 4 && mountSource.includes('s.onMount='));
 assert(effectSource.includes('Account input subscription unavailable'));
 
 function fixture() {
   const subscriptions = [];
   let state, watchers = 0, resets = 0;
-  const scope = {queryClient: {
+  const scope = {get: () => 0, queryClient: {
     getQueryCache: () => ({findAll: () => [{reset() {resets++;}, setState() {}}]}),
     resetQueries() {}, invalidateQueries() {},
   }};
   const node = {imperativeReadDepth: 0, store: {set(_atom, value) {state = value;}}};
   const context = vm.createContext({
-    $: {}, cy: [['synthetic-account']], jd: {batch: fn => fn()},
-    yU: {accessInputs: {subscribe(listener) {
+    X: {}, wAn: {}, eq: [['synthetic-account']], ZK: ['synthetic'], JO: {batch: fn => fn()},
+    e6: {accessInputs: {subscribe(listener) {
       const item = {active: true, listener, onBroken: null};
       subscriptions.push(item);
       return {
@@ -38,8 +39,8 @@ function fixture() {
         [Symbol.dispose]() {item.active = false;},
       };
     }}},
-    ngt: () => ({}), Rd() {}, r_t: () => ({scope}),
-    Qd: () => ({watch(fn) {
+    dst: () => ({}), ak() {}, Fk: () => ({scope}),
+    Nk: () => ({watch(fn) {
       watchers++;
       const cleanup = fn(scope);
       return () => {watchers--; cleanup?.();};
@@ -47,7 +48,7 @@ function fixture() {
     globalThis: {dispatchEvent() {}}, ErrorEvent: class {},
   });
   vm.runInContext(mountSource, context);
-  context.af = (_token, initial, effect) => context.a_t({}, node, {}, initial, effect);
+  context.Wk = (token, initial, effect) => context.Qst(token, node, {}, e => typeof initial === 'function' ? initial(e) : initial, effect);
   const atom = vm.runInContext(effectSource, context);
   const set = value => {state = value;};
   let consumers = 0, managedCleanup;
@@ -98,7 +99,7 @@ fallback(); releaseRetain(); ui2();
 assert.equal(retained.state().activeSubscriptions, 0);
 
 console.log(JSON.stringify({
-  evidence: 'exact official a_t and Csn bodies; synthetic RPC and consumer lifecycle',
+  evidence: 'exact official Qst and account-input effect bodies; synthetic RPC and consumer lifecycle',
   negative: negativeResult,
   retained: retainedResult,
   finalActive: [negative.state().activeSubscriptions, retained.state().activeSubscriptions],

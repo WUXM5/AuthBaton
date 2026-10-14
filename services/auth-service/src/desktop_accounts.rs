@@ -421,6 +421,19 @@ impl Accounts {
                         self.desktop.action_feedback(&id, "failed");
                     }
                 },
+                Ok(Completion::Restart(result)) => match result {
+                    Ok(()) => {
+                        self.desktop.target = None;
+                        self.desktop.last_poll = 0;
+                        self.desktop.message = "Codex 桌面已以调试模式重新启动".into();
+                    }
+                    Err(message) => {
+                        // Never retry in a loop: the person restarts it once instead.
+                        self.desktop.restart_failed = true;
+                        self.desktop.message =
+                            format!("Codex 桌面未能以调试模式重新启动：{message}");
+                    }
+                },
                 Ok(Completion::Reply(result)) => {
                     if let Err(e) = result {
                         self.desktop.message = e.into();
@@ -512,7 +525,10 @@ impl Accounts {
             }));
             return;
         }
-        if self.db.switch.is_some() || now() < self.desktop.last_poll + 2 {
+        if self.db.switch.is_some() || self.restart_undebugged_desktop() {
+            return;
+        }
+        if now() < self.desktop.last_poll + 2 {
             return;
         }
         self.desktop.last_poll = now();
@@ -520,6 +536,35 @@ impl Accounts {
         self.desktop.job = Some(std::thread::spawn(move || {
             Completion::Observe(client.call("poll", Value::Null))
         }));
+    }
+    // While AuthManager runs, a desktop that starts without the debug port (opened from the Dock,
+    // or restarted by its updater) is restarted in debug mode before any turn starts in it. One
+    // that has run for a while is left alone: the person may be in the middle of work.
+    fn restart_undebugged_desktop(&mut self) -> bool {
+        if self.desktop.restart_failed
+            || self.desktop.pending_switch.is_some()
+            || now() < self.desktop.last_watch + 2
+        {
+            return false;
+        }
+        self.desktop.last_watch = now();
+        let Ok(Some((pid, age))) = (self.desktop.undebugged)(self.db.desktop.port) else {
+            return false;
+        };
+        if self.desktop.settled_pid.replace(pid) == Some(pid)
+            || age > desktop::FRESH_DESKTOP_SECS
+            // `ps` rounds the age down to whole seconds.
+            || desktop::turns_started_since(&self.sources.codex_home, now().saturating_sub(age + 1))
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        let (relaunch, port) = (self.desktop.relaunch, self.db.desktop.port);
+        self.desktop.message = "Codex 桌面没有开启热切换，正在以调试模式重新启动".into();
+        self.desktop.job = Some(std::thread::spawn(move || {
+            Completion::Restart(relaunch(port))
+        }));
+        true
     }
     fn start_desktop_refresh(&mut self, id: &str) {
         let result = (|| -> Result<()> {

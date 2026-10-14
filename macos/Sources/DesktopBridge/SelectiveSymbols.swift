@@ -5,7 +5,7 @@ import Foundation
 enum SelectiveSymbols {
     struct Reference { let name: String; let providerScope: Bool }
     struct Mapping { let boundary: String; let references: [String: Reference] }
-    static let roles = ["SSl", "_Sl", "qwl", "gf", "$", "Qd", "Up", "Csn", "UE", "O_", "HE", "WE", "i6n", "R8n", "V4n", "uD", "OS"]
+    static let roles = ["SSl", "_Sl", "qwl", "gf", "$", "Qd", "Up", "Csn", "O_", "X3", "OS"]
     private static let id = "[A-Za-z_$][\\w$]{0,63}"
     private static func matches(_ pattern: String, _ source: String) throws -> [[String]] {
         let anchored = pattern.hasPrefix("(" + id + ")=") ? "(?<![\\w$])" + pattern : pattern
@@ -39,16 +39,13 @@ enum SelectiveSymbols {
             let anchors: [(String, String)] = [
                 ("$", "(" + id + ")=(" + id + ")\\(`AppScope`\\)"),
                 ("OS", "(" + id + ")=(" + id + ")\\(`RouteScope`,"),
-                // Since 26.924 the effect also reads a retry counter and sets `loading` before the same accessInputs read.
-                ("Csn", "(" + id + ")=(" + id + ")\\(" + id + ",\\(\\)=>`loading`,\\(\\{(?:get:" + id + ",)?scope:" + id + ",set:" + id + "\\}\\)=>\\{(?:[^{};]{0,80};)?let " + id + "=" + id + "\\?\\.accessInputs;"),
-                ("uD", "(" + id + ")=class\\{scope;constructor\\(e\\)\\{this.scope=e\\}addManager\\(e\\)"),
+                // The effect reads a retry counter and sets `loading` before it reads accessInputs.
+                ("Csn", "(" + id + ")=(" + id + ")\\(" + id + ",\\(\\)=>`loading`,\\(\\{get:" + id + ",scope:" + id + ",set:" + id + "\\}\\)=>\\{[^{};]{0,80};let " + id + "=" + id + "\\?\\.accessInputs;"),
+                // The host registry; its refreshRendererManager replaces one host's manager the official way.
+                ("X3", "(" + id + ")=class\\{scope;constructor\\(e\\)\\{this.scope=e\\}registerHost\\(e\\)\\{[^{}]*\\}refreshRendererManager\\(e\\)\\{"),
                 ("O_", "\\)\\),(" + id + ")=" + id + "\\(" + id + ",\\(e,\\{get:t\\}\\)=>t\\(" + id + ",e\\)\\.client\\)"),
             ]
             for (role, pattern) in anchors { for m in try matches(pattern, source) { bind(role, name, m[1]) } }
-            let pattern = "(" + id + ")=" + id + "\\(" + id + ",\\(e,\\{get:t,scope:n\\}\\)=>\\{if\\(e!==`local`\\)return null;let r=(" + id + ")\\(n,e,t\\((" + id + "),e\\),(" + id + ")\\.bind\\(null,n\\),\\(e,t\\)=>e\\((" + id + "),t\\),\\{getManagers:\\(\\)=>n\\.get\\((" + id + ")\\)\\}\\)"
-            for m in try matches(pattern, source) {
-                for (i, role) in ["UE", "V4n", "HE", "i6n", "R8n", "WE"].enumerated() { bind(role, name, m[i + 1]) }
-            }
         }
         guard roles.allSatisfy({ found[$0]?.count == 1 }), found["_Sl"]?.first?.0 == main else { throw UIAdapterFailure.unsupported }
         var references: [String: Reference] = [:]

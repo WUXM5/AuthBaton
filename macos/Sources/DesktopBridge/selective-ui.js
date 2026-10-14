@@ -2,11 +2,11 @@
 (() => {
   const key = '__authManagerSelectiveUIV1';
   const existing = globalThis[key];
-  if (existing?.revision === 2) return true;
+  if (existing?.revision === 3) return true;
   // A switch is finished or recovered by the adapter that started it; an idle older one is replaced.
   if (existing && ['switching','failed','reconnecting'].includes(existing.state().phase)) return true;
   existing?.dispose();
-  let refs, scope, boundary, fragmentKey, initialNonce, identity, client, boundaryName;
+  let refs, scope, hosts, boundary, fragmentKey, initialNonce, identity, client, boundaryName;
   let phase = 'uninstalled', epoch = 0, held = [], context, banner, stopQueries, stopInputs;
   let stopAccessInputs, retainAccessInputs, accessAtom, connectedEpoch = -1, identityMustChange = false, contextPreserved = null;
   const patchedQueries = new Map();
@@ -68,7 +68,7 @@
     const element = root().element, selection = window.getSelection();
     const routes=fibers(root().fiber).filter(node=>node.type===refs.gf && node.memoizedProps?.scope===refs.OS).map(node=>node.memoizedProps.value);
     if(routes.some(route=>['remote-thread','chatgpt-thread'].includes(route?.routeKind)))throw Error('ui_scope_unsupported');
-    const manager=scope.get(refs.UE,'local');
+    const manager=hosts.getForHostId('local');
     const threads=routes.filter(route=>route?.routeKind==='local-thread').map(route=>route.conversationId)
       .filter(id=>typeof id==='string' && manager.getConversation(id)?.resumeState==='resumed');
     return {
@@ -124,7 +124,7 @@
   }
 
   const adapter = {
-    revision:2,
+    revision:3,
     configure(name) {
       if(phase!=='uninstalled' || typeof name!=='string' || !/^[A-Za-z_$][\w$]*$/.test(name))return fail();
       boundaryName=name;return true;
@@ -136,13 +136,15 @@
         this.dispose();
       }
       refs=values; boundaryName??=values._Sl?.name; boundary=locate(); scope=currentScope(boundary); client=scope.queryClient;
+      if(typeof refs.X3?.prototype?.refreshRendererManager!=='function')return fail();
+      hosts=new refs.X3(scope);
       const fragment=boundary.child?.child;
       if (boundary.type!==refs._Sl || fragment?.tag!==7 || typeof fragment.key!=='string' || fragment.child?.type!==refs.qwl) return fail();
       fragmentKey=fragment.key; identity=refs.Up.identityKey();
       const suffix=`:${identity}`;
       if(!fragmentKey.endsWith(suffix))return fail();
       initialNonce=fragmentKey.slice(0,-suffix.length);
-      if(!client?.cancelQueries || !client?.resetQueries || !scope.get(refs.UE,'local') || !refs.Csn?.resolve) return fail();
+      if(!client?.cancelQueries || !client?.resetQueries || !hosts.getForHostId('local') || !refs.Csn?.resolve) return fail();
       // Intercept this one existing identity Fragment; all other JSX keeps official behavior.
       for(const name of ['jsx','jsxs'])if(typeof refs.SSl[name]!=='function' || Object.getOwnPropertyDescriptor(refs.SSl,name)?.writable!==true)return fail();
       for(const name of ['jsx','jsxs']) {
@@ -193,8 +195,7 @@
       current(generation);
       if(!identityReady())throw Error('ui_services_unavailable');
       if(connectedEpoch!==epoch) {
-        const manager=refs.V4n(scope,'local',scope.get(refs.HE,'local'),refs.i6n.bind(null,scope),(get,id)=>get(refs.R8n,id),{getManagers:()=>scope.get(refs.WE)});
-        new refs.uD(scope).addManager(manager); // Official cleanup, registry generation and RPC replacement.
+        hosts.refreshRendererManager('local'); // Official cleanup, registry generation and RPC replacement.
         connectedEpoch=epoch;
       }
       // A broken official external-signal effect does not restart itself.
@@ -216,8 +217,8 @@
       for(let attempt=0;attempt<375;attempt++) {
         current(generation);
         const info=client.getQueryData(['vscode','account-info']);
-        const manager=scope.get(refs.UE,'local');
-        const threadsReady=context.threads.every(id=>manager.getConversation(id)?.resumeState==='resumed');
+        const manager=hosts.getForHostId('local');
+        const threadsReady=context.threads.every(id=>manager?.getConversation(id)?.resumeState==='resumed');
         const matches=info && `codex:${info.userId}:${info.accountId}`===owner;
         if(!matches && attempt%10===9 && client.getQueryCache().find({queryKey:['vscode','account-info']})?.state.fetchStatus!=='fetching')
           void client.refetchQueries({queryKey:['vscode','account-info']}).catch(()=>{});
