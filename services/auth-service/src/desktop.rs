@@ -72,7 +72,7 @@ pub fn error_message(code: Option<&str>) -> &'static str {
         Some("ui_adapter_unavailable") => "桌面页面保留接口结构不兼容，需要更新热切换适配",
         Some("ui_adapter_busy") => "页面仍在切换或恢复，请稍后重试",
         Some("ui_scope_unsupported") => "当前云端或远程页面尚不支持保留上下文；请先打开本地任务",
-        Some("ui_services_unavailable") => "账号服务尚未重新连接；请恢复当前登录状态",
+        Some("ui_services_unavailable") => "账号服务尚未重新连接",
         Some("tasks_active") => "Codex 仍有运行或等待中的任务，请结束后切换",
         Some("tasks_waiting") => "有任务正在等待审批或输入；自动切换已延后",
         Some("tasks_changed") => "任务已由其他操作改变；已停止本次自动切换，请核对会话",
