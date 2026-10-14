@@ -175,6 +175,9 @@ pub struct Runtime {
     pub settled_pid: Option<u32>,
     pub last_watch: u64,
     pub restart_failed: bool,
+    pub skip_quit_confirmation: fn(bool) -> Result<()>,
+    // What the login session was last told; set again after every reset of this runtime.
+    pub quit_confirmation_skipped: Option<bool>,
     #[cfg(test)]
     pub helper: Option<PathBuf>,
     pub target: Option<String>,
@@ -206,6 +209,11 @@ impl Default for Runtime {
             settled_pid: None,
             last_watch: 0,
             restart_failed: false,
+            #[cfg(not(test))]
+            skip_quit_confirmation,
+            #[cfg(test)]
+            skip_quit_confirmation: |_| Ok(()),
+            quit_confirmation_skipped: None,
             #[cfg(test)]
             helper: None,
             target: None,
@@ -300,6 +308,34 @@ pub fn launch_args(port: u16) -> Vec<String> {
         "--disable-renderer-backgrounding".into(),
     ]
 }
+// Codex desktop reads this once at launch; "1" quits without its confirmation, which otherwise
+// waits for a click whenever scheduled tasks are on.
+const QUIT_CONFIRMATION_SWITCH: &str = "CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION";
+// While hot switch is on, a desktop opened from the Dock or restarted by its updater gets the
+// switch from the login session, so its restart in debug mode never waits for that click.
+#[cfg_attr(test, allow(dead_code))]
+pub fn skip_quit_confirmation(skip: bool) -> Result<()> {
+    let mut launchctl = std::process::Command::new("/bin/launchctl");
+    if skip {
+        launchctl.args(["setenv", QUIT_CONFIRMATION_SWITCH, "1"]);
+    } else {
+        launchctl.args(["unsetenv", QUIT_CONFIRMATION_SWITCH]);
+    }
+    match launchctl.status() {
+        Ok(status) if status.success() => Ok(()),
+        _ => Err("无法设置 Codex 桌面的退出确认"),
+    }
+}
+// Starts the desktop with the debug port. The desktop AuthManager starts keeps its quit
+// confirmation: the session switch above is only for desktops about to be restarted.
+pub fn open_desktop(app: &str, port: u16) -> std::process::Command {
+    let mut open = std::process::Command::new("/usr/bin/open");
+    open.args(["-a", app, "--env"])
+        .arg(format!("{QUIT_CONFIRMATION_SWITCH}=0"))
+        .arg("--args")
+        .args(launch_args(port));
+    open
+}
 pub fn desktop_running() -> Result<bool> {
     let output = std::process::Command::new("/bin/ps")
         .args(["-axo", "comm="])
@@ -380,9 +416,7 @@ pub fn relaunch(port: u16) -> Result<()> {
         let _ = quit.kill();
         let _ = quit.wait();
     }
-    let status = std::process::Command::new("/usr/bin/open")
-        .args(["-a", app, "--args"])
-        .args(launch_args(port))
+    let status = open_desktop(app, port)
         .status()
         .map_err(|_| "无法启动官方桌面")?;
     if !status.success() {
@@ -531,5 +565,22 @@ mod tests {
         for bad in ["", "7", "a:01", "1-2", "1:2:3:4"] {
             assert_eq!(elapsed(bad), None);
         }
+    }
+    #[test]
+    fn a_desktop_started_here_keeps_its_quit_confirmation() {
+        let open = open_desktop("/Applications/ChatGPT.app", 9522);
+        let args: Vec<_> = open.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(open.get_program(), "/usr/bin/open");
+        assert_eq!(
+            args[..5],
+            [
+                "-a",
+                "/Applications/ChatGPT.app",
+                "--env",
+                "CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=0",
+                "--args"
+            ]
+        );
+        assert_eq!(args[5..], launch_args(9522));
     }
 }

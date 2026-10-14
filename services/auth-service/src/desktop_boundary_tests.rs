@@ -607,6 +607,39 @@ fn a_failed_restart_is_not_retried() {
     assert!(manager.desktop.job.is_none());
 }
 
+static SESSION_SWITCH: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+fn recorded_switch(skip: bool) -> Result<()> {
+    SESSION_SWITCH.lock().unwrap().push(skip);
+    Ok(())
+}
+
+#[test]
+fn quit_confirmation_is_skipped_only_while_hot_switch_is_on() {
+    let told = || SESSION_SWITCH.lock().unwrap().clone();
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    SESSION_SWITCH.lock().unwrap().clear();
+    manager.desktop.skip_quit_confirmation = recorded_switch;
+    manager.desktop_tick();
+    manager.desktop_tick();
+    assert_eq!(told(), [true]);
+    // Turning hot switch off takes the switch back on the next tick.
+    manager.configure_desktop(Some(false), None).unwrap();
+    manager.desktop.skip_quit_confirmation = recorded_switch;
+    manager.desktop_tick();
+    assert_eq!(told(), [true, false]);
+    manager.stop();
+    assert_eq!(told(), [true, false]);
+    // Stopping while hot switch is on takes it back too.
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    SESSION_SWITCH.lock().unwrap().clear();
+    manager.desktop.skip_quit_confirmation = recorded_switch;
+    manager.desktop_tick();
+    manager.stop();
+    assert_eq!(told(), [true, false]);
+}
+
 #[test]
 fn running_turns_come_from_the_latest_turn_of_recent_rollouts() {
     let fixture = Fixture::new();
