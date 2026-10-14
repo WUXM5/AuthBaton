@@ -130,6 +130,14 @@ enum Fixture {
         switch scenario {
         case "connected":
             data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+        case "connectedbusy":
+            // A scheduled check is running; the service holds a desktop switch until it finishes.
+            data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": true, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+            data["busy"] = true
+        case "plainbusy":
+            data["desktop"] = ["enabled": false, "port": 9522, "connected": false, "managed": false, "busy": false, "message": ""]
+            data["strategy"] = NSNull()
+            data["busy"] = true
         case "unmanaged":
             data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": false, "busy": false, "message": "桌面连接就绪；选择账号后将更新全局默认"]
         case "plain":
@@ -953,6 +961,22 @@ extension NSWindow {
         Driver.press("取消", .exact)
         relogin("synthetic-nova")
         check.visible("nova 的官方登录已完成", "给 nova 重新登录时显示它自己的结果")
+    }
+    section(19, "后台检查进行中：桌面热切换照样能点（服务等检查结束再切），普通切换仍要等") {
+        Fixture.load("connectedbusy", into: state)
+        select(.accounts, "synthetic-nova")
+        state.calls.removeAll()
+        Driver.press("设为 Codex 当前账号")
+        check.expect(Driver.visible("同时更新 Codex 桌面"), "检查进行中仍能打开桌面切换确认")
+        Driver.press("已结束任务，切换")
+        check.expect(check.lastCall("accounts.activate")?.contains("synthetic-nova") == true, "检查进行中也发出切换，由服务排队")
+        Driver.press("取消", .exact)
+        Driver.settle(0.3)
+        Fixture.load("plainbusy", into: state)
+        select(.accounts, "synthetic-nova")
+        state.calls.removeAll()
+        Driver.press("设为 Codex 当前账号")
+        check.expect(main.attachedSheet == nil && check.lastCall("accounts.activate") == nil, "普通切换在检查进行中不可点")
     }
 
     main.orderOut(nil)

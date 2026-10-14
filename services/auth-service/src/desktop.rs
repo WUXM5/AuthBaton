@@ -134,22 +134,11 @@ pub fn declined_for_tasks(value: &Value) -> bool {
 }
 pub enum Completion {
     Observe(Result<Value>),
-    Preflight {
-        id: String,
-        recover: bool,
-        result: Result<Value>,
-    },
-    Reconcile(Result<Value>),
-    Activate {
-        id: String,
-        result: Result<Value>,
-    },
+    Preflight { id: String, result: Result<Value> },
+    Activate { id: String, result: Result<Value> },
     Reply(Result<Value>),
     Update(Result<Value>),
-    Relaunch {
-        id: String,
-        result: Result<()>,
-    },
+    Relaunch { id: String, result: Result<()> },
     Restart(Result<()>),
 }
 #[derive(Clone)]
@@ -168,8 +157,11 @@ pub struct Runtime {
     pub other_clients: fn() -> bool,
     pub relaunch: fn(u16) -> Result<()>,
     pub turns_running: fn(&Path) -> Result<bool>,
-    // Account to switch to once a desktop restarted for that switch connects, with a deadline.
+    // A switch asked for but not started yet, with a deadline: it waits for a desktop restarted
+    // for it to connect, or for a poll or check that holds the slots a switch needs.
     pub pending_switch: Option<(String, u64)>,
+    // When the desktop may next be checked for a login AuthManager made but did not record.
+    pub finish_after: u64,
     pub undebugged: fn(u16) -> Result<Undebugged>,
     pub startup_finished: fn(&Path, u32, u64) -> Option<u64>,
     // The last such desktop already handled: restarted, or left running.
@@ -202,6 +194,7 @@ impl Default for Runtime {
             relaunch,
             turns_running,
             pending_switch: None,
+            finish_after: 0,
             #[cfg(not(test))]
             undebugged: undebugged_desktop,
             #[cfg(test)]
@@ -265,6 +258,25 @@ impl Runtime {
         self.connected = true;
         self.observed_at = Some(crate::status::now());
         Ok(())
+    }
+    // The last poll, in the shape a preflight reports it.
+    pub fn observation(&self) -> Value {
+        json!({"owner":self.owner,"mode":self.mode,"target":self.target,"instance":self.instance,"hash":self.hash,"boundOwner":if self.bound {self.owner.as_deref()} else {None}})
+    }
+    // A switch is under way from the moment it is asked for until it completes or fails.
+    pub fn switching(&self) -> Option<&str> {
+        if let Some((id, _)) = &self.pending_switch {
+            return Some(id);
+        }
+        self.action
+            .as_ref()
+            .filter(|a| {
+                matches!(
+                    a["state"].as_str(),
+                    Some("checking" | "switching" | "relaunching")
+                )
+            })
+            .and_then(|a| a["id"].as_str())
     }
     pub fn snapshot(&self, config: &Config) -> Value {
         json!({"enabled":config.enabled,"port":config.port,"selected":config.selected,"connected":self.connected,"busy":self.job.is_some(),"message":self.message,"action":self.action})
@@ -332,9 +344,13 @@ pub fn skip_quit_confirmation(skip: bool) -> Result<()> {
 }
 // Starts the desktop with the debug port. The desktop AuthManager starts keeps its quit
 // confirmation: the session switch above is only for desktops about to be restarted.
+// `open` passes its own environment on to the app, so it gets none: the desktop then starts with
+// the login session's, as from the Dock, and never inherits whatever started AuthManager (a
+// Claude Code shell's session id and messaging token reached every Codex task this way).
 pub fn open_desktop(app: &str, port: u16) -> std::process::Command {
     let mut open = std::process::Command::new("/usr/bin/open");
-    open.args(["-a", app, "--env"])
+    open.env_clear()
+        .args(["-a", app, "--env"])
         .arg(format!("{QUIT_CONFIRMATION_SWITCH}=0"))
         .arg("--args")
         .args(launch_args(port));
@@ -671,5 +687,8 @@ mod tests {
             ]
         );
         assert_eq!(args[5..], launch_args(9522));
+        // Nothing from AuthManager's own environment is passed on.
+        assert!(format!("{open:?}").starts_with("env -i "), "{open:?}");
+        assert_eq!(open.get_envs().count(), 0);
     }
 }

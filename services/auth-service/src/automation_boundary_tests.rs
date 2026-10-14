@@ -250,12 +250,12 @@ fn lost_resume_reply_restart_and_missing_renderer_never_replay() {
     assert_eq!(reopened.db.automation.latches["a"].kind, LatchKind::Switch);
 }
 #[test]
-fn auth_partial_failure_never_resumes_and_clear_keeps_auth_journal() {
+fn auth_partial_failure_never_resumes_and_leaves_no_auth_journal() {
     let f = Fixture::new();
     let mut m = setup(&f);
     fs::write(f.root.join("fail-completion"), b"1").unwrap();
     settle(&mut m);
-    assert!(m.db.switch.is_some());
+    assert!(m.db.switch.is_none());
     assert_eq!(
         m.db.automation.run.as_ref().unwrap().phase,
         Phase::Attention
@@ -266,7 +266,7 @@ fn auth_partial_failure_never_resumes_and_clear_keeps_auth_journal() {
             .contains("auto_resume")
     );
     m.forget_strategy(true).unwrap();
-    assert!(m.db.switch.is_some());
+    assert!(m.db.switch.is_none());
     // The switch latch stands exactly when the source stopped being current.
     assert_eq!(
         m.db.automation.latches.contains_key("a"),

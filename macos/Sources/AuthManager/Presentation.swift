@@ -202,6 +202,12 @@ extension AccountDirectory {
         return .plain
     }
 
+    // The service holds a desktop switch until a check or poll in progress finishes, so that work
+    // does not disable it; a plain switch needs the service idle.
+    func switchDisabled(for account: ManagedAccount) -> Bool {
+        recoveryNeeded || (busy && switchRoute(for: account) != .desktop)
+    }
+
     func canSwitch(to account: ManagedAccount) -> Bool {
         !account.native || (account.provider == "codex" && desktop?.enabled == true && desktop?.selected != account.id)
     }

@@ -1,7 +1,7 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===5) return true;
+  if (globalThis[key]?.revision===6) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
     if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
@@ -10,7 +10,7 @@
   const send = (value) => window.electronBridge.sendMessageFromView(value);
   const pending = new Map();
   const refreshes = new Map();
-  let serial = 0, epoch = 0, binding = null, completed = null, updated = false, receipt = null;
+  let serial = 0, epoch = 0, binding = null, completed = null, updated = false;
   const instance = crypto.randomUUID();
   let observedOwner=null, usageObservation=null;
   const rpc = (method, params) => new Promise((resolve, reject) => {
@@ -93,8 +93,9 @@
     }
   });
   globalThis[key] = {
-    revision:5,
+    revision:6,
     async call(input) {
+      let previousOwner=null;
       try {
         if(input.operation.startsWith('auto_')) {
           if(!automatic)throw Error('ui_adapter_unavailable');
@@ -109,6 +110,7 @@
         }
         if (input.operation==='apply' || input.operation==='update') {
           const before=await status(), p=input.params;
+          previousOwner=before.owner;
           if (before.owner!==p.previousOwner && before.owner!==p.owner) throw Error('identity_changed');
           if (refreshes.size) throw Error('refresh_pending');
           if (input.operation==='apply') await idle();
@@ -116,20 +118,11 @@
           const tokenIdentity=identity(p.auth.accessToken);
           if (tokenIdentity.owner!==p.owner || tokenIdentity.workspace!==p.auth.chatgptAccountId) throw Error('identity_mismatch');
           const ui=globalThis.__authManagerSelectiveUIV1;
-          const preserve=input.operation==='apply' && (before.owner!==p.owner || ui?.state().phase==='failed');
+          const preserve=input.operation==='apply' && before.owner!==p.owner;
           if(preserve) {
             if(!ui?.ready())throw Error('ui_adapter_unavailable');
-            await ui.begin(before.owner!==p.owner);
+            await ui.begin(true);
           }
-          // A successful auth commit followed by UI failure is recovered without a second login.
-          if(preserve && receipt?.owner===p.owner && before.owner===p.owner && before.mode==='chatgptAuthTokens') {
-            const account=await rpc('account/read',{refreshToken:false});
-            if(account.account?.type!=='chatgpt')throw Error('unsupported_auth');
-            const restored=await ui.reconnect(p.owner);
-            const current=await status();
-            return {ok:true,instance,...current,boundOwner:binding?.owner??null,confirmed:current.owner===p.owner && current.mode==='chatgptAuthTokens',contextPreserved:restored.contextPreserved,threadsResumed:restored.threadsResumed!==false};
-          }
-          receipt=null;
           ++epoch; binding={...tokenIdentity}; completed=null; updated=false;
           const result=await rpc('account/login/start',{type:'chatgptAuthTokens',...p.auth});
           if (result?.type!=='chatgptAuthTokens') throw Error('invalid_login');
@@ -139,9 +132,10 @@
           const current=await status();
           const account=await rpc('account/read',{refreshToken:false});
           const confirmed=current.owner===p.owner && current.mode==='chatgptAuthTokens' && completed===true && updated && account.account?.type==='chatgpt';
-          if(confirmed)receipt={owner:p.owner};
           if(preserve) {
-            if(!confirmed){ui.failed();return {ok:true,instance,...current,boundOwner:binding.owner,confirmed:false};}
+            // Codex applies the tokens before its online account check; when that check fails it reports
+            // success:false and sends no account/updated, yet keeps the new tokens.
+            if(!confirmed){ui.failed(current.owner!==before.owner);return {ok:true,instance,...current,boundOwner:binding.owner,confirmed:false};}
             const restored=await ui.reconnect(p.owner);
             const verified=await status();
             if(verified.owner!==p.owner || verified.mode!=='chatgptAuthTokens')throw Error('identity_changed');
@@ -181,7 +175,12 @@
         }
         throw Error('unknown_operation');
       } catch(e) {
-        if(['apply','update'].includes(input.operation))globalThis.__authManagerSelectiveUIV1?.failed();
+        if(['apply','update'].includes(input.operation)) {
+          // Whether the account the app-server holds changed decides how the page is handed back.
+          let changed=true;
+          try {changed=previousOwner===null || (await status()).owner!==previousOwner;} catch {}
+          globalThis.__authManagerSelectiveUIV1?.failed(changed);
+        }
         const known=['tasks_active','tasks_waiting','tasks_changed','pause_unconfirmed','resume_unconfirmed','batch_unavailable','batch_busy','invalid_batch','task_probe_failed','identity_changed','identity_mismatch','refresh_pending','stale_refresh','refresh_unconfirmed','unsupported_auth','ui_adapter_unavailable','ui_adapter_busy','ui_scope_unsupported','ui_services_unavailable'];
         return {ok:false,code:[...known,'rpc_timeout','rpc_failed'].includes(e.message)?e.message:'bridge_failed'};
       }

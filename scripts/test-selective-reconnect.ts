@@ -14,6 +14,9 @@ function fixture(existing?: object) {
   const created: string[] = [], added: unknown[] = [];
   // Open task routes, and the tasks each manager has resumed. The new manager starts empty.
   let routes: object[] = [], resumedBefore = new Set<string>(), resumeAfter: Record<string, number> = {}, polls = 0;
+  // Capture listeners the adapter adds to block input, page reloads it asks for, active refetches.
+  const listening = new Map<string, number>();
+  let reloads = 0, activeRefetches = 0;
   const next = {getConversation(id: string) {
     polls++;
     return id in resumeAfter && polls > resumeAfter[id] ? {resumeState: 'resumed'} : null;
@@ -29,7 +32,8 @@ function fixture(existing?: object) {
     async cancelQueries() {},
     // The fetch started by the reset runs options computed while account inputs were broken: no data.
     async resetQueries() {data = undefined;},
-    async refetchQueries({queryKey}: {queryKey: string[]}) {
+    async refetchQueries({queryKey, type}: {queryKey?: string[], type?: string}) {
+      if (type === 'active' && !queryKey) {activeRefetches++; return;}
       // The key is built inside the vm realm, so compare by value.
       if (JSON.stringify(queryKey) !== JSON.stringify(['vscode', 'account-info'])) throw Error('unexpected query key');
       refetches++;
@@ -46,8 +50,10 @@ function fixture(existing?: object) {
   const root = {querySelectorAll: () => [], scrollTop: 0, scrollLeft: 0, __reactContainer$fixture: {stateNode: {current: {child: boundary}}}};
   const context = vm.createContext({
     Map, Set, Promise, Error, DOMException, setTimeout: (run: () => void) => setImmediate(run),
-    location: {href: 'app://-/index.html'},
-    window: {getSelection: () => null, addEventListener() {}, removeEventListener() {}},
+    location: {href: 'app://-/index.html', reload() {reloads++;}},
+    window: {getSelection: () => null,
+             addEventListener(type: string) {listening.set(type, (listening.get(type) ?? 0) + 1);},
+             removeEventListener(type: string) {listening.set(type, (listening.get(type) ?? 0) - 1);}},
     document: {getElementById: () => root, activeElement: null, body: {appendChild() {}}, createElement: () => ({setAttribute() {}, style: {}, remove() {}})},
   });
   if (existing) context.__authManagerSelectiveUIV1 = existing;
@@ -66,7 +72,8 @@ function fixture(existing?: object) {
           refetches: () => refetches, created: () => [...created], added: () => [...added], next, noAnswer: () => {answerOnRefetch = false;},
           // Opens a task the old manager had resumed; the new one resumes it after `polls` reads, or never.
           openTask: (id: string, polls?: number) => {routes = [{routeKind: 'local-thread', conversationId: id}]; resumedBefore.add(id); if (polls !== undefined) resumeAfter[id] = polls;},
-          goHome: () => {routes = [{routeKind: 'home'}];}};
+          goHome: () => {routes = [{routeKind: 'home'}];},
+          blocked: () => (listening.get('keydown') ?? 0) > 0, reloads: () => reloads, activeRefetches: () => activeRefetches};
 }
 
 let passed = 0;
@@ -151,16 +158,82 @@ await test('an idle older adapter is disposed and replaced', async () => {
   let disposed = 0;
   const f = fixture({revision: 3, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
   assert.equal(disposed, 1);
-  assert.equal(f.adapter.revision, 5);
+  assert.equal(f.adapter.revision, 6);
 });
 
-await test('an older adapter with an unfinished switch is kept for its recovery', async () => {
+await test('an older adapter with a switch in flight is kept until it finishes', async () => {
   let disposed = 0;
-  const old = {revision: 3, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
+  const old = {revision: 5, state: () => ({phase: 'reconnecting'}), dispose() {disposed++;}};
   const f = fixture(old);
   assert.equal(f.installed, true);
   assert.equal(disposed, 0);
   assert.equal(f.adapter, old);
+  assert.equal(f.reloads(), 0);
+});
+
+await test('an older adapter still holding the page after a failed switch is released by a reload', async () => {
+  // Revision 5 kept the page blocked in `failed` until a recovery from AuthManager, which no longer exists.
+  let disposed = 0;
+  const old = {revision: 5, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
+  const f = fixture(old);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(disposed, 0);
+  assert.equal(f.reloads(), 1);
+});
+
+await test('a switch that fails before the login lands gives the page back as it was', async () => {
+  const f = fixture();
+  f.attach();
+  await f.adapter.begin(true);
+  assert.equal(f.blocked(), true);
+  // The bridge reports a login that never landed: the app-server and the page still hold account a.
+  assert.equal(f.adapter.failed(false).reloading, false);
+  assert.equal(f.adapter.state().phase, 'idle');
+  assert.equal(f.blocked(), false);
+  assert.equal(f.activeRefetches(), 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reloads(), 0);
+  assert.deepEqual(f.added(), []);
+  // Nothing is held: the next switch starts normally.
+  await f.adapter.begin(true);
+  f.switchTo('b');
+  assert.equal((await f.adapter.reconnect('codex:b:w')).ok, true);
+});
+
+await test('a switch that fails after the login landed hands the page to Codex reset by reloading', async () => {
+  const f = fixture();
+  f.attach();
+  f.noAnswer();
+  await f.adapter.begin(true);
+  f.switchTo('b');
+  await assert.rejects(f.adapter.reconnect('codex:b:w'), /ui_services_unavailable/);
+  assert.equal(f.blocked(), true);
+  assert.equal(f.adapter.failed(true).reloading, true);
+  assert.equal(f.adapter.state().phase, 'uninstalled');
+  assert.equal(f.blocked(), false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reloads(), 1);
+});
+
+await test('tokens applied while Codex reports the login failed: the page is rebuilt although its account never changed', async () => {
+  // Real lab, 2026-10-14: login/completed success:false (workspace routing discovery failed), no
+  // account/updated, the app-server already on the new account and the page stuck on the old one.
+  const f = fixture();
+  f.attach();
+  await f.adapter.begin(true);
+  assert.equal(f.adapter.failed(true).reloading, true);
+  assert.equal(f.blocked(), false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reloads(), 1);
+});
+
+await test('an unknown outcome is treated as a changed account', async () => {
+  const f = fixture();
+  f.attach();
+  await f.adapter.begin(true);
+  assert.equal(f.adapter.failed().reloading, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reloads(), 1);
 });
 
 console.log(JSON.stringify({passed, evidence: 'exact production JS in pure memory; not a browser or desktop test'}));
