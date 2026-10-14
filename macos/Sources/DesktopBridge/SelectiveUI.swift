@@ -4,9 +4,12 @@ import Foundation
 @MainActor
 enum SelectiveUI {
     static let symbols = SelectiveSymbols.roles
-    static func install(on cdp: CDP, script: String, mapping: SelectiveSymbols.Mapping) async throws {
+    // The mapping is read only when the page has no ready adapter: scanning the app bundle takes about
+    // 6.5 s on 26.1007, which every preflight used to pay before this check.
+    static func install(on cdp: CDP, script: String, mapping read: @autoclosure () throws -> SelectiveSymbols.Mapping) async throws {
         _ = try await cdp.evaluate(script)
         if (try await cdp.evaluate("globalThis.__authManagerSelectiveUIV1.ready()") as? Bool) == true { return }
+        let mapping = try read()
         let name = String(decoding: try JSONSerialization.data(withJSONObject: [mapping.boundary]), as: UTF8.self)
         _ = try await cdp.evaluate("globalThis.__authManagerSelectiveUIV1.configure(" + name + "[0])")
         do {

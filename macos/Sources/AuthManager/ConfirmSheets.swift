@@ -127,7 +127,7 @@ struct SwitchSheet: View {
                 }
             }
             .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-            .disabled(working || attempt?.pending == true || service.accountBusy || directory?.busy == true)
+            .disabled(working || attempt?.pending == true || service.accountBusy || directory?.switchDisabled(for: account) == true)
         }
     }
 

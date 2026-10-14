@@ -242,10 +242,6 @@ fn response(
                     "accounts.desktop_relaunch_switch" => manager.relaunch_desktop_and_activate(
                         params.id.as_deref().ok_or("缺少账号标识")?,
                     )?,
-                    "accounts.desktop_reconcile" => manager.reconcile_desktop()?,
-                    "accounts.desktop_recover_native" => {
-                        manager.recover_desktop_native(params.confirm == Some(true))?
-                    }
                     "accounts.import" => manager.import(
                         params.provider.as_deref().ok_or("缺少账号类型")?,
                         params.label.as_deref().unwrap_or(""),

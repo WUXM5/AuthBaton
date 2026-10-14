@@ -634,7 +634,7 @@ impl Accounts {
                 },
             );
             self.save()?;
-            self.commit_desktop(&target, false, value)?;
+            self.commit_desktop(&target, value)?;
         } else {
             self.save()?;
         }

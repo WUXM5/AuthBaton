@@ -255,9 +255,13 @@ impl Accounts {
                 account.message = "上次检查被中断，请手动核对后恢复维护".into();
             }
         }
+        // Desktop switches no longer keep a journal (an older version may have left one): the poll
+        // reads the desktop and the default file again and finishes a login the desktop took.
+        if manager.db.switch.as_ref().is_some_and(|s| s.desktop) {
+            manager.db.switch = None;
+        }
         if manager.db.switch.is_some() {
-            manager.notice =
-                Some("上次切换尚未确认，请先核对原账号，或结束任务后重试上次切换".into());
+            manager.notice = Some("上次切换尚未确认，请结束任务后重试上次切换".into());
         }
         // No login survives a restart: keep a staged result that can still be saved, drop the rest.
         let pending: Vec<String> = manager
@@ -922,15 +926,14 @@ impl Accounts {
         Ok(())
     }
     pub fn activate(&mut self, id: &str, confirmed: bool) -> Result<()> {
-        self.ensure_idle()?;
         if !confirmed {
             return Err("请确认已结束相关任务后再切换");
         }
         let index = self.index(id)?;
-        let target = self.db.accounts[index].clone();
-        if target.provider == "codex" && self.db.desktop.enabled {
-            return self.activate_desktop(id, false);
+        if self.db.accounts[index].provider == "codex" && self.db.desktop.enabled {
+            return self.request_desktop_switch(id);
         }
+        self.ensure_idle()?;
         self.activate_native(id)
     }
     // Called only under the service's writer admission. Codex clients must have stopped;
@@ -1098,12 +1101,6 @@ impl Accounts {
         self.save()
     }
     pub fn recover(&mut self) -> Result<()> {
-        if let Some(operation) = &self.db.switch
-            && operation.desktop
-        {
-            let id = operation.target.clone();
-            return self.activate_desktop(&id, true);
-        }
         if self.job.is_some() || self.pending_login.is_some() {
             return Err("请等待当前操作结束");
         }
@@ -1218,6 +1215,7 @@ impl Accounts {
             || self.db.automation.run.is_some()
             || self.desktop.job.is_some()
             || self.desktop.refresh.is_some()
+            || self.desktop.pending_switch.is_some()
             || !self.check_queue.is_empty()
             || now() < self.last_scan + 15
         {

@@ -107,24 +107,63 @@ impl Accounts {
             .open(&path)
             .and_then(|mut file| writeln!(file, "{line}"));
     }
-    pub(super) fn activate_desktop(&mut self, id: &str, recover: bool) -> Result<()> {
+    // A switch the person asks for. A poll, a scheduled check or a reset in flight only delays
+    // it: it starts once they finish instead of being refused.
+    pub(super) fn request_desktop_switch(&mut self, id: &str) -> Result<()> {
+        if self.automation.job.is_some() || self.db.automation.run.is_some() {
+            return Err("自动额度流程正在处理或待核对；请先停止并核对该流程");
+        }
+        if self.storage_fault.get() {
+            return Err("账号数据库不可写，已停止切换");
+        }
+        if self.cloud.job.is_some() || self.pending_login.is_some() {
+            return Err("登录或云端操作正在进行，请完成后再切换");
+        }
+        if self.db.switch.is_some() {
+            return Err("请先恢复上次切换的当前登录状态");
+        }
+        if self.desktop.switching().is_some() {
+            return Err("正在切换账号，请等这次切换结束");
+        }
+        switch_target_ready(&self.db.accounts[self.index(id)?])?;
+        if self.switch_waits() {
+            self.desktop.pending_switch = Some((id.into(), now() + 30));
+            self.desktop.message = "等当前的检查或桌面轮询结束后开始切换".into();
+            self.desktop.action_feedback(id, "checking");
+            return Ok(());
+        }
+        self.activate_desktop(id)
+    }
+    // Work that holds the slots a switch needs, and finishes by itself.
+    fn switch_waits(&self) -> bool {
+        self.job.is_some()
+            || !self.check_queue.is_empty()
+            || self.reset_job.is_some()
+            || self.desktop.job.is_some()
+            || self.desktop.refresh.is_some()
+    }
+    pub(super) fn activate_desktop(&mut self, id: &str) -> Result<()> {
         self.desktop_switch_ready(id)?;
+        let owner = self.db.accounts[self.index(id)?]
+            .metadata
+            .as_ref()
+            .map(|m| m.owner.clone());
+        // Already logged in to this account by AuthManager: only the default file and the record
+        // are left, so there is no login and running tasks do not matter.
+        if self.desktop.connected
+            && self.desktop.mode.as_deref() == Some("chatgptAuthTokens")
+            && owner.is_some()
+            && self.desktop.owner == owner
+        {
+            return self.commit_desktop(id, self.desktop.observation());
+        }
         let client = self.desktop.client(&self.db.desktop);
         let id = id.to_string();
         self.desktop.message = "正在检查桌面连接与任务状态；尚未开始切换".into();
         self.desktop.action_feedback(&id, "checking");
-        self.desktop_log(
-            "preflight",
-            Some(&id),
-            if recover {
-                "恢复上次切换前检查桌面"
-            } else {
-                "切换或接管前检查桌面"
-            },
-        );
+        self.desktop_log("preflight", Some(&id), "切换或接管前检查桌面");
         self.desktop.job = Some(std::thread::spawn(move || Completion::Preflight {
             id,
-            recover,
             result: client.raw("preflight", Value::Null),
         }));
         Ok(())
@@ -185,12 +224,9 @@ impl Accounts {
         }
         Ok(())
     }
-    pub(super) fn commit_desktop(
-        &mut self,
-        id: &str,
-        recover: bool,
-        observed: Value,
-    ) -> Result<()> {
+    // No journal: a switch that stops part way leaves the desktop either on its old login or on
+    // the target's external one, which only AuthManager makes; the poll finishes the latter.
+    pub(super) fn commit_desktop(&mut self, id: &str, observed: Value) -> Result<()> {
         if (self.desktop.other_clients)() {
             return Err("检测到 VS Code 的 Codex 插件或独立 Codex CLI，切换未开始");
         }
@@ -209,45 +245,42 @@ impl Accounts {
             return Err("桌面与默认文件身份不一致，切换未开始");
         }
         self.desktop.observed(&observed)?;
-        let previous = if recover {
-            self.db
-                .switch
-                .as_ref()
-                .and_then(|s| s.previous.clone())
-                .ok_or("缺少切换恢复记录")?
-        } else {
-            self.adopt_native(old.clone(), "原生账号")?;
-            self.db
-                .accounts
-                .iter()
-                .find(|a| a.provider == "codex" && a.native)
-                .map(|a| a.id.clone())
-                .ok_or("请先纳管当前原生登录")?
-        };
+        self.adopt_native(old.clone(), "原生账号")?;
+        let previous = self
+            .db
+            .accounts
+            .iter()
+            .find(|a| a.provider == "codex" && a.native)
+            .map(|a| a.id.clone())
+            .ok_or("请先纳管当前原生登录")?;
         let previous_bundle = Bundle::decode(self.platform.vault_read(&previous)?)?;
         let old_owner = previous_bundle.metadata()?.owner;
         if !old.same_owner(&previous_bundle)? && !old.same_owner(&target)? {
             return Err("原生账号已由其他操作改变，未覆盖登录");
         }
-        self.db.switch = Some(Switch {
-            provider: "codex".into(),
-            target: id.into(),
-            previous: Some(previous.clone()),
-            desktop: true,
-        });
         self.save()?;
+        let logged_in =
+            observed["owner"] == metadata.owner && observed["mode"] == "chatgptAuthTokens";
         let client = self.desktop.client(&self.db.desktop);
         let platform = self.platform.clone();
         let id = id.to_string();
         self.desktop.message = "正在确认桌面身份并更新全局默认".into();
         self.desktop.action_feedback(&id, "switching");
-        self.desktop_log("apply", Some(&id), "把这个账号登录到桌面并写入默认文件");
+        if logged_in {
+            self.desktop_log("finish", Some(&id), "桌面已登录这个账号，只同步默认文件");
+        } else {
+            self.desktop_log("apply", Some(&id), "把这个账号登录到桌面并写入默认文件");
+        }
         self.desktop.job = Some(std::thread::spawn(move || {
             let result = (|| {
-                let mut value = client.call(
-                    "apply",
-                    json!({"previousOwner":old_owner,"owner":metadata.owner,"auth":auth}),
-                )?;
+                let mut value = if logged_in {
+                    client.call("bind", json!({"owner":metadata.owner}))?
+                } else {
+                    client.call(
+                        "apply",
+                        json!({"previousOwner":old_owner,"owner":metadata.owner,"auth":auth}),
+                    )?
+                };
                 validate_applied(&value, &metadata.owner)?;
                 // Re-read after the desktop relinquishes managed auth, preserving its latest generation.
                 let latest = native.read(&platform)?;
@@ -266,10 +299,10 @@ impl Accounts {
                         native.apply(&platform, &latest, &target)?;
                     }
                 } else if latest != target {
-                    return Err("原生凭据已变化；桌面已切换，文件等待恢复确认");
+                    return Err("默认文件在切换中被其他程序改动；桌面已是新账号，稍后重新核对");
                 }
                 if native.read(&platform)? != committed {
-                    return Err("默认文件写入尚未确认，请恢复切换");
+                    return Err("默认文件写入没有通过读回核对；稍后重新核对");
                 }
                 value["metadata"] = serde_json::to_value(committed.metadata()?).unwrap();
                 Ok(value)
@@ -301,11 +334,7 @@ impl Accounts {
             self.desktop.last_poll = now();
             let completion = self.desktop.job.take().unwrap().join();
             match completion {
-                Ok(Completion::Preflight {
-                    id,
-                    recover,
-                    result,
-                }) => {
+                Ok(Completion::Preflight { id, result }) => {
                     let (failure, declined) = match result {
                         Err(message) => (Some(message.to_string()), false),
                         Ok(value) if value["ok"] != true => (
@@ -313,9 +342,7 @@ impl Accounts {
                             desktop::declined_for_tasks(&value),
                         ),
                         Ok(value) => (
-                            self.commit_desktop(&id, recover, value)
-                                .err()
-                                .map(str::to_string),
+                            self.commit_desktop(&id, value).err().map(str::to_string),
                             false,
                         ),
                     };
@@ -333,24 +360,9 @@ impl Accounts {
                             self.desktop.connected = false;
                             self.desktop.target = None;
                         }
-                        self.desktop.message = if self.db.switch.is_some() {
-                            format!("{message}；上次切换记录仍保留")
-                        } else {
-                            format!("{message}；切换未开始")
-                        };
-                        // Only an unfinished switch is a standing condition; a switch that never
-                        // started is reported on the attempt itself, with its time.
-                        if self.db.switch.is_some() {
-                            self.notice = Some(self.desktop.message.clone());
-                        }
+                        // Reported on the attempt itself, with its time; nothing is left standing.
+                        self.desktop.message = format!("{message}；切换未开始");
                         self.desktop.action_feedback(&id, "failed");
-                    }
-                }
-                Ok(Completion::Reconcile(result)) => {
-                    if let Err(message) =
-                        result.and_then(|value| self.finish_desktop_reconcile(value))
-                    {
-                        self.desktop.message = format!("{message}；上次切换记录仍保留");
                     }
                 }
                 Ok(Completion::Activate { id, result }) => match result {
@@ -405,14 +417,16 @@ impl Accounts {
                         } else {
                             self.desktop.connected = false;
                             self.desktop.message =
-                                "桌面返回的身份不完整；请核对并恢复当前登录状态".into();
+                                "桌面返回的身份不完整；切换没有完成，稍后重新核对".into();
                             self.desktop.action_feedback(&id, "failed");
                         }
                     }
+                    // Nothing is held: the next poll reads the desktop again, and a login that
+                    // did land is finished from there.
                     Err(message) => {
                         self.desktop_log("apply_failed", Some(&id), message);
                         self.desktop.connected = false;
-                        self.desktop.message = format!("{message}；请恢复当前登录状态");
+                        self.desktop.message = format!("{message}；切换没有完成");
                         self.desktop.action_feedback(&id, "failed");
                     }
                 },
@@ -424,14 +438,13 @@ impl Accounts {
                             self.desktop.message = message.into();
                             return;
                         }
-                        self.desktop.message = "桌面连接就绪；选择账号后将更新全局默认".into();
-                        if let Some((id, _)) = self.desktop.pending_switch.take() {
-                            if let Err(message) = self.activate_desktop(&id, false) {
-                                self.desktop.message = format!("{message}；切换未开始");
-                                self.desktop.action_feedback(&id, "failed");
-                            }
+                        // A switch asked for meanwhile starts below, in this same tick.
+                        if self.desktop.pending_switch.is_none()
+                            && self.finish_desktop_login(&value)
+                        {
                             return;
                         }
+                        self.desktop.message = "桌面连接就绪；选择账号后将更新全局默认".into();
                         if let Some(id) = self.db.desktop.selected.clone() {
                             let owned = self
                                 .index(&id)
@@ -445,10 +458,11 @@ impl Accounts {
                             }
                             if self.desktop.mode.as_deref() == Some("chatgpt")
                                 && self.db.switch.is_none()
+                                && self.desktop.pending_switch.is_none()
                                 && self.job.is_none()
                                 && self.pending_login.is_none()
                             {
-                                if let Err(e) = self.activate_desktop(&id, false) {
+                                if let Err(e) = self.activate_desktop(&id) {
                                     self.desktop.message = e.into();
                                 }
                                 return;
@@ -487,20 +501,14 @@ impl Accounts {
                         self.desktop.connected = false;
                         self.desktop.message = e.into();
                         self.desktop.target = None;
-                        // A just restarted desktop may need a few polls before its page is ready.
-                        if let Some((id, deadline)) = self.desktop.pending_switch.clone()
-                            && now() >= deadline
-                        {
-                            self.desktop.pending_switch = None;
-                            self.desktop.message = format!("桌面已重启但没有连上：{e}；切换未开始");
-                            self.desktop.action_feedback(&id, "failed");
-                        }
                     }
                 },
                 Ok(Completion::Relaunch { id, result }) => match result {
                     Ok(()) => {
-                        // A new desktop instance: the previous page target no longer exists.
+                        // A new desktop instance: the previous page target no longer exists, and
+                        // the switch waits until the new one has been polled.
                         self.desktop.target = None;
+                        self.desktop.connected = false;
                         self.desktop.pending_switch = Some((id.clone(), now() + 60));
                         self.desktop.last_poll = 0;
                         self.desktop.message = "桌面已以调试模式重启，正在连接后切换".into();
@@ -542,7 +550,11 @@ impl Accounts {
                 },
                 Err(_) => {
                     self.desktop.connected = false;
-                    self.desktop.message = "桌面操作中断，请核对并恢复".into();
+                    self.desktop.message = "桌面操作中断；下次轮询会重新核对".into();
+                    if let Some(id) = self.desktop.switching().map(String::from) {
+                        self.desktop.pending_switch = None;
+                        self.desktop.action_feedback(&id, "failed");
+                    }
                 }
             }
         }
@@ -599,8 +611,31 @@ impl Accounts {
             }
             return;
         }
-        // Also while a switch waits for recovery: recovering it needs the debug port.
-        if self.restart_undebugged_desktop() || self.db.switch.is_some() {
+        if let Some((id, deadline)) = self.desktop.pending_switch.clone() {
+            if self.desktop.connected && !self.switch_waits() {
+                self.desktop.pending_switch = None;
+                if let Err(message) = self.activate_desktop(&id) {
+                    self.desktop.message = format!("{message}；切换未开始");
+                    self.desktop.action_feedback(&id, "failed");
+                }
+                return;
+            }
+            if now() >= deadline {
+                self.desktop.pending_switch = None;
+                self.desktop.message = if self.desktop.connected {
+                    "等其他检查结束超时；切换未开始，可以再试一次".into()
+                } else {
+                    format!("桌面没有连上：{}；切换未开始", self.desktop.message)
+                };
+                self.desktop.action_feedback(&id, "failed");
+                return;
+            }
+            // Connected: wait for the work in the way. Otherwise poll until the desktop answers.
+            if self.desktop.connected {
+                return;
+            }
+        }
+        if self.restart_undebugged_desktop() {
             return;
         }
         if now() < self.desktop.last_poll + 2 {
@@ -611,6 +646,44 @@ impl Accounts {
         self.desktop.job = Some(std::thread::spawn(move || {
             Completion::Observe(client.call("poll", Value::Null))
         }));
+    }
+    // Codex itself never logs in with external tokens; only AuthManager does. So a desktop on such
+    // a login whose account is not the selected one is a switch that stopped part way, or outlived
+    // a restart of the service: finish it from what the desktop shows. True while that is handled.
+    fn finish_desktop_login(&mut self, observed: &Value) -> bool {
+        if self.desktop.mode.as_deref() != Some("chatgptAuthTokens") {
+            return false;
+        }
+        let Some(id) = self
+            .db
+            .accounts
+            .iter()
+            .find(|a| {
+                a.provider == "codex"
+                    && a.metadata.as_ref().map(|m| &m.owner) == self.desktop.owner.as_ref()
+            })
+            .map(|a| a.id.clone())
+        else {
+            return false;
+        };
+        if self.db.desktop.selected.as_deref() == Some(&id) {
+            return false;
+        }
+        // The default file has a writer of its own while a check or login runs; wait for it.
+        if now() < self.desktop.finish_after
+            || self.job.is_some()
+            || self.reset_job.is_some()
+            || self.pending_login.is_some()
+            || self.db.switch.is_some()
+        {
+            return true;
+        }
+        self.desktop.finish_after = now() + 30;
+        if let Err(message) = self.commit_desktop(&id, observed.clone()) {
+            self.desktop_log("finish_failed", Some(&id), message);
+            self.desktop.message = format!("桌面已登录另一个账号，默认文件还没同步：{message}");
+        }
+        true
     }
     // While AuthManager runs, a desktop that starts without the debug port (opened from the Dock,
     // or restarted by its updater) is restarted in debug mode once it has finished starting and
@@ -737,119 +810,6 @@ impl Accounts {
                 .client(&self.db.desktop)
                 .call("release", Value::Null);
         }
-    }
-    pub fn recover_desktop_native(&mut self, confirmed: bool) -> Result<()> {
-        if self.automation.job.is_some() || self.db.automation.run.is_some() {
-            return Err("请先停止并核对自动额度流程");
-        }
-        if !confirmed {
-            return Err("请确认已完全退出相关 Codex 客户端");
-        }
-        if self.job.is_some()
-            || self.desktop.job.is_some()
-            || self.pending_login.is_some()
-            || self.storage_fault.get()
-        {
-            return Err("请等待当前操作完成");
-        }
-        if (self.client_running)("codex") {
-            return Err("请完全退出 Codex 桌面和 CLI 后再恢复默认文件状态");
-        }
-        let operation = self
-            .db
-            .switch
-            .clone()
-            .filter(|s| s.desktop)
-            .ok_or("没有待恢复的桌面切换")?;
-        let native = self.native("codex")?.read(&self.platform)?;
-        let owner = native.metadata()?.owner;
-        let known = [Some(operation.target), operation.previous]
-            .into_iter()
-            .flatten()
-            .any(|id| {
-                self.index(&id)
-                    .ok()
-                    .and_then(|i| self.db.accounts[i].metadata.as_ref())
-                    .is_some_and(|m| m.owner == owner)
-            });
-        if !known {
-            return Err("默认文件是未知账号，未修改记录或登录");
-        }
-        self.adopt_native(native, "原生账号")?;
-        self.db.switch = None;
-        self.db.desktop.enabled = false;
-        self.db.desktop.selected = None;
-        self.desktop = desktop::Runtime::default();
-        self.notice =
-            Some("已按默认文件恢复，实验连接已关闭；可以检查或重新登录账号后再开启".into());
-        self.save()
-    }
-
-    pub fn reconcile_desktop(&mut self) -> Result<()> {
-        if self.automation.job.is_some() || self.db.automation.run.is_some() {
-            return Err("请先停止并核对自动额度流程");
-        }
-        if self.job.is_some()
-            || self.reset_job.is_some()
-            || self.pending_login.is_some()
-            || self.desktop.job.is_some()
-            || self.desktop.refresh.is_some()
-            || self.storage_fault.get()
-        {
-            return Err("请等待当前操作完成");
-        }
-        if !self.db.switch.as_ref().is_some_and(|s| s.desktop) || self.db.desktop.selected.is_some()
-        {
-            return Err("此切换不能仅通过核对原账号取消，请使用原恢复入口");
-        }
-        let client = self.desktop.client(&self.db.desktop);
-        self.desktop.message = "正在核对桌面和默认文件；不会重试账号切换".into();
-        self.desktop.job = Some(std::thread::spawn(move || {
-            Completion::Reconcile(client.call("probe", Value::Null))
-        }));
-        Ok(())
-    }
-
-    fn finish_desktop_reconcile(&mut self, value: Value) -> Result<()> {
-        use sha2::{Digest, Sha256};
-        let operation = self
-            .db
-            .switch
-            .clone()
-            .filter(|s| s.desktop)
-            .ok_or("没有待核对的桌面切换")?;
-        let previous = operation.previous.as_deref().ok_or("缺少原账号记录")?;
-        let account = &self.db.accounts[self.index(previous)?];
-        let native = self.native("codex")?.read(&self.platform)?;
-        let owner = native.metadata()?.owner;
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(
-                native.credential["tokens"]["access_token"]
-                    .as_str()
-                    .ok_or("原生认证缺少 Access token")?
-            )
-        );
-        if self.db.desktop.selected.is_some()
-            || previous == operation.target
-            || !account.native
-            || account.metadata.as_ref().is_none_or(|m| m.owner != owner)
-            || value["owner"] != owner
-            || value["mode"] != "chatgpt"
-            || !value["boundOwner"].is_null()
-            || value["hash"] != hash
-        {
-            return Err("尚不能确认桌面和文件均保持原账号；未取消切换记录");
-        }
-        self.desktop.observed(&value)?;
-        self.db.switch = None;
-        if let Err(message) = self.save() {
-            self.db.switch = Some(operation);
-            return Err(message);
-        }
-        self.desktop.message = "桌面连接就绪；已确认原账号保持，未执行的切换已取消".into();
-        self.notice = Some("已核对桌面与默认文件仍为原账号；未切换账号，未改写认证".into());
-        Ok(())
     }
 }
 fn validate_applied(value: &Value, owner: &str) -> Result<()> {

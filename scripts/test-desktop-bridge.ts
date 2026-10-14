@@ -13,7 +13,7 @@ function fixture() {
     let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,threadsResumed:boolean|undefined;
     // Latest turn status of a thread in systemError; null when the thread is not in that state.
     let errored:string|null=null;
-    let phase='idle',uiAvailable=true,uiFails=false,uiBegins=0,uiReconnects=0;
+    let phase='idle',uiAvailable=true,uiFails=false,uiBegins=0,uiReconnects=0,uiFailures=0,uiChanged:unknown=null;
     const listeners:((e:{data:any})=>void)[]=[], replies:any[]=[];
     let injections=0;
     const emit=(data:any)=>listeners.forEach(l=>l({data}));
@@ -46,13 +46,13 @@ function fixture() {
     };
     class Clock extends Date {static now():number{return Date.now()+clockOffset;}}
     const context=vm.createContext({window:{electronBridge:{sendMessageFromView:send},addEventListener:(_:string,l:(e:any)=>void)=>listeners.push(l),removeEventListener:(_:string,l:(e:any)=>void)=>{const i=listeners.indexOf(l);if(i>=0)listeners.splice(i,1)}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,atob,Date:Clock,setTimeout,clearTimeout});
-    context.__authManagerSelectiveUIV1={ready:()=>uiAvailable,state:()=>({phase}),begin:async()=>{uiBegins++;phase='switching'},reconnect:async()=>{uiReconnects++;if(uiFails)throw Error('ui_services_unavailable');phase='idle';return{contextPreserved:threadsResumed!==false,...threadsResumed===undefined?{}:{threadsResumed}}},failed:()=>{if(phase!=='idle')phase='failed'}};
+    context.__authManagerSelectiveUIV1={ready:()=>uiAvailable,state:()=>({phase}),begin:async()=>{uiBegins++;phase='switching'},reconnect:async()=>{uiReconnects++;if(uiFails)throw Error('ui_services_unavailable');phase='idle';return{contextPreserved:threadsResumed!==false,...threadsResumed===undefined?{}:{threadsResumed}}},failed:(changed:unknown)=>{uiFailures++;uiChanged=changed;phase='idle'}};
     vm.runInContext(source,context);
     const call=(operation:string,params:any={}):Promise<any>=>operation==='preflight'?vm.runInContext(preflightSource,context):context.__authManagerDesktopV1.call({operation,params});
     const auth=(user:string,generation=1)=>({accessToken:jwt(user,generation),chatgptAccountId:`workspace-${user}`,chatgptPlanType:'pro'});
     const apply=(user:string)=>call('apply',{previousOwner:'codex:a:workspace-a',owner:`codex:${user}:workspace-${user}`,auth:auth(user)});
     const refresh=(id:number,workspace='workspace-b')=>emit({type:'mcp-request',hostId:'local',request:{id,method:'account/chatgptAuthTokens/refresh',params:{reason:'unauthorized',previousAccountId:workspace}}});
-    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,phase,uiBegins,uiReconnects}),setUIAvailable:(v:boolean)=>{uiAvailable=v},setUIFails:(v:boolean)=>{uiFails=v},setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setThreadsResumed:(v:boolean)=>{threadsResumed=v}};
+    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,phase,uiBegins,uiReconnects,uiFailures,uiChanged}),setUIAvailable:(v:boolean)=>{uiAvailable=v},setUIFails:(v:boolean)=>{uiFails=v},setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setThreadsResumed:(v:boolean)=>{threadsResumed=v}};
 }
 let passed=0;
 async function test(name:string,run:()=>Promise<void>):Promise<void>{await run();passed++;console.log(`PASS ${name}`);}
@@ -103,13 +103,15 @@ await test('same-account adoption and token refresh do not rebuild UI services',
     assert.equal((await f.call('update',{previousOwner:'codex:a:workspace-a',owner:'codex:a:workspace-a',auth:f.auth('a',2)})).confirmed,true);
     assert.equal(f.state().uiBegins,0);assert.equal(f.state().uiReconnects,0);
 });
-await test('UI failure keeps recovery pending; recovery does not repeat successful login',async()=>{
+await test('a UI failure after the login hands the page back and leaves only a bind to finish',async()=>{
     const f=fixture();f.setUIFails(true);
     assert.equal((await f.apply('b')).code,'ui_services_unavailable');
-    assert.equal(f.state().phase,'failed');assert.equal(f.state().injections,1);
-    f.setUIFails(false);const result=await f.apply('b');
-    assert.equal(result.confirmed,true);assert.equal(result.contextPreserved,true);
-    assert.equal(f.state().injections,1);assert.equal(f.state().uiReconnects,2);
+    assert.equal(f.state().uiFailures,1);assert.equal(f.state().injections,1);
+    assert.equal(f.state().uiChanged,true,'the app-server holds b, so the page is handed back for a rebuild');
+    // The desktop is on b's login: the service binds it instead of logging in again.
+    const bound=await f.call('bind',{owner:'codex:b:workspace-b'});
+    assert.equal(bound.confirmed,true);assert.equal(bound.boundOwner,'codex:b:workspace-b');
+    assert.equal(f.state().injections,1);assert.equal(f.state().uiBegins,1);
 });
 await test('active task blocks injection, including empty active flags',async()=>{
     const f=fixture();f.setActive(true);assert.equal((await f.apply('b')).code,'tasks_active');assert.equal(f.state().injections,0);
@@ -126,10 +128,18 @@ await test('an open task that did not resume is reported, not failed',async()=>{
     assert.equal(result.confirmed,true);assert.equal(result.contextPreserved,false);assert.equal(result.threadsResumed,false);
 });
 await test('ack and changed memory cannot hide failed completion notification',async()=>{
+    // Codex keeps the tokens when its online account check fails (success:false, no account/updated):
+    // the page must be rebuilt on b even though its own account state never changed.
     const f=fixture();f.setSuccess(false);const r=await f.apply('b');assert.equal(r.confirmed,false);assert.equal(r.owner,'codex:b:workspace-b');
+    assert.equal(f.state().uiFailures,1);assert.equal(f.state().uiChanged,true);
 });
 await test('post-install account read failure is a partial operation',async()=>{
     const f=fixture();f.setReadFails(true);const r=await f.apply('b');assert.equal(r.ok,false);assert.equal(f.state().token,jwt('b'));assert.ok(!JSON.stringify(r).includes('synthetic-private-error'));
+    assert.equal(f.state().uiChanged,true);
+});
+await test('a refusal before any login hands the page back unchanged',async()=>{
+    const f=fixture();f.setUIAvailable(false);const r=await f.apply('b');assert.equal(r.code,'ui_adapter_unavailable');
+    assert.equal(f.state().injections,0);assert.equal(f.state().uiChanged,false);
 });
 await test('unrelated identity never injected',async()=>{
     const f=fixture();const r=await f.call('apply',{previousOwner:'other',owner:'codex:b:workspace-b',auth:f.auth('b')});assert.equal(r.code,'identity_changed');assert.equal(f.state().injections,0);

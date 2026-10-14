@@ -46,80 +46,217 @@ params = request.get('params') or {}
 auth = params.get('auth') or {}
 with (root / 'desktop-operations').open('a') as log:
     log.write(request['operation'] + '\n')
+digest = lambda token: hashlib.sha256(token.encode()).hexdigest()
+# The desktop runs on its own login from the default file until AuthManager logs it in.
+state_file = root / 'desktop-state.json'
+if state_file.exists():
+    state = json.loads(state_file.read_text())
+else:
+    token = json.loads((root / 'home/.codex/auth.json').read_text())['tokens']['access_token']
+    claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))['https://api.openai.com/auth']
+    state = {'owner':'codex:' + claims['chatgpt_user_id'] + ':' + claims['chatgpt_account_id'],'mode':'chatgpt','boundOwner':None,'hash':digest(token)}
+seen = {'ok':True,'target':'synthetic-target','instance':'synthetic-instance','requests':[],**state}
 if request['operation'] == 'preflight' and (root / 'fail-preflight').exists():
     refusal = {'ok':False,'code':(root / 'fail-preflight').read_text()}
     if (root / 'fail-preflight-tasks.json').exists(): refusal['tasks'] = json.loads((root / 'fail-preflight-tasks.json').read_text())
     print(json.dumps(refusal));sys.exit(0)
-if request['operation'] in ('preflight', 'probe'):
-    token = json.loads((root / 'home/.codex/auth.json').read_text())['tokens']['access_token']
-    claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))['https://api.openai.com/auth']
-    owner = 'codex:' + claims['chatgpt_user_id'] + ':' + claims['chatgpt_account_id']
-    response = {'ok':True,'owner':owner,'mode':'chatgpt','boundOwner':None,'target':'synthetic-target','instance':'synthetic-instance','hash':hashlib.sha256(token.encode()).hexdigest()}
-    if (root / 'probe-override.json').exists(): response.update(json.loads((root / 'probe-override.json').read_text()))
-    print(json.dumps(response));sys.exit(0)
-if request['operation'] == 'apply':
-    assert json.loads((root / 'accounts.sqlite3').read_text())['switch']['desktop']
+if request['operation'] == 'poll' and (root / 'poll.json').exists():
+    print((root / 'poll.json').read_text());sys.exit(0)
+if request['operation'] in ('preflight', 'probe', 'poll'):
+    print(json.dumps(seen));sys.exit(0)
+if request['operation'] == 'bind':
+    if state['mode'] != 'chatgptAuthTokens' or state['owner'] != params['owner']:
+        print(json.dumps({'ok':False,'code':'identity_changed'}));sys.exit(0)
+    state['boundOwner'] = state['owner'];state_file.write_text(json.dumps(state))
+    print(json.dumps({**seen,'boundOwner':state['owner'],'confirmed':True}));sys.exit(0)
 if request['operation'] == 'apply' and (root / 'rotate-to.json').exists():
     (root / 'home/.codex/auth.json').write_text((root / 'rotate-to.json').read_text())
     (root / 'rotate-to.json').unlink()
-if request['operation'] == 'poll' and (root / 'poll.json').exists():
-    print((root / 'poll.json').read_text());sys.exit(0)
 if request['operation'] == 'reply':
-    (root / 'reply-hash').write_text(hashlib.sha256(auth.get('accessToken','').encode()).hexdigest())
+    (root / 'reply-hash').write_text(digest(auth.get('accessToken','')))
 owner = params.get('owner', 'codex:a:workspace-a')
-response = {'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':hashlib.sha256(auth.get('accessToken','').encode()).hexdigest(),'requests':[]}
+# fail-completion: the login never lands. fail-after-login: it lands, then the page reconnect fails.
+landed = request['operation'] in ('apply', 'update') and not (root / 'fail-completion').exists()
+if landed:
+    state_file.write_text(json.dumps({'owner':owner,'mode':'chatgptAuthTokens','boundOwner':owner,'hash':digest(auth.get('accessToken',''))}))
+if landed and (root / 'fail-after-login').exists():
+    print(json.dumps({'ok':False,'code':'ui_services_unavailable'}));sys.exit(0)
+response = {'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':digest(auth.get('accessToken','')),'requests':[]}
 if request['operation'] == 'apply' and (root / 'apply-override.json').exists(): response.update(json.loads((root / 'apply-override.json').read_text()))
 print(json.dumps(response))
 "#;
 
+fn default_file(manager: &Accounts, fixture: &Fixture) -> Value {
+    manager
+        .native("codex")
+        .unwrap()
+        .read(&fixture.platform)
+        .unwrap()
+        .credential
+}
+// The next poll, as soon as the tick that asks for it runs.
+fn poll(manager: &mut Accounts) {
+    manager.desktop.last_poll = 0;
+    manager.desktop_tick();
+    finish(manager);
+}
+// What a failed switch leaves behind blocks nothing: checks, quota and the next switch all run.
+fn unblocked(manager: &Accounts) {
+    let snapshot = manager.snapshot();
+    assert_eq!(snapshot["recovery_needed"], false);
+    assert_eq!(snapshot["checks_blocked"], false);
+    assert!(manager.quota_paused().is_none());
+    assert!(manager.db.switch.is_none());
+    assert!(manager.ensure_idle().is_ok());
+}
+
 #[test]
-fn desktop_partial_commit_preserves_default_and_recovers_forward() {
+fn a_login_that_landed_before_the_switch_failed_is_finished_by_the_next_poll() {
+    let fixture = Fixture::new();
+    let (mut manager, a, b) = setup(&fixture);
+    fs::write(fixture.root.join("fail-after-login"), b"fixture").unwrap();
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    let action = manager.snapshot()["desktop"]["action"].clone();
+    assert_eq!(action["state"], "failed");
+    assert_eq!(action["message"], "账号服务尚未重新连接；切换没有完成");
+    assert_eq!(default_file(&manager, &fixture), a.credential);
+    assert!(manager.db.desktop.selected.is_none());
+    unblocked(&manager);
+    assert!(fixture.manager().db.switch.is_none());
+    // The desktop now shows b on AuthManager's login: the poll finishes the switch without
+    // logging in again.
+    fs::remove_file(fixture.root.join("fail-after-login")).unwrap();
+    poll(&mut manager);
+    assert_eq!(sent(&fixture), ["preflight", "apply", "poll", "bind"]);
+    assert_eq!(default_file(&manager, &fixture), b.credential);
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
+    assert!(manager.db.accounts[1].native && !manager.db.accounts[0].native);
+    assert_eq!(manager.snapshot()["desktop"]["action"]["state"], "complete");
+    assert_eq!(manager.snapshot()["desktop"]["managed"], true);
+    let ops: Vec<_> = desktop_log(&fixture)
+        .iter()
+        .map(|e| e["op"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ops.ends_with(&["apply_failed".into(), "finish".into(), "apply_done".into()]),
+        "{ops:?}"
+    );
+    // And back again, normally.
+    manager.activate("a", true).unwrap();
+    finish(&mut manager);
+    assert_eq!(default_file(&manager, &fixture), a.credential);
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("a"));
+    assert!(!manager.snapshot().to_string().contains("SYNTHETIC-"));
+}
+
+#[test]
+fn a_switch_whose_login_never_landed_changes_nothing_and_can_simply_be_asked_again() {
     let fixture = Fixture::new();
     let (mut manager, a, b) = setup(&fixture);
     fs::write(fixture.root.join("fail-completion"), b"fixture").unwrap();
     manager.activate("b", true).unwrap();
     finish(&mut manager);
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        a.credential
-    );
+    assert_eq!(manager.snapshot()["desktop"]["action"]["state"], "failed");
+    unblocked(&manager);
+    // The desktop is still on its own login: the poll leaves it and the default file alone.
+    poll(&mut manager);
+    assert_eq!(sent(&fixture), ["preflight", "apply", "poll"]);
+    assert_eq!(default_file(&manager, &fixture), a.credential);
     assert!(manager.db.accounts[0].native);
-    assert!(manager.db.switch.as_ref().unwrap().desktop);
-    assert!(manager.db.desktop.selected.is_none());
     fs::remove_file(fixture.root.join("fail-completion")).unwrap();
-    manager.recover().unwrap();
+    manager.activate("b", true).unwrap();
     finish(&mut manager);
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        b.credential
-    );
-    assert!(manager.db.switch.is_none());
+    assert_eq!(default_file(&manager, &fixture), b.credential);
     assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
-    assert!(manager.db.accounts[1].native);
-    manager.activate("a", true).unwrap();
-    finish(&mut manager);
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        a.credential
-    );
-    assert_eq!(manager.db.desktop.selected.as_deref(), Some("a"));
-    assert!(!manager.snapshot().to_string().contains("SYNTHETIC-"));
 }
+
+#[test]
+fn switching_to_the_account_the_desktop_is_already_on_only_syncs_the_default_file() {
+    let fixture = Fixture::new();
+    let (mut manager, _a, b) = setup(&fixture);
+    // A crash or an older version left the desktop on b's login with nothing recorded, and a
+    // task runs: no preflight, no login, so the task does not matter.
+    fs::write(fixture.root.join("fail-preflight"), "tasks_active").unwrap();
+    fs::write(
+        fixture.root.join("desktop-state.json"),
+        json!({"owner":"codex:b:workspace-b","mode":"chatgptAuthTokens","boundOwner":null,"hash":"held"}).to_string(),
+    )
+    .unwrap();
+    manager.desktop.finish_after = now() + 60;
+    poll(&mut manager);
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    assert_eq!(sent(&fixture), ["poll", "bind"]);
+    assert_eq!(default_file(&manager, &fixture), b.credential);
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
+    assert_eq!(manager.snapshot()["desktop"]["action"]["state"], "complete");
+}
+
+#[test]
+fn the_poll_finishes_only_logins_that_auth_manager_made() {
+    // The desktop's own login of another account, an unknown account, or a check that may write
+    // the default file: nothing is finished yet.
+    for (state, busy) in [
+        (
+            json!({"owner":"codex:b:workspace-b","mode":"chatgpt","boundOwner":null,"hash":"h"}),
+            false,
+        ),
+        (
+            json!({"owner":"codex:z:workspace-z","mode":"chatgptAuthTokens","boundOwner":null,"hash":"h"}),
+            false,
+        ),
+        (
+            json!({"owner":"codex:b:workspace-b","mode":"chatgptAuthTokens","boundOwner":null,"hash":"h"}),
+            true,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let (mut manager, a, _) = setup(&fixture);
+        fs::write(fixture.root.join("desktop-state.json"), state.to_string()).unwrap();
+        if busy {
+            manager.job = Some(Job {
+                id: "a".into(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                handle: std::thread::spawn(|| JobResult::ReadError("synthetic check")),
+            });
+        }
+        poll(&mut manager);
+        assert_eq!(sent(&fixture), ["poll"]);
+        assert_eq!(default_file(&manager, &fixture), a.credential);
+        assert!(manager.db.desktop.selected.is_none());
+        if let Some(job) = manager.job.take() {
+            let _ = job.handle.join();
+        }
+    }
+}
+
+#[test]
+fn a_finish_that_keeps_failing_is_retried_every_30_seconds_not_every_poll() {
+    let fixture = Fixture::new();
+    let (mut manager, a, _) = setup(&fixture);
+    fs::write(
+        fixture.root.join("desktop-state.json"),
+        json!({"owner":"codex:b:workspace-b","mode":"chatgptAuthTokens","boundOwner":null,"hash":"h"}).to_string(),
+    )
+    .unwrap();
+    manager.desktop.other_clients = || true;
+    poll(&mut manager);
+    poll(&mut manager);
+    assert_eq!(sent(&fixture), ["poll", "poll"]);
+    assert!(manager.desktop.message.contains("默认文件还没同步"));
+    let failures = desktop_log(&fixture)
+        .iter()
+        .filter(|e| e["op"] == "finish_failed")
+        .count();
+    assert_eq!(failures, 1);
+    assert_eq!(default_file(&manager, &fixture), a.credential);
+    manager.desktop.other_clients = || false;
+    manager.desktop.finish_after = 0;
+    poll(&mut manager);
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
+}
+
 #[test]
 fn same_account_adoption_keeps_generation_rotated_during_preflight() {
     let fixture = Fixture::new();
@@ -150,14 +287,9 @@ fn same_account_adoption_keeps_generation_rotated_during_preflight() {
     );
 }
 #[test]
-fn expired_target_journal_has_a_non_destructive_native_recovery_exit() {
+fn a_desktop_journal_left_by_an_older_version_is_dropped_on_load() {
     let fixture = Fixture::new();
-    let (mut manager, a, _b) = setup(&fixture);
-    let expired = bundle("b", 1, 1);
-    fixture
-        .platform
-        .vault_write("b", &expired.encoded())
-        .unwrap();
+    let (mut manager, a, _) = setup(&fixture);
     manager.db.switch = Some(Switch {
         provider: "codex".into(),
         target: "b".into(),
@@ -165,21 +297,12 @@ fn expired_target_journal_has_a_non_destructive_native_recovery_exit() {
         desktop: true,
     });
     manager.save().unwrap();
-    assert!(manager.recover().is_err());
-    manager.recover_desktop_native(true).unwrap();
-    assert!(manager.db.switch.is_none());
-    assert!(!manager.db.desktop.enabled);
-    assert!(manager.db.accounts[0].native);
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        a.credential
-    );
-    assert!(manager.ensure_idle().is_ok());
+    let reopened = fixture.manager();
+    assert!(reopened.db.switch.is_none());
+    assert!(reopened.notice.is_none());
+    assert!(reopened.ensure_idle().is_ok());
+    assert!(reopened.db.accounts[0].native);
+    assert_eq!(default_file(&reopened, &fixture), a.credential);
 }
 #[test]
 fn version_one_metadata_migrates_without_import_or_desktop_enablement() {
@@ -306,86 +429,76 @@ fn busy_thread_refusal_names_the_thread_and_leaves_no_standing_notice() {
     assert!(manager.db.switch.is_none());
 }
 
-fn pending(manager: &mut Accounts) {
-    manager.db.switch = Some(Switch {
-        provider: "codex".into(),
-        target: "b".into(),
-        previous: Some("a".into()),
-        desktop: true,
-    });
-    manager.save().unwrap();
-}
-
 #[test]
-fn reconcile_only_clears_a_proven_unapplied_managed_switch_without_auth_writes() {
-    let fixture = Fixture::new();
-    let (mut manager, a, b) = setup(&fixture);
-    pending(&mut manager);
-    manager.reconcile_desktop().unwrap();
-    finish(&mut manager);
-    assert!(manager.db.switch.is_none());
-    assert!(manager.db.accounts[0].native);
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        a.credential
-    );
-    assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
-    assert_eq!(fixture.platform.vault_read("b").unwrap(), b.encoded());
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("desktop-operations")).unwrap(),
-        "probe\n"
-    );
-}
-
-#[test]
-fn reconcile_retains_pending_on_external_changed_unknown_or_failed_evidence() {
-    for mismatch in [
-        json!({"mode":"chatgptAuthTokens"}),
-        json!({"owner":"codex:b:workspace-b"}),
-        json!({"hash":"different"}),
-        json!({"boundOwner":"codex:a:workspace-a"}),
-        json!({"ok":false,"code":"target_unavailable"}),
-    ] {
+fn a_switch_asked_for_during_a_poll_or_a_check_waits_for_it_and_then_starts() {
+    for poll_running in [true, false] {
         let fixture = Fixture::new();
-        let (mut manager, a, _) = setup(&fixture);
-        pending(&mut manager);
-        write_json(&fixture.root.join("probe-override.json"), &mismatch).unwrap();
-        manager.reconcile_desktop().unwrap();
-        finish(&mut manager);
-        assert!(manager.db.switch.is_some());
-        assert!(fixture.manager().db.switch.is_some());
+        let (mut manager, _, b) = setup(&fixture);
+        manager.desktop.connected = true;
+        let slow = std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(300)));
+        if poll_running {
+            manager.desktop.job = Some(std::thread::spawn(move || {
+                let _ = slow.join();
+                crate::desktop::Completion::Reply(Ok(json!({"ok":true})))
+            }));
+        } else {
+            manager.job = Some(Job {
+                id: "a".into(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                handle: std::thread::spawn(move || {
+                    let _ = slow.join();
+                    JobResult::ReadError("synthetic check")
+                }),
+            });
+        }
+        manager.activate("b", true).unwrap();
+        assert_eq!(manager.snapshot()["desktop"]["action"]["state"], "checking");
         assert_eq!(
-            manager
-                .native("codex")
-                .unwrap()
-                .read(&fixture.platform)
-                .unwrap()
-                .credential,
-            a.credential
+            manager.activate("b", true).unwrap_err(),
+            "正在切换账号，请等这次切换结束"
         );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while manager.snapshot()["desktop"]["action"]["state"] != "complete" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                manager.snapshot()["desktop"]
+            );
+            manager.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(default_file(&manager, &fixture), b.credential);
+        assert_eq!(sent(&fixture), ["preflight", "apply"]);
     }
 }
 
 #[test]
-fn reconcile_save_failure_keeps_journal_and_busy_binding_blocks_reconcile() {
+fn a_waiting_switch_gives_up_after_its_deadline_and_says_so() {
     let fixture = Fixture::new();
-    let (mut manager, _, _) = setup(&fixture);
-    pending(&mut manager);
-    manager.db.desktop.selected = Some("a".into());
-    assert!(manager.reconcile_desktop().is_err());
-    manager.db.desktop.selected = None;
-    fs::write(fixture.root.join("fail-db"), b"fixture").unwrap();
-    manager.reconcile_desktop().unwrap();
-    assert!(manager.reconcile_desktop().is_err());
-    finish(&mut manager);
-    assert!(manager.db.switch.is_some());
-    assert!(fixture.manager().db.switch.is_some());
-    assert!(manager.storage_fault.get());
+    let (mut manager, a, _) = setup(&fixture);
+    manager.desktop.connected = true;
+    manager.job = Some(Job {
+        id: "a".into(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        handle: std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            JobResult::ReadError("synthetic check")
+        }),
+    });
+    manager.activate("b", true).unwrap();
+    manager.desktop.pending_switch.as_mut().unwrap().1 = now();
+    manager.desktop_tick();
+    let action = manager.snapshot()["desktop"]["action"].clone();
+    assert_eq!(action["state"], "failed");
+    assert!(
+        action["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("切换未开始，可以再试一次")
+    );
+    assert!(manager.desktop.pending_switch.is_none());
+    assert_eq!(default_file(&manager, &fixture), a.credential);
+    let _ = manager.job.take().unwrap().handle.join();
 }
 
 static RELAUNCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -523,22 +636,6 @@ fn a_desktop_that_just_started_without_the_debug_port_is_restarted_once() {
     manager.desktop_tick();
     assert!(manager.desktop.job.is_none());
     assert_eq!(RESTARTS.load(SeqCst), before + 1);
-}
-
-#[test]
-fn a_switch_waiting_for_recovery_still_gets_its_desktop_restarted_in_debug_mode() {
-    use std::sync::atomic::Ordering::SeqCst;
-    let fixture = Fixture::new();
-    let (mut manager, _, _) = setup(&fixture);
-    pending(&mut manager);
-    manager.desktop.relaunch = counted_restart;
-    manager.desktop.undebugged = fresh_desktop;
-    DESKTOP_AGE.store(3, SeqCst);
-    let before = RESTARTS.load(SeqCst);
-    manager.desktop_tick();
-    finish(&mut manager);
-    assert_eq!(RESTARTS.load(SeqCst), before + 1);
-    assert!(manager.db.switch.is_some());
 }
 
 #[test]
@@ -789,7 +886,7 @@ fn a_switch_whose_open_task_did_not_resume_completes_and_says_what_to_do() {
 }
 
 #[test]
-fn a_failed_reconnect_names_the_recovery_action_once() {
+fn a_failed_reconnect_says_the_switch_did_not_finish_once() {
     let fixture = Fixture::new();
     let (mut manager, _, _) = setup(&fixture);
     fs::write(
@@ -799,10 +896,10 @@ fn a_failed_reconnect_names_the_recovery_action_once() {
     .unwrap();
     manager.activate("b", true).unwrap();
     finish(&mut manager);
-    assert!(manager.db.switch.is_some());
+    assert!(manager.db.switch.is_none());
     assert_eq!(
         manager.desktop.message,
-        "账号服务尚未重新连接；请恢复当前登录状态"
+        "账号服务尚未重新连接；切换没有完成"
     );
 }
 

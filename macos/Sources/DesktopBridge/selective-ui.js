@@ -1,10 +1,13 @@
-// Private renderer adapter with structural checks. No credentials, disk writes or navigation.
+// Private renderer adapter with structural checks. No credentials or disk writes; the only navigation
+// is the reload that hands a failed switch back to Codex's own reset.
 (() => {
   const key = '__authManagerSelectiveUIV1';
   const existing = globalThis[key];
-  if (existing?.revision === 5) return true;
-  // A switch is finished or recovered by the adapter that started it; an idle older one is replaced.
-  if (existing && ['switching','failed','reconnecting'].includes(existing.state().phase)) return true;
+  if (existing?.revision === 6) return true;
+  // A switch in flight is finished by the adapter that started it; an idle older one is replaced.
+  if (existing && ['switching','reconnecting'].includes(existing.state().phase)) return true;
+  // Revisions before 6 held the page after a failed switch, waiting for a recovery that no longer exists.
+  if (existing?.state().phase === 'failed') {setTimeout(() => location.reload(), 200); return true;}
   existing?.dispose();
   let refs, scope, hosts, boundary, fragmentKey, initialNonce, identity, client, boundaryName;
   let phase = 'uninstalled', epoch = 0, held = [], context, banner, stopQueries, stopInputs;
@@ -51,7 +54,7 @@
     if (patchedQueries.has(query)) return;
     const original = query.fetch;
     function fetch(...args) {
-      if (phase !== 'switching' && phase !== 'failed') return original.apply(this,args);
+      if (phase !== 'switching') return original.apply(this,args);
       const generation = epoch;
       return new Promise((resolve,reject) => held.push({resolve,reject,query:this,args,generation,original}));
     }
@@ -115,7 +118,7 @@
   function unblock() {stopInputs?.();stopInputs=undefined;banner?.remove();banner=undefined;context=undefined;}
   function intact() {return currentScope(locate()).node === scope.node;}
   function current(generation) {
-    if(generation!==epoch || !['switching','failed','reconnecting'].includes(phase) || !intact())throw Error('ui_adapter_unavailable');
+    if(generation!==epoch || !['switching','reconnecting'].includes(phase) || !intact())throw Error('ui_adapter_unavailable');
   }
   function retire() {
     ++epoch;phase='uninstalled';contextPreserved=null;
@@ -128,7 +131,7 @@
   }
 
   const adapter = {
-    revision:5,
+    revision:6,
     configure(name) {
       if(phase!=='uninstalled' || typeof name!=='string' || !/^[A-Za-z_$][\w$]*$/.test(name))return fail();
       boundaryName=name;return true;
@@ -184,13 +187,12 @@
     ready() {return phase!=='uninstalled' && intact();},
     validate() {capture();return true;},
     async begin(changesIdentity) {
-      if(!this.ready() || !['idle','failed'].includes(phase))throw Error('ui_adapter_busy');
-      if(phase==='failed')return; // Recovery reconnects; it must not discard the original context.
+      if(!this.ready() || phase!=='idle')throw Error('ui_adapter_busy');
       context=capture(); contextPreserved=null;identityMustChange=changesIdentity; ++epoch; connectedEpoch=-1; phase='switching'; block();
       await client.cancelQueries();
     },
     async reconnect(owner) {
-      if(!['switching','failed','reconnecting'].includes(phase) || !intact())throw Error('ui_adapter_unavailable');
+      if(!['switching','reconnecting'].includes(phase) || !intact())throw Error('ui_adapter_unavailable');
       const generation=epoch;
       const identityReady=()=>refs.Up.isReady() && (!identityMustChange || refs.Up.identityKey()!==identity);
       // Do not await a potentially broken hosted RPC; the readiness deadline belongs here,
@@ -248,14 +250,25 @@
       current(generation);
       contextPreserved=false; identity=refs.Up.identityKey(); phase='idle'; unblock(); return {ok:true,contextPreserved,threadsResumed:false};
     },
-    failed() {
-      if(phase==='uninstalled' || phase==='idle')return;
-      phase='failed';
-      if(banner)banner.textContent='账号切换尚未确认；页面与草稿已保留，请在 AuthManager 恢复当前登录状态。';
+    // A failed switch never holds the page. The app-server still on the old account (`accountChanged`
+    // false, from the bridge), the page too, and the manager not replaced: nothing changed, so the page
+    // goes back to idle as it was. Otherwise, or when unknown, the adapter steps aside and the page
+    // reloads on whatever account the app-server holds, as Codex's own reset would rebuild it.
+    failed(accountChanged=true) {
+      if(phase==='uninstalled' || phase==='idle')return {reloading:false};
+      if(accountChanged===false && connectedEpoch!==epoch && refs.Up.isReady() && refs.Up.identityKey()===identity) {
+        phase='idle';releaseQueries();unblock();
+        void client.refetchQueries({type:'active'}).catch(()=>{});
+        return {reloading:false};
+      }
+      retire();
+      // After the bridge has answered: the reload ends the evaluation it is part of.
+      setTimeout(()=>location.reload(),200);
+      return {reloading:true};
     },
     state() {return {phase,epoch,contextPreserved};},
     dispose() {
-      if(['switching','failed','reconnecting'].includes(phase))throw Error('ui_adapter_busy');
+      if(['switching','reconnecting'].includes(phase))throw Error('ui_adapter_busy');
       retire();
     },
   };

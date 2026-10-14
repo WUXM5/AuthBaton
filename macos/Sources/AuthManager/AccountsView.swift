@@ -200,19 +200,11 @@ struct AccountsView: View {
 
     @ViewBuilder private func alerts(_ directory: AccountDirectory) -> some View {
         if directory.recoveryNeeded {
+            // Only a plain switch interrupted while writing the default login; desktop switches keep no record.
             Callout(icon: "arrow.uturn.backward.circle.fill", tone: .danger, title: "上次切换尚未确认",
-                    message: "核对实际身份并恢复上次切换。请先结束相关任务；实验连接会同时核对桌面与默认文件。") {
-                HStack(spacing: 8) {
-                    Button("重试上次切换（结束任务后）") { Task { await service.accountOperation("accounts.recover") } }
-                        .buttonStyle(.borderedProminent)
-                    if directory.desktop?.enabled == true {
-                        Button("核对原账号，取消未执行的切换") { Task { await service.accountOperation("accounts.desktop_reconcile") } }
-                            .disabled(locked || directory.desktop?.busy == true)
-                        Button("已退出 Codex，按默认文件恢复") {
-                            Task { await service.accountOperation("accounts.desktop_recover_native", params: LoginParams(confirm: true)) }
-                        }
-                    }
-                }.controlSize(.small).padding(.top, 2)
+                    message: "上次切换在写入默认登录时中断。结束相关任务后重试，AuthManager 会按实际登录状态收尾。") {
+                Button("重试上次切换（结束任务后）") { Task { await service.accountOperation("accounts.recover") } }
+                    .buttonStyle(.borderedProminent).controlSize(.small).padding(.top, 2)
             }
         }
         if let notice = directory.notice {

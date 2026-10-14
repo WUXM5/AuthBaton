@@ -184,7 +184,7 @@ struct MenuBarPanel: View {
             ? "会更新 ~/.codex/auth.json。请先结束任务并退出 Codex 桌面和 CLI，停用 VS Code 的 Codex 插件或退出 VS Code，完成后重新打开。"
             : "会更新 Claude Code 默认登录，不用退出：运行中的会话约 30 秒内改用新账号；被额度打断的会话，切换 30 秒后在原会话按回车继续。"
         }
-        let disabled = working || service.accountBusy || directory.busy || directory.recoveryNeeded
+        let disabled = working || service.accountBusy || directory.switchDisabled(for: account)
         return VStack(alignment: .leading, spacing: 8) {
             Text(text).font(.caption).foregroundStyle(blocked ? Color.primary : Palette.muted).fixedSize(horizontal: false, vertical: true)
             if let error = service.accountError {

@@ -92,7 +92,7 @@ struct AccountInspector: View {
                 .disabled(locked)
         case .switchTo:
             wide(account.native ? "由 AuthManager 接管当前登录" : "设为 \(account.providerName) 当前账号", icon: "arrow.left.arrow.right") { open(.switchTo(account.id)) }
-                .disabled(locked)
+                .disabled(service.accountBusy || directory.switchDisabled(for: account))
         case .wait:
             // The detail line below says what it is waiting for.
             wide(account.health.title, icon: "hourglass") {}.disabled(true)
