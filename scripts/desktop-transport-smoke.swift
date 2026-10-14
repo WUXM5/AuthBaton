@@ -11,6 +11,8 @@ import Foundation
         do {_=try await cdp.call("synthetic/error",[:])}
         catch {rejected=true;precondition(!String(describing:error).contains("SYNTHETIC_PRIVATE_ERROR"))}
         precondition(rejected)
+        let large=try await cdp.call("synthetic/large",[:])
+        precondition(((large["result"] as? [String:Any])?["value"] as? String)?.utf8.count ?? 0 > 16*1024*1024, "a module scope listing over 16 MiB must arrive whole")
         let installer=try String(contentsOfFile:CommandLine.arguments[2],encoding:.utf8)
         for _ in 0..<2 {
             let installed=try await cdp.evaluate(installer) as? Bool

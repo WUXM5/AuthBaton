@@ -15,11 +15,14 @@ const sockets=new Set<Socket>();let calls=0;
 const temporary=mkdtempSync(join(tmpdir(),'authmanager-cdp-transport-'));
 function frame(value:unknown):Buffer {
     const payload=Buffer.from(JSON.stringify(value));
-    assert.ok(payload.length<65536);
-    const h=Buffer.alloc(payload.length<126?2:4);h[0]=0x81;
-    if(h.length===2)h[1]=payload.length;else{h[1]=126;h.writeUInt16BE(payload.length,2);}
+    const h=Buffer.alloc(payload.length<126?2:payload.length<65536?4:10);h[0]=0x81;
+    if(h.length===2)h[1]=payload.length;
+    else if(h.length===4){h[1]=126;h.writeUInt16BE(payload.length,2);}
+    else{h[1]=127;h.writeBigUInt64BE(BigInt(payload.length),2);}
     return Buffer.concat([h,payload]);
 }
+// Larger than the 16.8 MB module scope listing of Codex desktop 26.1007.
+const LARGE=17*1024*1024;
 const server=createServer();
 server.on('upgrade',(req,socket)=>{
     const s=socket as Socket;sockets.add(s);s.on('close',()=>sockets.delete(s));
@@ -44,6 +47,8 @@ server.on('upgrade',(req,socket)=>{
                 ? vm.runInContext(message.params.expression,renderer) : {fixture:true};
             s.write(frame(message.method==='synthetic/error'
                 ?{id:message.id,error:{code:-32603,message:'SYNTHETIC_PRIVATE_ERROR'}}
+                :message.method==='synthetic/large'
+                ?{id:message.id,result:{result:{value:'x'.repeat(LARGE)}}}
                 :{id:message.id,result:{result:evaluated===undefined?{type:'undefined'}:{value:evaluated}}}));
         }
     });
@@ -54,6 +59,6 @@ try {
     const binary=join(temporary,'transport-smoke');
     execFileSync('xcrun',['swiftc','-parse-as-library','-swift-version','6','-sdk','/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk','macos/Sources/DesktopBridge/CDP.swift','scripts/desktop-transport-smoke.swift','-o',binary],{stdio:'inherit'});
     const child=spawn(binary,[String(address.port),'macos/Sources/DesktopBridge/automatic.js'],{stdio:'inherit'});
-    const [code]=await once(child,'exit');assert.equal(code,0);assert.equal(calls,4);
+    const [code]=await once(child,'exit');assert.equal(code,0);assert.equal(calls,5);
     console.log(JSON.stringify({cdpTextRequests:calls,realDesktopMutations:0}));
 } finally {for(const socket of sockets)socket.destroy();server.close();rmSync(temporary,{recursive:true,force:true});}

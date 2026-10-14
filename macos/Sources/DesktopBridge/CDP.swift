@@ -5,7 +5,9 @@ import Foundation
 final class CDP {
     let socket: URLSessionWebSocketTask
     var serial=0
-    init(url: URL) { socket=URLSession(configuration: .ephemeral).webSocketTask(with:url); socket.maximumMessageSize=16*1024*1024; socket.resume() }
+    // Resolving the adapter lists a whole module scope: 16.8 MB for Codex desktop 26.1007's main module.
+    static let maximumMessage=64*1024*1024
+    init(url: URL) { socket=URLSession(configuration: .ephemeral).webSocketTask(with:url); socket.maximumMessageSize=CDP.maximumMessage; socket.resume() }
     func call(_ method:String, _ params:[String:Any]) async throws -> [String:Any] {
         serial += 1
         let id=serial
@@ -17,7 +19,7 @@ final class CDP {
             let message=try await socket.receive()
             let data:Data
             switch message { case .data(let d):data=d; case .string(let s):data=Data(s.utf8); @unknown default:throw Failure.invalid }
-            guard data.count<16*1024*1024, let value=try JSONSerialization.jsonObject(with:data) as? [String:Any] else {throw Failure.invalid}
+            guard data.count<CDP.maximumMessage, let value=try JSONSerialization.jsonObject(with:data) as? [String:Any] else {throw Failure.invalid}
             if value["id"] as? Int == id {
                 guard value["error"]==nil, let result=value["result"] as? [String:Any] else {throw Failure.invalid}
                 return result
