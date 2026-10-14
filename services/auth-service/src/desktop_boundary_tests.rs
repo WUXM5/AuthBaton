@@ -75,14 +75,13 @@ if request['operation'] == 'apply' and (root / 'rotate-to.json').exists():
 if request['operation'] == 'reply':
     (root / 'reply-hash').write_text(digest(auth.get('accessToken','')))
 owner = params.get('owner', 'codex:a:workspace-a')
-# fail-completion: the login never lands. fail-after-login: it lands, then the page reconnect fails.
+# fail-completion: the login never lands. fail-after-login: it lands, then Codex stops answering.
 landed = request['operation'] in ('apply', 'update') and not (root / 'fail-completion').exists()
 if landed:
     state_file.write_text(json.dumps({'owner':owner,'mode':'chatgptAuthTokens','boundOwner':owner,'hash':digest(auth.get('accessToken',''))}))
 if landed and (root / 'fail-after-login').exists():
-    print(json.dumps({'ok':False,'code':'ui_services_unavailable'}));sys.exit(0)
+    print(json.dumps({'ok':False,'code':'rpc_timeout'}));sys.exit(0)
 response = {'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':digest(auth.get('accessToken','')),'requests':[]}
-if request['operation'] == 'apply' and (root / 'apply-override.json').exists(): response.update(json.loads((root / 'apply-override.json').read_text()))
 print(json.dumps(response))
 "#;
 
@@ -119,7 +118,10 @@ fn a_login_that_landed_before_the_switch_failed_is_finished_by_the_next_poll() {
     finish(&mut manager);
     let action = manager.snapshot()["desktop"]["action"].clone();
     assert_eq!(action["state"], "failed");
-    assert_eq!(action["message"], "账号服务尚未重新连接；切换没有完成");
+    assert_eq!(
+        action["message"],
+        "调试端口已连接，但 Codex 账号服务响应超时；请稍后重试；切换没有完成"
+    );
     assert_eq!(default_file(&manager, &fixture), a.credential);
     assert!(manager.db.desktop.selected.is_none());
     unblocked(&manager);
@@ -847,60 +849,6 @@ fn a_switch_is_logged_without_credentials_and_reports_takeover() {
     for secret in ["SYNTHETIC-", "x.ey", "example.invalid", "workspace-"] {
         assert!(!text.contains(secret), "{secret}");
     }
-}
-
-#[test]
-fn a_switch_whose_open_task_did_not_resume_completes_and_says_what_to_do() {
-    let fixture = Fixture::new();
-    let (mut manager, _, b) = setup(&fixture);
-    fs::write(
-        fixture.root.join("apply-override.json"),
-        br#"{"contextPreserved":false,"threadsResumed":false}"#,
-    )
-    .unwrap();
-    manager.activate("b", true).unwrap();
-    finish(&mut manager);
-    // The account is in place, so nothing is left to recover.
-    assert!(manager.db.switch.is_none());
-    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
-    assert_eq!(
-        manager
-            .native("codex")
-            .unwrap()
-            .read(&fixture.platform)
-            .unwrap()
-            .credential,
-        b.credential
-    );
-    assert!(manager.desktop.message.contains("切到别的任务再切回来"));
-    assert_eq!(
-        manager.notice.as_deref(),
-        Some(manager.desktop.message.as_str())
-    );
-    let log = desktop_log(&fixture);
-    assert_eq!(log.last().unwrap()["op"], "apply_done");
-    assert_eq!(
-        log.last().unwrap()["reason"],
-        "已切换；打开的任务没有自动重连"
-    );
-}
-
-#[test]
-fn a_failed_reconnect_says_the_switch_did_not_finish_once() {
-    let fixture = Fixture::new();
-    let (mut manager, _, _) = setup(&fixture);
-    fs::write(
-        fixture.root.join("apply-override.json"),
-        br#"{"ok":false,"code":"ui_services_unavailable"}"#,
-    )
-    .unwrap();
-    manager.activate("b", true).unwrap();
-    finish(&mut manager);
-    assert!(manager.db.switch.is_none());
-    assert_eq!(
-        manager.desktop.message,
-        "账号服务尚未重新连接；切换没有完成"
-    );
 }
 
 #[test]

@@ -24,7 +24,6 @@ function fixture() {
     throw Error('unexpected');
   };
   const ctx=vm.createContext({crypto:webcrypto,setTimeout,Date});
-  ctx.__authManagerSelectiveUIV1={ready:()=>true,validate:()=>true,state:()=>({phase:'idle'})};
   vm.runInContext(source,ctx);
   const run=ctx.__authManagerTasksV1({rpc,instance:'renderer',status:async()=>({owner}),idle:async()=>{}});
   return {calls,owner:(s:string)=>{owner=s},delay:()=>{delayed=true},entered,release:unblock,

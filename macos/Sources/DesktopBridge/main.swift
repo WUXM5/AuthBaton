@@ -39,10 +39,6 @@ struct DesktopBridge {
                 guard try await cdp.evaluate(String(contentsOf:tasksURL,encoding:.utf8)) as? Bool == true,
                       try await cdp.evaluate(script) as? Bool == true else {throw Failure.invalid}
             } catch {emit(["ok":false,"code":"bridge_install_failed"]);return}
-            if operation == "auto_prepare" {
-                guard let uiURL=Bundle.module.url(forResource:"selective-ui",withExtension:"js") else {throw Failure.invalid}
-                try await SelectiveUI.install(on:cdp,script:try String(contentsOf:uiURL,encoding:.utf8),mapping:try SelectiveSymbols.read(app:app))
-            }
             let payload=try JSONSerialization.data(withJSONObject:["operation":operation,"params":input["params"] ?? [:]])
             let expression: String
             if operation == "preflight" {
@@ -52,15 +48,9 @@ struct DesktopBridge {
                 expression="globalThis.__authManagerDesktopV1.call("+String(decoding:payload,as:UTF8.self)+")"
             }
             guard var result=try await cdp.evaluate(expression) as? [String:Any] else {throw Failure.invalid}
-            if operation == "preflight", result["ok"] as? Bool == true {
-                guard let uiURL=Bundle.module.url(forResource:"selective-ui",withExtension:"js") else {throw Failure.invalid}
-                try await SelectiveUI.install(on:cdp,script:try String(contentsOf:uiURL,encoding:.utf8),mapping:try SelectiveSymbols.read(app:app))
-                if let validation=try await cdp.evaluate("(()=>{try{return {ok:globalThis.__authManagerSelectiveUIV1.validate()}}catch(e){return {ok:false,code:e.message==='ui_scope_unsupported'?'ui_scope_unsupported':'ui_adapter_unavailable'}}})()") as? [String:Any], validation["ok"] as? Bool != true {result=validation}
-            }
             result["target"]=target["id"];result["appVersion"]=appVersion
             emit(result)
-        } catch let failure as UIAdapterFailure {emit(["ok":false,"code":failure.rawValue])}
-        catch let failure as ConnectionFailure {emit(["ok":false,"code":failure.rawValue])}
+        } catch let failure as ConnectionFailure {emit(["ok":false,"code":failure.rawValue])}
         catch {emit(["ok":false,"code":"connection_failed"])}
     }
     static func output(_ executable:String,_ args:[String]) throws -> String {

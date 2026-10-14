@@ -9,11 +9,12 @@ const preflightSource=readFileSync(new URL('../macos/Sources/DesktopBridge/prefl
 function jwt(user:string,generation=1):string {
     return `header.${Buffer.from(JSON.stringify({exp:2000000000,generation,'https://api.openai.com/auth':{chatgpt_user_id:user,chatgpt_account_id:`workspace-${user}`}})).toString('base64url')}.synthetic`;
 }
-function fixture() {
-    let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,threadsResumed:boolean|undefined;
+// oldAdapter: phase of a page adapter left in the page by a release before 0.18.
+function fixture(oldAdapter?:string) {
+    let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,landed=true;
     // Latest turn status of a thread in systemError; null when the thread is not in that state.
     let errored:string|null=null;
-    let phase='idle',uiAvailable=true,uiFails=false,uiBegins=0,uiReconnects=0,uiFailures=0,uiChanged:unknown=null;
+    let reloads=0,disposed=0;
     const listeners:((e:{data:any})=>void)[]=[], replies:any[]=[];
     let injections=0;
     const emit=(data:any)=>listeners.forEach(l=>l({data}));
@@ -31,7 +32,7 @@ function fixture() {
             case 'thread/loaded/list':result={data:['synthetic-thread'],nextCursor:null};break;
             case 'thread/read':result={thread:{name:'合成任务',status:{type:active?'active':errored?'systemError':'idle',activeFlags:[]}}};break;
             case 'thread/turns/list':assert.equal(params.limit,1);result={data:[{id:'synthetic-turn',status:errored??'completed',items:[]}],nextCursor:null};break;
-            case 'account/login/start':token=params.accessToken;mode='chatgptAuthTokens';injections++;result={type:mode};break;
+            case 'account/login/start':injections++;if(landed){token=params.accessToken;mode='chatgptAuthTokens';}result={type:'chatgptAuthTokens'};break;
             case 'account/read':result={account:{type:'chatgpt'}};break;
             default:throw Error('unexpected fixture method');
         }
@@ -39,21 +40,23 @@ function fixture() {
             emit({type:'mcp-response',hostId:'local',message:{id,...readFails&&method==='account/read'?{error:{code:-32603,message:'synthetic-private-error'}}:{result}}});
             if(method==='account/login/start') {
                 // Codex reads the account online before it reports completion.
-                const complete=()=>{notify('account/login/completed',{loginId:null,success});if(success)notify('account/updated',{authMode:mode});};
+                const complete=()=>{notify('account/login/completed',{loginId:null,success:success&&landed});if(success&&landed)notify('account/updated',{authMode:mode});};
                 if(completionDelay)setTimeout(complete,completionDelay);else complete();
             }
         });
     };
     class Clock extends Date {static now():number{return Date.now()+clockOffset;}}
-    const context=vm.createContext({window:{electronBridge:{sendMessageFromView:send},addEventListener:(_:string,l:(e:any)=>void)=>listeners.push(l),removeEventListener:(_:string,l:(e:any)=>void)=>{const i=listeners.indexOf(l);if(i>=0)listeners.splice(i,1)}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,atob,Date:Clock,setTimeout,clearTimeout});
-    context.__authManagerSelectiveUIV1={ready:()=>uiAvailable,state:()=>({phase}),begin:async()=>{uiBegins++;phase='switching'},reconnect:async()=>{uiReconnects++;if(uiFails)throw Error('ui_services_unavailable');phase='idle';return{contextPreserved:threadsResumed!==false,...threadsResumed===undefined?{}:{threadsResumed}}},failed:(changed:unknown)=>{uiFailures++;uiChanged=changed;phase='idle'}};
+    const context=vm.createContext({window:{electronBridge:{sendMessageFromView:send},addEventListener:(_:string,l:(e:any)=>void)=>listeners.push(l),removeEventListener:(_:string,l:(e:any)=>void)=>{const i=listeners.indexOf(l);if(i>=0)listeners.splice(i,1)}},location:{reload:()=>{reloads++}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,atob,Date:Clock,setTimeout,clearTimeout});
+    if(oldAdapter)context.__authManagerSelectiveUIV1={revision:6,state:()=>({phase:oldAdapter}),dispose:()=>{disposed++}};
     vm.runInContext(source,context);
     const call=(operation:string,params:any={}):Promise<any>=>operation==='preflight'?vm.runInContext(preflightSource,context):context.__authManagerDesktopV1.call({operation,params});
     const auth=(user:string,generation=1)=>({accessToken:jwt(user,generation),chatgptAccountId:`workspace-${user}`,chatgptPlanType:'pro'});
     const apply=(user:string)=>call('apply',{previousOwner:'codex:a:workspace-a',owner:`codex:${user}:workspace-${user}`,auth:auth(user)});
     const refresh=(id:number,workspace='workspace-b')=>emit({type:'mcp-request',hostId:'local',request:{id,method:'account/chatgptAuthTokens/refresh',params:{reason:'unauthorized',previousAccountId:workspace}}});
-    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,phase,uiBegins,uiReconnects,uiFailures,uiChanged}),setUIAvailable:(v:boolean)=>{uiAvailable=v},setUIFails:(v:boolean)=>{uiFails=v},setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setThreadsResumed:(v:boolean)=>{threadsResumed=v}};
+    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,reloads,disposed,adapter:context.__authManagerSelectiveUIV1}),setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setLanded:(v:boolean)=>{landed=v}};
 }
+// A reload is scheduled 200 ms after the bridge answers.
+const settled=()=>new Promise(resolve=>setTimeout(resolve,250));
 let passed=0;
 async function test(name:string,run:()=>Promise<void>):Promise<void>{await run();passed++;console.log(`PASS ${name}`);}
 await test('preflight reads identity and idle status without injecting credentials',async()=>{
@@ -87,31 +90,17 @@ await test('systemError blocks preflight and apply only while the latest turn is
     assert.equal((await f.apply('b')).ok,true);
     assert.equal(f.state().injections,1);
 });
-await test('same process switch and account confirmation',async()=>{
+await test('same process switch and account confirmation; Codex rebuilds its own page',async()=>{
     const f=fixture();assert.equal((await f.apply('b')).confirmed,true);
     const result=await f.call('apply',{previousOwner:'codex:b:workspace-b',owner:'codex:a:workspace-a',auth:f.auth('a')});
     assert.equal(result.confirmed,true);assert.equal(f.state().injections,2);
     assert.ok(!JSON.stringify(result).includes('accessToken'));
+    await settled();assert.equal(f.state().reloads,0);
 });
-await test('unsupported UI adapter rejects before changing authentication',async()=>{
-    const f=fixture();f.setUIAvailable(false);
-    assert.equal((await f.apply('b')).code,'ui_adapter_unavailable');
-    assert.equal(f.state().injections,0);assert.equal(f.state().uiBegins,0);
-});
-await test('same-account adoption and token refresh do not rebuild UI services',async()=>{
+await test('same-account adoption and token refresh never reload the page',async()=>{
     const f=fixture();assert.equal((await f.apply('a')).confirmed,true);
     assert.equal((await f.call('update',{previousOwner:'codex:a:workspace-a',owner:'codex:a:workspace-a',auth:f.auth('a',2)})).confirmed,true);
-    assert.equal(f.state().uiBegins,0);assert.equal(f.state().uiReconnects,0);
-});
-await test('a UI failure after the login hands the page back and leaves only a bind to finish',async()=>{
-    const f=fixture();f.setUIFails(true);
-    assert.equal((await f.apply('b')).code,'ui_services_unavailable');
-    assert.equal(f.state().uiFailures,1);assert.equal(f.state().injections,1);
-    assert.equal(f.state().uiChanged,true,'the app-server holds b, so the page is handed back for a rebuild');
-    // The desktop is on b's login: the service binds it instead of logging in again.
-    const bound=await f.call('bind',{owner:'codex:b:workspace-b'});
-    assert.equal(bound.confirmed,true);assert.equal(bound.boundOwner,'codex:b:workspace-b');
-    assert.equal(f.state().injections,1);assert.equal(f.state().uiBegins,1);
+    await settled();assert.equal(f.state().reloads,0);
 });
 await test('active task blocks injection, including empty active flags',async()=>{
     const f=fixture();f.setActive(true);assert.equal((await f.apply('b')).code,'tasks_active');assert.equal(f.state().injections,0);
@@ -120,29 +109,44 @@ await test('a login Codex completes after 2.5 seconds is still confirmed',async(
     // Ten real switches took 0.9–1.95 s from the ack to completion; the old 2 s wait had no margin.
     const f=fixture();f.setCompletionDelay(2500);
     const result=await f.apply('b');
-    assert.equal(result.confirmed,true);assert.equal(result.threadsResumed,true);assert.equal(f.state().phase,'idle');
+    assert.equal(result.confirmed,true);
+    await settled();assert.equal(f.state().reloads,0);
 });
-await test('an open task that did not resume is reported, not failed',async()=>{
-    const f=fixture();f.setThreadsResumed(false);
-    const result=await f.apply('b');
-    assert.equal(result.confirmed,true);assert.equal(result.contextPreserved,false);assert.equal(result.threadsResumed,false);
-});
-await test('ack and changed memory cannot hide failed completion notification',async()=>{
+await test('a login Codex kept without telling its page reloads the page and leaves only a bind',async()=>{
     // Codex keeps the tokens when its online account check fails (success:false, no account/updated):
-    // the page must be rebuilt on b even though its own account state never changed.
+    // its page still shows a, so it reloads onto the account the app-server holds.
     const f=fixture();f.setSuccess(false);const r=await f.apply('b');assert.equal(r.confirmed,false);assert.equal(r.owner,'codex:b:workspace-b');
-    assert.equal(f.state().uiFailures,1);assert.equal(f.state().uiChanged,true);
+    await settled();assert.equal(f.state().reloads,1);
+    // The desktop is on b's login: the service binds it instead of logging in again.
+    const bound=await f.call('bind',{owner:'codex:b:workspace-b'});
+    assert.equal(bound.confirmed,true);assert.equal(bound.boundOwner,'codex:b:workspace-b');
+    assert.equal(f.state().injections,1);
 });
-await test('post-install account read failure is a partial operation',async()=>{
+await test('a login that never landed leaves the page alone',async()=>{
+    const f=fixture();f.setLanded(false);const r=await f.apply('b');assert.equal(r.confirmed,false);assert.equal(r.owner,'codex:a:workspace-a');
+    await settled();assert.equal(f.state().reloads,0);
+});
+await test('post-install account read failure is a partial operation; the page follows account/updated',async()=>{
     const f=fixture();f.setReadFails(true);const r=await f.apply('b');assert.equal(r.ok,false);assert.equal(f.state().token,jwt('b'));assert.ok(!JSON.stringify(r).includes('synthetic-private-error'));
-    assert.equal(f.state().uiChanged,true);
+    // Codex announced the new account, so its page rebuilds by itself.
+    await settled();assert.equal(f.state().reloads,0);
+    const g=fixture();g.setReadFails(true);g.setSuccess(false);assert.equal((await g.apply('b')).ok,false);
+    await settled();assert.equal(g.state().reloads,1);
 });
-await test('a refusal before any login hands the page back unchanged',async()=>{
-    const f=fixture();f.setUIAvailable(false);const r=await f.apply('b');assert.equal(r.code,'ui_adapter_unavailable');
-    assert.equal(f.state().injections,0);assert.equal(f.state().uiChanged,false);
-});
-await test('unrelated identity never injected',async()=>{
+await test('unrelated identity never injected, and the page is left alone',async()=>{
     const f=fixture();const r=await f.call('apply',{previousOwner:'other',owner:'codex:b:workspace-b',auth:f.auth('b')});assert.equal(r.code,'identity_changed');assert.equal(f.state().injections,0);
+    await settled();assert.equal(f.state().reloads,0);
+});
+await test('a page adapter from an older release is removed; one still holding the page is reloaded',async()=>{
+    const idle=fixture('idle');
+    assert.equal(idle.state().disposed,1);assert.equal(idle.state().adapter,undefined);
+    assert.equal((await idle.apply('b')).confirmed,true);
+    await settled();assert.equal(idle.state().reloads,0);
+    for(const phase of ['failed','switching']) {
+        const held=fixture(phase);
+        assert.equal(held.state().disposed,0);assert.equal(held.state().adapter,undefined);
+        await settled();assert.equal(held.state().reloads,1,phase);
+    }
 });
 await test('refresh pins epoch, instance, identity; switch blocked until reply commits',async()=>{
     const f=fixture();await f.apply('b');f.refresh(100);let p=await f.call('poll');const request=p.requests[0];
