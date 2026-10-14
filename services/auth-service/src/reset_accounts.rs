@@ -24,7 +24,7 @@ impl Accounts {
             .iter()
             .find(|attempt| attempt.request_id == request_id)
             .map(|attempt| attempt.credit_id.clone())
-            .ok_or("缺少重置次数标识")
+            .ok_or("缺少重置卡标识")
     }
     pub(super) fn reset_quota_with_trigger(
         &mut self,
@@ -36,7 +36,7 @@ impl Accounts {
     ) -> Result<()> {
         let started_at = now();
         if !confirmed {
-            return Err("请再次确认：本操作会使用 1 次额度重置");
+            return Err("请再次确认：这个操作会用掉 1 张重置卡");
         }
         self.ensure_idle()?;
         let account = self.db.accounts[self.index(id)?].clone();
@@ -68,7 +68,7 @@ impl Accounts {
         if let Some(index) = existing {
             let attempt = &self.db.reset_attempts[index];
             if attempt.account_id != id || attempt.credit_id != credit_id {
-                return Err("重置操作与原账号或重置次数不匹配");
+                return Err("重置操作与原账号或重置卡不匹配");
             }
             if !attempt.outcome.unresolved() {
                 return Ok(());
@@ -79,7 +79,7 @@ impl Accounts {
                 && attempt.outcome.unresolved()
                 && attempt.request_id != request_id
         }) {
-            return Err("上次重置结果待确认，请重试上次操作，不能改用新的重置次数");
+            return Err("上次重置结果待确认，请重试上次操作，不能改用新的重置卡");
         }
         let bundle = self.bundle(&account)?;
         let owner = bundle.metadata()?.owner;
@@ -97,7 +97,7 @@ impl Accounts {
             let expires_at = self
                 .quota
                 .credit(id, credit_id, now())
-                .ok_or("请先检查用量，取得有效的重置次数明细")?;
+                .ok_or("请先检查用量，取得有效的重置卡明细")?;
             self.db.reset_attempts.push(Attempt {
                 account_id: id.into(),
                 owner,

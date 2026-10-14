@@ -9,7 +9,7 @@ impl Accounts {
     ) -> Result<()> {
         config.validate()?;
         if config.enabled && !confirmed {
-            return Err("请确认允许按规则暂停桌面任务、切换账号及消耗已开启账号的重置次数");
+            return Err("请确认允许按规则暂停桌面任务、切换账号及用掉已开启账号的重置卡");
         }
         self.ensure_idle()?;
         for rule in &config.accounts {
@@ -213,7 +213,7 @@ impl Accounts {
             reasons.push(if self.db.automation.latches.contains_key(&account.id) {
                 "这一轮已重置过"
             } else {
-                "没有可用的重置次数"
+                "没有可用的重置卡"
             });
         }
         if rule.order.switches() && account.native {
