@@ -2,7 +2,7 @@
 (() => {
   const key = '__authManagerSelectiveUIV1';
   const existing = globalThis[key];
-  if (existing?.revision === 3) return true;
+  if (existing?.revision === 4) return true;
   // A switch is finished or recovered by the adapter that started it; an idle older one is replaced.
   if (existing && ['switching','failed','reconnecting'].includes(existing.state().phase)) return true;
   existing?.dispose();
@@ -124,7 +124,7 @@
   }
 
   const adapter = {
-    revision:3,
+    revision:4,
     configure(name) {
       if(phase!=='uninstalled' || typeof name!=='string' || !/^[A-Za-z_$][\w$]*$/.test(name))return fail();
       boundaryName=name;return true;
@@ -136,7 +136,7 @@
         this.dispose();
       }
       refs=values; boundaryName??=values._Sl?.name; boundary=locate(); scope=currentScope(boundary); client=scope.queryClient;
-      if(typeof refs.X3?.prototype?.refreshRendererManager!=='function')return fail();
+      if(typeof refs.X3?.prototype?.addManager!=='function' || typeof refs.loi!=='function')return fail();
       hosts=new refs.X3(scope);
       const fragment=boundary.child?.child;
       if (boundary.type!==refs._Sl || fragment?.tag!==7 || typeof fragment.key!=='string' || fragment.child?.type!==refs.qwl) return fail();
@@ -195,7 +195,11 @@
       current(generation);
       if(!identityReady())throw Error('ui_services_unavailable');
       if(connectedEpoch!==epoch) {
-        hosts.refreshRendererManager('local'); // Official cleanup, registry generation and RPC replacement.
+        // Replace in one step with the official factory. refreshRendererManager deletes the manager first,
+        // and the open threads unmount while the host has none, so they are never resumed.
+        const manager=refs.loi(scope,'local');
+        if(!manager)throw Error('ui_adapter_unavailable');
+        hosts.addManager(manager); // Official cleanup, registry generation and RPC replacement.
         connectedEpoch=epoch;
       }
       // A broken official external-signal effect does not restart itself.

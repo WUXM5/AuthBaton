@@ -5,7 +5,7 @@ import Foundation
 enum SelectiveSymbols {
     struct Reference { let name: String; let providerScope: Bool }
     struct Mapping { let boundary: String; let references: [String: Reference] }
-    static let roles = ["SSl", "_Sl", "qwl", "gf", "$", "Qd", "Up", "Csn", "O_", "X3", "OS"]
+    static let roles = ["SSl", "_Sl", "qwl", "gf", "$", "Qd", "Up", "Csn", "O_", "X3", "loi", "OS"]
     private static let id = "[A-Za-z_$][\\w$]{0,63}"
     private static func matches(_ pattern: String, _ source: String) throws -> [[String]] {
         let anchored = pattern.hasPrefix("(" + id + ")=") ? "(?<![\\w$])" + pattern : pattern
@@ -41,8 +41,9 @@ enum SelectiveSymbols {
                 ("OS", "(" + id + ")=(" + id + ")\\(`RouteScope`,"),
                 // The effect reads a retry counter and sets `loading` before it reads accessInputs.
                 ("Csn", "(" + id + ")=(" + id + ")\\(" + id + ",\\(\\)=>`loading`,\\(\\{get:" + id + ",scope:" + id + ",set:" + id + "\\}\\)=>\\{[^{};]{0,80};let " + id + "=" + id + "\\?\\.accessInputs;"),
-                // The host registry; its refreshRendererManager replaces one host's manager the official way.
+                // The host registry, and the manager factory its registerHost calls before addManager.
                 ("X3", "(" + id + ")=class\\{scope;constructor\\(e\\)\\{this.scope=e\\}registerHost\\(e\\)\\{[^{}]*\\}refreshRendererManager\\(e\\)\\{"),
+                ("loi", "registerHost\\(e\\)\\{[^{}]*let t=(" + id + ")\\(this\\.scope,e\\);t!=null&&this\\.addManager\\(t\\)\\}"),
                 ("O_", "\\)\\),(" + id + ")=" + id + "\\(" + id + ",\\(e,\\{get:t\\}\\)=>t\\(" + id + ",e\\)\\.client\\)"),
             ]
             for (role, pattern) in anchors { for m in try matches(pattern, source) { bind(role, name, m[1]) } }

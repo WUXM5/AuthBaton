@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 const sourcePath = process.argv[2] || fileURLToPath(new URL('../macos/Sources/DesktopBridge/selective-ui.js',import.meta.url));
 const source = fs.readFileSync(sourcePath, 'utf8');
-let identity = 'a', isReady = true, managersRefreshed = 0, queryMutations = 0;
+let identity = 'a', isReady = true, managersReplaced = 0, queryMutations = 0;
 function _Sl() {}
 function qwl() {}
 function gf() {}
@@ -55,7 +55,8 @@ const refs = {
   SSl: jsx, _Sl, qwl, gf, $: token, Qd: (_token, _chain, node) => node.scope,
   Up: {identityKey: () => identity, isReady: () => isReady, async refresh() {}},
   Csn: {resolve() {}}, O_: 'O_',
-  X3: class {getForHostId() {return manager;} refreshRendererManager() {managersRefreshed++;}}, OS,
+  X3: class {getForHostId() {return manager;} addManager() {managersReplaced++;}},
+  loi: () => ({getConversation() {return null;}}), OS,
 };
 adapter.attach(refs);
 
@@ -75,7 +76,7 @@ adapter.attach(refs);
   const outcome = await pending;
   assert.equal(outcome.resolved, false);
   assert.equal(outcome.error, 'ui_adapter_unavailable');
-  assert.equal(managersRefreshed, 0);
+  assert.equal(managersReplaced, 0);
   assert.equal(queryMutations - mutationsAtRetirement, 0);
   assert.equal(adapter.state().phase, 'uninstalled');
   // The caller's normal error handler must not revive the retired lease either.
@@ -84,7 +85,7 @@ adapter.attach(refs);
   console.log(JSON.stringify({
     evidence: 'exact production JS in pure memory; not a browser or desktop test',
     trials: 1, retired, outcome,
-    managersRefreshedAfterRetire: managersRefreshed,
+    managersReplacedAfterRetire: managersReplaced,
     queryMutationsAfterRetire: queryMutations - mutationsAtRetirement,
     finalState: adapter.state(),
   }, null, 2));
