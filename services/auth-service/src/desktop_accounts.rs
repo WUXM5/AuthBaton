@@ -525,7 +525,8 @@ impl Accounts {
             }));
             return;
         }
-        if self.db.switch.is_some() || self.restart_undebugged_desktop() {
+        // Also while a switch waits for recovery: recovering it needs the debug port.
+        if self.restart_undebugged_desktop() || self.db.switch.is_some() {
             return;
         }
         if now() < self.desktop.last_poll + 2 {

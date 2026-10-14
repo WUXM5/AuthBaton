@@ -10,7 +10,8 @@ const source = fs.readFileSync(fileURLToPath(new URL('../macos/Sources/DesktopBr
 
 function fixture(existing?: object) {
   let identity = 'a', data: any = {userId: 'a', accountId: 'w'}, refetches = 0, answerOnRefetch = true;
-  const refreshed: string[] = [];
+  const created: string[] = [], added: unknown[] = [];
+  const next = {getConversation() {return null;}};
   function _Sl() {}
   function qwl() {}
   function gf() {}
@@ -49,11 +50,13 @@ function fixture(existing?: object) {
     SSl: jsx, _Sl, qwl, gf, $: token, Qd: (_t: unknown, _c: unknown, n: any) => n.scope,
     Up: {identityKey: () => identity, isReady: () => true, async refresh() {}},
     Csn: {resolve() {}}, O_: 'O_',
-    X3: class {getForHostId() {return manager;} refreshRendererManager(host: string) {refreshed.push(host);}}, OS,
+    // refreshRendererManager deletes first; the adapter must never call it.
+    X3: class {getForHostId() {return manager;} addManager(m: unknown) {added.push(m);} refreshRendererManager() {throw Error('delete-first refresh');}},
+    loi: (_scope: unknown, host: string) => {created.push(host); return next;}, OS,
   };
   const adapter = context.__authManagerSelectiveUIV1;
   return {installed, adapter, refs, attach: () => adapter.attach(refs), switchTo: (next: string) => {identity = next;},
-          refetches: () => refetches, refreshed: () => [...refreshed], noAnswer: () => {answerOnRefetch = false;}};
+          refetches: () => refetches, created: () => [...created], added: () => [...added], next, noAnswer: () => {answerOnRefetch = false;}};
 }
 
 let passed = 0;
@@ -67,15 +70,20 @@ await test('reconnect asks for account info again when the reset fetch ran stale
   const result = await f.adapter.reconnect('codex:b:w');
   assert.equal(result.ok, true);
   assert.equal(f.refetches(), 1);
-  assert.deepEqual(f.refreshed(), ['local']);
+  assert.deepEqual(f.created(), ['local']);
+  assert.equal(f.added().length, 1);
+  assert.equal(f.added()[0], f.next);
   assert.equal(f.adapter.state().phase, 'idle');
 });
 
-await test('a host registry without the official refresh is refused', async () => {
+await test('a host registry without addManager or a manager factory is refused', async () => {
   const f = fixture();
   f.refs.X3 = class {getForHostId() {return {};}};
   assert.throws(() => f.attach(), /ui_adapter_unavailable/);
   assert.equal(f.adapter.state().phase, 'uninstalled');
+  const g = fixture();
+  delete g.refs.loi;
+  assert.throws(() => g.attach(), /ui_adapter_unavailable/);
 });
 
 await test('reconnect still fails, after its deadline, when account info never arrives', async () => {
@@ -90,14 +98,14 @@ await test('reconnect still fails, after its deadline, when account info never a
 
 await test('an idle older adapter is disposed and replaced', async () => {
   let disposed = 0;
-  const f = fixture({revision: 2, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
+  const f = fixture({revision: 3, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
   assert.equal(disposed, 1);
-  assert.equal(f.adapter.revision, 3);
+  assert.equal(f.adapter.revision, 4);
 });
 
 await test('an older adapter with an unfinished switch is kept for its recovery', async () => {
   let disposed = 0;
-  const old = {revision: 2, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
+  const old = {revision: 3, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
   const f = fixture(old);
   assert.equal(f.installed, true);
   assert.equal(disposed, 0);

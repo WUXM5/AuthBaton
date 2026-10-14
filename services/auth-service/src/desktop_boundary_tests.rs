@@ -520,6 +520,22 @@ fn a_desktop_that_just_started_without_the_debug_port_is_restarted_once() {
 }
 
 #[test]
+fn a_switch_waiting_for_recovery_still_gets_its_desktop_restarted_in_debug_mode() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    pending(&mut manager);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    DESKTOP_AGE.store(3, SeqCst);
+    let before = RESTARTS.load(SeqCst);
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+    assert!(manager.db.switch.is_some());
+}
+
+#[test]
 fn a_desktop_in_use_or_with_hot_switch_off_is_left_running() {
     use std::sync::atomic::Ordering::SeqCst;
     let fixture = Fixture::new();

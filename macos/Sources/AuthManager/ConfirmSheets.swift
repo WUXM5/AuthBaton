@@ -135,7 +135,7 @@ struct SwitchSheet: View {
     private var blocked: some View {
         let desktop = directory?.desktop
         return SheetScaffold(title: "现在还切不到「\(account.displayName)」",
-                             lead: "Codex 桌面热切换已开启，所以换号只通过桌面进行；但桌面没有连上（端口 \(desktop.map { String($0.port) } ?? "—") 未监听），这次切换不会开始。") {
+                             lead: "Codex 桌面热切换已开启，所以换号只通过桌面进行；但桌面现在没有连上，这次切换不会开始。\(attempt == nil ? desktop.map { "原因：\($0.message)" } ?? "" : "")") {
             handoff(blockedTarget: true)
             VStack(alignment: .leading, spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
