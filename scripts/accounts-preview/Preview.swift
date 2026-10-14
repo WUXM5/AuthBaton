@@ -15,11 +15,14 @@ import Vision
     @Published var accountErrorID: String?
     @Published var errorText: String?
     @Published var login: LoginAttempt?
+    @Published var loginTarget: LoginTarget?
+    @Published var isConnected = true
+    @Published var isConnecting = false
     let directoryError: String? = nil
     let loginBusy = false
     let loginError: String? = nil
     let isRefreshing = false
-    let isConnected = true
+    var canRestart: Bool { !isConnecting }
     let socketPath = NSHomeDirectory() + "/Library/Application Support/AuthManager/service.sock"
     // Recorded instead of sent: "method {json params}".
     var calls: [String] = []
@@ -42,7 +45,7 @@ import Vision
     }
     func clearAccountError() { accountError = nil; accountErrorID = nil }
     func refresh() async {}
-    func restart() async {}
+    func restart() async { calls.append("restart {}") }
     func checkQuota(id: String? = nil) async { calls.append("accounts.quota \(id ?? "all")") }
     func refreshQuotaIfNeeded() async {}
     func resetHistory(accountID: String?, before: String? = nil) async throws -> ResetHistoryPage {
@@ -163,6 +166,36 @@ enum Fixture {
             // Switched off earlier at 9:00; switching on again keeps that hour.
             second["warmup"] = ["enabled": false, "hour": 9, "running": false]
             list.append(second)
+            data["accounts"] = list
+        case "switchblock":
+            // Saved logins a switch must not use yet: one needs a new login, one an unsaved renewal,
+            // one a renewal whose reply was lost.
+            var list = data["accounts"] as! [[String: Any]]
+            list[0]["state"] = "reauth"; list[0]["message"] = "合成：刷新令牌已失效，需要重新登录"
+            list[3]["state"] = "unsaved"; list[3]["message"] = "合成：续期结果尚未写入"
+            var second = list.first { $0["provider"] as? String == "claude" }!
+            second["id"] = "synthetic-claude-b"; second["label"] = "Claude 备用"; second["identity"] = "b***@example.invalid"
+            second["native"] = false; second["state"] = "uncertain"; second["message"] = "续期请求没有收到回应；稍后自动用同一凭据重新确认，无需操作"
+            list.append(second)
+            data["accounts"] = list
+        case "cloud":
+            // Back in local mode after handing two accounts to the cloud; one state is newer than this build.
+            var list = data["accounts"] as! [[String: Any]]
+            list[0]["state"] = "cloud_transfer"; list[0]["message"] = "云端交接尚未完成，请在云端模式恢复"; list[0]["automatic"] = false
+            list[3]["state"] = "cloud_managed"; list[3]["message"] = "凭据由个人云端维护，请在云端模式查看"; list[3]["automatic"] = false
+            list[1]["state"] = "synthetic_future"; list[1]["message"] = "合成：这个版本不认识的状态"
+            data["accounts"] = list
+            var cloud = data["cloud"] as! [String: Any]
+            cloud["transfers"] = [["local_id": "synthetic-nova", "cloud_id": NSNull(), "phase": "prepared"],
+                                  ["local_id": "synthetic-team", "cloud_id": "synthetic-cloud-team", "phase": "cloud_managed"]]
+            data["cloud"] = cloud
+        case "many":
+            // More accounts than the strategy takes rules for (32).
+            var list = data["accounts"] as! [[String: Any]]
+            for n in 1...31 {
+                list.append(codex(String(format: "synthetic-extra-%02d", n), String(format: "Codex · extra %02d", n), "x\(n)***@example.invalid",
+                                  plan: "plus", native: false, state: "healthy", used: 10, resetDays: 3, credits: []))
+            }
             data["accounts"] = list
         default: break
         }
@@ -517,6 +550,10 @@ extension NSWindow {
         state.calls.removeAll()
         state.failNext = nil
         state.clearAccountError()
+        state.isConnected = true
+        state.errorText = nil
+        state.login = nil
+        state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
         Driver.settle(0.5)
         run()
@@ -791,6 +828,122 @@ extension NSWindow {
         }
     }
 
+    section(14, "菜单栏换号：登录失效、续期待保存、续期待确认的账号不提供切换，给出检查器同样的出路") {
+        Fixture.load("switchblock", into: state)
+        main.orderOut(nil)
+        let panel = open(MenuBarPanel(openWindow: {}).background(Palette.canvas), size: NSSize(width: 340, height: 900))
+        // The switch rows carry the quota summary; the alert and reminder rows above also name the account.
+        Driver.press("nova", .within("剩余"))
+        check.expect(Driver.visible("先在窗口里重新登录"), "需重新登录的账号说明先重新登录")
+        check.expect(Driver.hits("切到 nova").isEmpty, "需重新登录的账号不提供「切到」或「重启并切到」")
+        AppNavigation.shared.selection = nil
+        // OCR reads the trailing ellipsis inconsistently; only the button line starts with the action.
+        Driver.press("重新登录", .prefix)
+        check.expect(AppNavigation.shared.page == .accounts && AppNavigation.shared.selection == "synthetic-nova", "「重新登录…」打开窗口并选中这个账号")
+        check.expect(state.calls.isEmpty, "菜单栏不直接发请求")
+        Driver.press("lab team", .within("剩余"))
+        check.expect(Driver.visible("写入旧的登录"), "续期待保存的账号说明现在切过去会写入旧的登录")
+        check.expect(Driver.hits("切到 lab team").isEmpty && !Driver.hits("重试保存", .prefix).isEmpty, "续期待保存的账号只给「重试保存…」")
+        Driver.press("Claude 备用", .within("剩余"))
+        check.expect(Driver.visible("现在不能切换"), "续期待确认的账号说明现在不能切换")
+        check.expect(Driver.hits("切到 Claude 备用").isEmpty, "续期待确认的账号不提供切换")
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
+        print("  → 窗口检查器同样不给切换")
+        select(.accounts, "synthetic-claude-b")
+        check.expect(Driver.hits("设为 Claude Code 当前账号").first(where: inInspector) == nil, "检查器对续期待确认的账号不给「设为当前」")
+        check.expect(Driver.visible("等待重新确认"), "检查器主按钮写明在等什么")
+    }
+
+    section(15, "云端交接和云端维护的账号：不显示成「可用」，交接未完成计入需要处理；不认识的状态不算正常") {
+        Fixture.load("cloud", into: state)
+        select(.accounts, "synthetic-nova")
+        check.visible("云端交接未完成", "交接中的账号显示「云端交接未完成」")
+        check.visible("由云端维护", "云端维护的账号显示「由云端维护」")
+        check.visible("状态未识别", "不认识的状态显示「状态未识别」")
+        check.expect(Driver.visible("5个账号.2个需要处理"), "交接未完成计入需要处理，云端维护不计入")
+        check.expect(Driver.hits("设为 Codex 当前账号").first(where: inInspector) == nil, "检查器对交接中的账号不给「设为当前」")
+        select(.accounts, "synthetic-team")
+        check.expect(Driver.hits("设为 Codex 当前账号").first(where: inInspector) == nil, "检查器对云端维护的账号不给「设为当前」")
+    }
+
+    section(16, "换号与重置：规则不含云端账号（含已保存的），超过 32 个账号时说明并只发 32 条") {
+        Fixture.load("cloud", into: state)
+        select(.automation)
+        check.expect(!Driver.visible("lab team") && !Driver.visible("nova"), "表格不列云端交接或云端维护的账号")
+        Driver.press("先重置", nth: 0)
+        Driver.press("保存规则")
+        Driver.press("确认启用", .exact)
+        var strategy = check.lastCall("accounts.strategy") ?? ""
+        check.expect(!strategy.isEmpty && !strategy.contains("synthetic-team") && !strategy.contains("synthetic-nova"),
+                     "保存的规则不含云端账号，已保存配置里的残留也去掉")
+        print("  → 编辑中账号转交云端：发送时也去掉")
+        Fixture.load("default", into: state)
+        select(.accounts, nil)
+        select(.automation)
+        state.calls.removeAll()
+        Driver.press("先重置", nth: 0)
+        Fixture.load("cloud", into: state)
+        Driver.settle(0.5)
+        Driver.press("保存规则")
+        Driver.press("确认启用", .exact)
+        strategy = check.lastCall("accounts.strategy") ?? ""
+        check.expect(!strategy.isEmpty && !strategy.contains("synthetic-team") && !strategy.contains("synthetic-nova"), "发送前去掉已转交云端的账号")
+        print("  → 36 个账号")
+        Fixture.load("many", into: state)
+        select(.accounts, nil)
+        select(.automation)
+        check.visible("规则最多包含32个账号", "超过上限时说明规则最多 32 个账号")
+        check.visible("extra 31", "说明里点名没加入的账号")
+        state.calls.removeAll()
+        Driver.press("先重置", nth: 0)
+        Driver.press("保存规则")
+        Driver.press("确认启用", .exact)
+        strategy = check.lastCall("accounts.strategy") ?? ""
+        check.expect(strategy.components(separatedBy: "\"id\":\"").count - 1 == 32 && !strategy.contains("synthetic-extra-31"), "只发送 32 条规则")
+    }
+
+    section(17, "后台服务断开：窗口和菜单栏都写明未连接，不再显示旧账号，可直接重新连接") {
+        state.isConnected = false
+        state.directory = nil
+        state.errorText = "合成：后台服务已退出，账号和额度不再更新。"
+        select(.accounts, nil)
+        check.visible("合成：后台服务已退出", "窗口顶部写明服务已退出")
+        check.expect(!Driver.visible("正在载入账号列表"), "不显示正在载入")
+        Driver.press("重新连接后台服务")
+        check.expect(state.calls.contains("restart {}"), "窗口顶部的「重新连接后台服务」重新连接")
+        main.orderOut(nil)
+        state.calls.removeAll()
+        let panel = open(MenuBarPanel(openWindow: {}).background(Palette.canvas), size: NSSize(width: 340, height: 400))
+        check.expect(Driver.visible("后台服务未连接") && Driver.visible("合成：后台服务已退出"), "菜单栏写明未连接和原因")
+        check.expect(!Driver.visible("正在使用"), "菜单栏不显示旧账号")
+        Driver.press("重新连接后台服务")
+        check.expect(state.calls.contains("restart {}"), "菜单栏的「重新连接后台服务」重新连接")
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
+    }
+
+    section(18, "重新登录：只显示为这个账号发起的登录结果") {
+        state.login = LoginAttempt(attemptId: "synthetic-attempt", provider: "codex", phase: "succeeded",
+                                   message: "合成：nova 的官方登录已完成", verificationUrl: nil, userCode: nil)
+        state.loginTarget = LoginTarget(accountID: "synthetic-nova")
+        @MainActor func relogin(_ id: String) {
+            select(.accounts, id)
+            if let primary = Driver.hits("设为 Codex 当前账号").first(where: inInspector) {
+                Driver.menuChoice = "重新登录…"
+                Driver.click(primary.window, NSPoint(x: primary.window.frame.width - 39, y: primary.rect.midY))
+                Driver.settle()
+            } else {
+                check.expect(false, "找到 \(id) 的主按钮")
+            }
+        }
+        relogin("synthetic-team")
+        check.expect(Driver.visible("开始官方登录") && !Driver.visible("nova 的官方登录已完成"), "给 lab team 重新登录时不显示 nova 的结果")
+        Driver.press("取消", .exact)
+        relogin("synthetic-nova")
+        check.visible("nova 的官方登录已完成", "给 nova 重新登录时显示它自己的结果")
+    }
+
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -847,6 +1000,8 @@ extension NSWindow {
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
+                ("accounts-cloud", "cloud", .accounts, "synthetic-nova"), ("accounts-switchblock", "switchblock", .accounts, "synthetic-claude-b"),
+                ("automation-many", "many", .automation, nil),
             ]
             for (name, scenario, page, selection) in pages {
                 Fixture.load(scenario, into: state)
@@ -879,6 +1034,17 @@ extension NSWindow {
             let claudeSize = render(SwitchSheet(account: state.directory!.accounts.first { $0.id == "synthetic-claude-b" }!, close: {}).background(Palette.card),
                                     size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-switch-claude.png"))
             print("\(appearance)/sheet-switch-claude: \(claudeSize.width) × \(claudeSize.height)")
+            // The service is gone: nothing it published stays on screen.
+            state.isConnected = false
+            state.directory = nil
+            state.errorText = "后台服务已退出，账号和额度不再更新。重新连接后台服务后恢复。"
+            AppNavigation.shared.show(.accounts)
+            _ = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-accounts-offline.png"))
+            _ = render(MenuBarPanel(openWindow: {}).background(Palette.canvas), size: nil, appearance: appearance,
+                       to: output.appendingPathComponent("\(appearance)-menubar-offline.png"))
+            state.isConnected = true
+            state.errorText = nil
+            print("\(appearance)/offline")
         }
         print("Rendered with synthetic data only")
     }

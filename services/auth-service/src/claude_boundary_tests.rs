@@ -374,7 +374,7 @@ fn claude_login_starts_without_probing_cli_version() {
     let binary = fixture.root.join("fake-claude");
     fs::write(
         &binary,
-        b"#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n touch \"$0.version\"\n echo '99.0.0 (Claude Code)'\n exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$0.args\"\n",
+        b"#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n touch \"$0.version\"\n echo '99.0.0 (Claude Code)'\n exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$0.partial\"\nmv \"$0.partial\" \"$0.args\"\n",
     )
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
@@ -383,9 +383,10 @@ fn claude_login_starts_without_probing_cli_version() {
     manager
         .begin_login("claude", "Synthetic login", None, &mut login)
         .unwrap();
+    // Starting a shell can take seconds on a loaded machine; the fake renames its finished file.
     let started = std::time::Instant::now();
     while !fixture.root.join("fake-claude.args").exists() {
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(

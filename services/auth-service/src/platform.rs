@@ -100,15 +100,9 @@ impl Platform {
             _ => Err("Keychain 暂不可读；请解锁钥匙串后重试"),
         }
     }
-    pub fn write_key(&self, service: &str, account: &str, value: &Value) -> Result<()> {
-        #[cfg(test)]
-        if self.fixture_keychain {
-            return self.fixture_write_key(service, account, value);
-        }
-        self.write_native_key_guarded(service, account, value, false, &|| Ok(()))
-    }
+    /// Stands in for an official client's own write, so no AuthManager writer limit applies.
     #[cfg(test)]
-    fn fixture_write_key(&self, service: &str, account: &str, value: &Value) -> Result<()> {
+    pub fn write_key(&self, service: &str, account: &str, value: &Value) -> Result<()> {
         let value = STANDARD.encode(serde_json::to_vec(value).map_err(|_| "凭据格式无效")?);
         let output = self.invoke(
             json!({"operation":"write","service":service,"account":account,"value":value}),
@@ -183,6 +177,14 @@ impl Platform {
     pub fn native_write_key(&self, service: &str, account: &str, value: &Value) -> Result<()> {
         self.native_write_key_guarded(service, account, value, &|| Ok(()))
     }
+    pub fn preflight_native_write(
+        &self,
+        service: &str,
+        account: &str,
+        value: &Value,
+    ) -> Result<()> {
+        native_write_plan(service, account, value).map(|_| ())
+    }
     pub fn native_write_key_guarded(
         &self,
         service: &str,
@@ -190,30 +192,12 @@ impl Platform {
         value: &Value,
         guard: &dyn Fn() -> Result<()>,
     ) -> Result<()> {
-        self.write_native_key_guarded(service, account, value, true, guard)
-    }
-    pub fn preflight_native_write(
-        &self,
-        service: &str,
-        account: &str,
-        value: &Value,
-    ) -> Result<()> {
-        native_write_plan(service, account, value, true).map(|_| ())
-    }
-    fn write_native_key_guarded(
-        &self,
-        service: &str,
-        account: &str,
-        value: &Value,
-        allow_large: bool,
-        guard: &dyn Fn() -> Result<()>,
-    ) -> Result<()> {
         // Exercise the production boundary before the synthetic storage adapter too.
-        let plan = native_write_plan(service, account, value, allow_large)?;
+        let plan = native_write_plan(service, account, value)?;
         #[cfg(test)]
         if self.fixture_keychain {
             guard()?;
-            self.fixture_write_key(service, account, value)?;
+            self.write_key(service, account, value)?;
             return if self.fixture_read_key(service, account)?.as_ref() == Some(value) {
                 Ok(())
             } else {
@@ -226,9 +210,9 @@ impl Platform {
             NativeWritePlan::Interactive(command) => {
                 self.run_native(Path::new("/usr/bin/security"), &["-i"], command.as_bytes())?;
             }
-            NativeWritePlan::LargeClaude(hex) => {
-                // Same writer identity as Claude: direct Security APIs alter its partition ACL.
-                // Never log this argument vector or put it through a shell.
+            NativeWritePlan::Large(hex) => {
+                // Same writer identity as the stdin path: direct Security APIs alter the item's
+                // partition ACL. Never log this argument vector or put it through a shell.
                 self.run_native(
                     Path::new("/usr/bin/security"),
                     &[
@@ -357,14 +341,9 @@ pub fn install_helper(root: &Path, bundled: &Path) -> Result<PathBuf> {
 
 enum NativeWritePlan {
     Interactive(String),
-    LargeClaude(String),
+    Large(String),
 }
-fn native_write_plan(
-    service: &str,
-    account: &str,
-    value: &Value,
-    allow_large: bool,
-) -> Result<NativeWritePlan> {
+fn native_write_plan(service: &str, account: &str, value: &Value) -> Result<NativeWritePlan> {
     if service.len() > 512
         || account.len() > 512
         || service.contains(['"', '\\', '\n', '\r', '\0'])
@@ -380,10 +359,7 @@ fn native_write_plan(
     let command = format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X {hex}\n");
     // security -i reads a fixed 4096-byte line, including the terminating NUL.
     if command.len() >= 4096 {
-        if allow_large && value.get("claudeAiOauth").is_some() {
-            return Ok(NativeWritePlan::LargeClaude(hex));
-        }
-        return Err("原生 Keychain 数据超出当前写入限制");
+        return Ok(NativeWritePlan::Large(hex));
     }
     Ok(NativeWritePlan::Interactive(command))
 }
@@ -519,6 +495,7 @@ pub(crate) fn pipe_status_with_cancel(
         .envs(environment.iter().map(|(key, value)| (key, value)));
     pipe_status_of(command, input, timeout, cancel)
 }
+pub const SPAWN_FAILED: &str = "无法启动原生操作";
 /// Runs a prepared command with `input` on stdin, collecting at most 5 MiB of stdout; stderr is
 /// dropped. The status is None when the command was stopped for the timeout or cancellation.
 pub(crate) fn pipe_status_of(
@@ -532,7 +509,7 @@ pub(crate) fn pipe_status_of(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "无法启动原生操作")?;
+        .map_err(|_| SPAWN_FAILED)?;
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let bytes = input.to_vec();
@@ -624,32 +601,22 @@ mod tests {
     }
     #[test]
     fn native_write_rejects_oversize_input_before_any_io() {
-        let platform = Platform {
-            helper: PathBuf::from("/must-not-run"),
-            recovery_wait: None,
-            fixture_keychain: false,
-        };
-        assert_eq!(
-            platform.native_write_key("synthetic", "test", &json!({"value":"x".repeat(2048)})),
-            Err("原生 Keychain 数据超出当前写入限制")
-        );
-        let NativeWritePlan::Interactive(command) = native_write_plan(
-            "synthetic",
-            "test",
-            &json!({"value":"x".repeat(1024)}),
-            true,
-        )
-        .unwrap() else {
+        let NativeWritePlan::Interactive(command) =
+            native_write_plan("synthetic", "test", &json!({"value":"x".repeat(1024)})).unwrap()
+        else {
             panic!("small payload must use private stdin")
         };
         assert!(command.len() < 4096);
-        let large =
-            json!({"claudeAiOauth":{"accessToken":"synthetic"},"mcpOAuth":"x".repeat(8192)});
-        assert!(matches!(
-            native_write_plan("synthetic", "test", &large, true).unwrap(),
-            NativeWritePlan::LargeClaude(_)
-        ));
-        assert!(native_write_plan("synthetic", "test", &large, false).is_err());
+        // Both official clients' logins outgrow the stdin line.
+        for large in [
+            json!({"claudeAiOauth":{"accessToken":"synthetic"},"mcpOAuth":"x".repeat(8192)}),
+            json!({"auth_mode":"chatgpt","tokens":{"id_token":"x".repeat(3000)}}),
+        ] {
+            assert!(matches!(
+                native_write_plan("synthetic", "test", &large).unwrap(),
+                NativeWritePlan::Large(_)
+            ));
+        }
         for fixture_keychain in [true, false] {
             let platform = Platform {
                 helper: PathBuf::from("/must-not-run"),

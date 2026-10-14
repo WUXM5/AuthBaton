@@ -146,6 +146,12 @@ pub fn curl(args: &[&str], input: &[u8], timeout: Duration) -> Result<Vec<u8>> {
 /// A request that provably never left this machine; any other transport failure may have been
 /// received and acted on by the server.
 pub const NOT_SENT: &str = "网络未连通，请求未发出；稍后自动重试";
+/// Proxy settings that no request can use. As with `NOT_SENT`, nothing left this machine.
+pub const PROXY_NOT_SENT: &str =
+    "系统代理设置无法使用（如自动代理），请求未发出；改用手动代理或代理环境变量后自动重试";
+pub fn not_sent(message: &str) -> bool {
+    matches!(message, NOT_SENT | PROXY_NOT_SENT)
+}
 
 /// Like `curl`, but keeps the exit status so a caller can classify a failed transfer.
 pub fn curl_status(
@@ -153,14 +159,32 @@ pub fn curl_status(
     input: &[u8],
     timeout: Duration,
 ) -> Result<(Option<i32>, Vec<u8>)> {
-    crate::platform::pipe_status_with_cancel(
+    curl_status_with(
+        environment(),
         Path::new("/usr/bin/curl"),
         args,
         input,
         timeout,
-        None,
-        &environment()?,
     )
+}
+fn curl_status_with(
+    environment: Result<Vec<(String, String)>>,
+    curl: &Path,
+    args: &[&str],
+    input: &[u8],
+    timeout: Duration,
+) -> Result<(Option<i32>, Vec<u8>)> {
+    // Nothing reaches the network before curl runs, so unusable proxy settings or a curl that
+    // cannot launch leave the request unsent.
+    let environment = environment.map_err(|_| PROXY_NOT_SENT)?;
+    crate::platform::pipe_status_with_cancel(curl, args, input, timeout, None, &environment)
+        .map_err(|message| {
+            if message == crate::platform::SPAWN_FAILED {
+                NOT_SENT
+            } else {
+                message
+            }
+        })
 }
 
 #[cfg(test)]
@@ -201,6 +225,26 @@ mod tests {
         assert!(!env.iter().any(|(key, _)| key == "no_proxy"));
         assert!(env.contains(&("NO_PROXY".into(), "own-NO_PROXY".into())));
         assert!(env.contains(&("https_proxy".into(), "http://127.0.0.1:1082".into())));
+    }
+
+    #[test]
+    fn a_request_that_never_started_is_classified_as_not_sent() {
+        let unusable =
+            parse_system(&SETTINGS.replace("HTTPEnable : 1", "ProxyAutoConfigEnable : 1"));
+        let args = ["--version"];
+        let curl = Path::new("/usr/bin/curl");
+        assert_eq!(
+            curl_status_with(unusable, curl, &args, b"", Duration::from_secs(5)),
+            Err(PROXY_NOT_SENT)
+        );
+        let missing = Path::new("/nonexistent/authmanager-curl");
+        assert_eq!(
+            curl_status_with(Ok(vec![]), missing, &args, b"", Duration::from_secs(5)),
+            Err(NOT_SENT)
+        );
+        assert!(
+            not_sent(PROXY_NOT_SENT) && not_sent(NOT_SENT) && !not_sent("网络中断，未收到回应")
+        );
     }
 
     #[test]

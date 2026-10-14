@@ -132,12 +132,7 @@ impl Accounts {
             );
         }
         let index = self.index(id)?;
-        if matches!(
-            self.db.accounts[index].state.as_str(),
-            "reauth" | "unsaved" | "uncertain"
-        ) {
-            return Err("请先处理目标账号的登录或凭据保存状态");
-        }
+        switch_target_ready(&self.db.accounts[index])?;
         let target = self.bundle(&self.db.accounts[index])?;
         let metadata = target.metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {

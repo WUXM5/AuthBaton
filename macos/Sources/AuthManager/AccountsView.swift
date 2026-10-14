@@ -2,7 +2,12 @@ import SwiftUI
 
 extension ManagedAccount {
     var needsAction: Bool {
-        loginNotice?.needsAttention == true || ["reauth", "attention", "unsaved", "backup_pending"].contains(state)
+        switch state {
+        case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": true
+        // The cloud renews it; the local login dates behind the notice no longer apply.
+        case "cloud_managed": false
+        default: loginNotice?.needsAttention == true
+        }
     }
 }
 
@@ -56,6 +61,9 @@ struct AccountsView: View {
                             .frame(width: 340)
                     }
                 }
+            } else if !service.isConnected && !service.isConnecting {
+                // The window's banner says why and offers to reconnect.
+                Spacer()
             } else if let error = service.directoryError {
                 Callout(icon: "exclamationmark.triangle.fill", tone: .warning, message: error).padding(20)
                 Spacer()
@@ -213,7 +221,9 @@ struct AccountsView: View {
         if let login = service.login {
             Callout(icon: login.isActive ? "person.badge.clock.fill" : "person.crop.circle.badge.checkmark", tone: .accent,
                     message: "\(ProviderGlyph.name(login.provider)) · \(login.phaseLabel)") {
-                Button(login.isActive ? "查看登录进度" : "查看最近登录结果") { sheet = .login(provider: login.provider, accountID: nil) }
+                Button(login.isActive ? "查看登录进度" : "查看最近登录结果") {
+                    sheet = .login(provider: login.provider, accountID: service.loginTarget?.accountID)
+                }
                     .controlSize(.small)
             }
         }
@@ -227,7 +237,7 @@ struct AccountsView: View {
                              title: "\(account.displayName)：\(account.health.title)",
                              detail: account.health.detail ?? account.message) {
                         Button("查看") { nav.selection = account.id }
-                        if let fix = fixAction(account) {
+                        if let fix = fixAction(account, directory) {
                             Button(fix.0) { sheet = fix.1 }.buttonStyle(.borderedProminent).disabled(locked)
                         }
                     }
@@ -253,14 +263,12 @@ struct AccountsView: View {
         }
     }
 
-    private func fixAction(_ account: ManagedAccount) -> (String, AccountSheet)? {
-        if account.recoverable {
-            return (account.provider == "claude" && account.native ? "恢复同步" : "重试保存", .recover(account.id))
+    private func fixAction(_ account: ManagedAccount, _ directory: AccountDirectory) -> (String, AccountSheet)? {
+        switch directory.primaryAction(for: account) {
+        case .recover: (account.recoverTitle, .recover(account.id))
+        case .relogin: ("重新登录", .login(provider: account.provider, accountID: account.id))
+        default: nil
         }
-        if account.state == "reauth" || account.loginNotice?.needsAttention == true {
-            return ("重新登录", .login(provider: account.provider, accountID: account.id))
-        }
-        return nil
     }
 
     private func alertRow<Actions: View>(tone: Tone, icon: String, title: String, detail: String, @ViewBuilder actions: () -> Actions) -> some View {

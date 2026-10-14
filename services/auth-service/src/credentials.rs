@@ -158,6 +158,12 @@ fn cleared_claude_slot(credential: &Value) -> bool {
         && credential["refreshToken"] == ""
         && credential["expiresAt"] == 0
 }
+/// A Claude store that still exists but holds no subscription login: signed out, or cleared by
+/// the official client after a rejected refresh. Its other entries, such as MCP logins, stay.
+fn claude_signed_out(payload: &Value) -> bool {
+    payload["claudeAiOauth"].is_null() || cleared_claude_slot(&payload["claudeAiOauth"])
+}
+pub const SIGNED_OUT: &str = "默认登录已退出或被清空；可重新登录此账号，或切换到其他账号";
 impl NativeStore {
     pub fn codex(directory: &Path, force_file: bool) -> Result<Self> {
         let path = std::fs::canonicalize(directory).map_err(|_| "Codex 认证目录不存在")?;
@@ -292,6 +298,18 @@ impl NativeStore {
         let bundle = self.read_bundle(platform)?;
         bundle.metadata()?;
         Ok(bundle)
+    }
+    /// The login this store holds, or None when it holds none: no credential at all, or a
+    /// Claude store that was signed out or cleared.
+    pub fn login(&self, platform: &Platform) -> Result<Option<Bundle>> {
+        match self.payload(platform) {
+            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => Ok(None),
+            Ok((payload, _)) if self.provider == "claude" && claude_signed_out(&payload) => {
+                Ok(None)
+            }
+            Ok(_) => self.read(platform).map(Some),
+            Err(message) => Err(message),
+        }
     }
     fn read_bundle(&self, platform: &Platform) -> Result<Bundle> {
         let (payload, _) = self.payload(platform)?;
@@ -551,11 +569,7 @@ impl NativeStore {
         Ok(())
     }
     fn write_key(&self, platform: &Platform, value: &Value) -> Result<()> {
-        if self.provider == "claude" {
-            platform.native_write_key(&self.service, &self.account, value)
-        } else {
-            platform.write_key(&self.service, &self.account, value)
-        }
+        platform.native_write_key(&self.service, &self.account, value)
     }
     pub fn apply(&self, platform: &Platform, expected: &Bundle, target: &Bundle) -> Result<()> {
         self.apply_guarded(platform, expected, target, &|| Ok(()))
@@ -648,15 +662,18 @@ impl NativeStore {
         Ok(())
     }
     pub fn initialize(&self, platform: &Platform, target: &Bundle) -> Result<()> {
-        match self.payload(platform) {
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => {}
+        let base = match self.payload(platform) {
+            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => {
+                serde_json::json!({})
+            }
+            Ok((payload, _)) if self.provider == "claude" && claude_signed_out(&payload) => payload,
             _ => return Err("原生认证已经存在，不能按空账号初始化"),
-        }
+        };
         crate::platform::private_dir(&self.directory)?;
         let payload = if self.provider == "codex" {
             target.credential.clone()
         } else {
-            serde_json::json!({"claudeAiOauth":target.credential})
+            merge_claude_credentials(base, &target.credential)?
         };
         if self.mode == "file" {
             write_json(&self.file(), &payload)?;
@@ -672,28 +689,71 @@ impl NativeStore {
         }
         Ok(())
     }
-    pub fn recover_known(&self, platform: &Platform, candidates: &[Bundle]) -> Result<Bundle> {
-        let (payload, _) = self.payload(platform)?;
-        let credential = if self.provider == "codex" {
-            &payload
-        } else {
-            &payload["claudeAiOauth"]
+    /// Settles an interrupted switch from what this store holds now, or None when it holds no
+    /// login. An official client may have renewed the credential since the switch stopped, so a
+    /// credential matching neither side is placed by its owner: a Codex credential names it, and
+    /// `claude_owner` looks a Claude one up. The pair is never guessed from the identity file,
+    /// which the switch writes after the credential.
+    pub fn recover_switch(
+        &self,
+        platform: &Platform,
+        candidates: &[Bundle],
+        claude_owner: &dyn Fn(&Bundle) -> Result<String>,
+    ) -> Result<Option<Bundle>> {
+        let payload = match self.payload(platform) {
+            Ok((payload, _)) => payload,
+            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => return Ok(None),
+            Err(message) => return Err(message),
         };
-        let known = candidates
-            .iter()
-            .find(|b| b.provider == self.provider && b.credential == *credential)
-            .ok_or("原生凭据不匹配切换记录；已停止恢复，未覆盖任何账号")?;
-        if self.provider == "claude" {
-            let base = read_json(&self.config)?.unwrap_or_else(|| serde_json::json!({}));
-            if base["oauthAccount"] != known.identity {
-                write_json(&self.config, &merge_claude_config(base, &known.identity)?)?;
+        let credential = if self.provider == "codex" {
+            payload
+        } else {
+            reject_mixed(&payload)?;
+            if claude_signed_out(&payload) {
+                return Ok(None);
             }
+            payload["claudeAiOauth"].clone()
+        };
+        let base = if self.provider == "claude" {
+            read_json(&self.config)?.unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            Value::Null
+        };
+        let known = if let Some(known) = candidates
+            .iter()
+            .find(|b| b.provider == self.provider && b.credential == credential)
+        {
+            known.clone()
+        } else if self.provider == "codex" {
+            Bundle {
+                provider: self.provider.clone(),
+                credential,
+                identity: Value::Null,
+            }
+        } else {
+            let found = Bundle {
+                provider: self.provider.clone(),
+                credential,
+                identity: base["oauthAccount"].clone(),
+            };
+            let owner = claude_owner(&found)?;
+            let identity = candidates
+                .iter()
+                .chain([&found])
+                .find(|b| b.metadata().is_ok_and(|m| m.owner == owner))
+                .ok_or("原生 Claude 登录属于未登记的账号；请纳管当前登录后再恢复")?
+                .identity
+                .clone();
+            Bundle { identity, ..found }
+        };
+        if self.provider == "claude" && base["oauthAccount"] != known.identity {
+            write_json(&self.config, &merge_claude_config(base, &known.identity)?)?;
         }
         let actual = self.read(platform)?;
-        if actual != *known {
+        if actual != known {
             return Err("切换恢复未通过身份与凭据一致性校验");
         }
-        Ok(actual)
+        Ok(Some(actual))
     }
     pub fn remove_staging(&self, platform: &Platform) -> Result<()> {
         if self.provider == "claude" {

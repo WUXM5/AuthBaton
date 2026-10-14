@@ -293,10 +293,10 @@ pub fn prepare(work: &Work, force_refresh: bool) -> Outcome {
                 outcome.state = "retry".into();
                 return Err("Claude 刷新被拒绝；保留账号，稍后检查");
             }
-            Err(crate::network::NOT_SENT) => {
+            Err(message) if crate::network::not_sent(message) => {
                 coordinator.clear()?;
                 outcome.state = "retry".into();
-                return Err(crate::network::NOT_SENT);
+                return Err(message);
             }
             _ => return Err(UNCERTAIN),
         };

@@ -41,8 +41,10 @@ struct DashboardView: View {
         } detail: {
             VStack(spacing: 0) {
                 if let error = service.errorText {
-                    Callout(icon: "bolt.horizontal.circle.fill", tone: .danger, message: error)
-                        .padding(.horizontal, 20).padding(.top, 12)
+                    Callout(icon: "bolt.horizontal.circle.fill", tone: .danger, message: error) {
+                        if !service.isConnected { ReconnectButton().controlSize(.small) }
+                    }
+                    .padding(.horizontal, 20).padding(.top, 12)
                 }
                 switch nav.page {
                 case .accounts:
@@ -129,8 +131,9 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Divider().padding(.bottom, 6)
                 HStack(spacing: 7) {
-                    Dot(tone: service.isConnected ? .success : .warning)
-                    Text(service.isConnected ? "后台服务正常" : "等待后台服务").font(.caption.weight(.medium))
+                    Dot(tone: service.isConnected ? .success : service.isConnecting ? .warning : .danger)
+                    Text(service.isConnected ? "后台服务正常" : service.isConnecting ? "正在连接后台服务" : "后台服务未连接")
+                        .font(.caption.weight(.medium))
                     Text("· \(cloudMode ? "云端模式" : "本地模式")").font(.caption).foregroundStyle(.secondary)
                 }
                 Text("v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版") · 关窗后驻留菜单栏")
@@ -144,6 +147,17 @@ struct DashboardView: View {
     private func sidebarRow(_ title: String, icon: String, tone: Tone?, text: String?) -> some View {
         let badge: Text? = text.map { Text($0).foregroundStyle(.tertiary) } ?? tone.map { Text("●").foregroundStyle($0.color) }
         return Label(title, systemImage: icon).badge(badge)
+    }
+}
+
+// One reconnect at a time: a second click while the first waits for the old service would
+// otherwise start a lock owner of its own.
+struct ReconnectButton: View {
+    @EnvironmentObject private var service: ServiceController
+
+    var body: some View {
+        Button(service.isConnecting ? "正在重新连接…" : "重新连接后台服务") { Task { await service.restart() } }
+            .disabled(!service.canRestart)
     }
 }
 
@@ -233,9 +247,7 @@ struct ClientsPage: View {
                     Text("退出整个应用时，本应用启动的后台服务也会停止。").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("重新连接后台服务") { Task { await service.restart() } }
-                    .disabled(service.isRefreshing || service.login?.isActive == true || service.loginBusy
-                              || service.directory?.busy == true || service.accountBusy)
+                ReconnectButton()
             }
             Divider()
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {

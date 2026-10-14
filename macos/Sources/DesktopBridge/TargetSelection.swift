@@ -14,6 +14,13 @@ enum DesktopTargets {
         }
     }
 
+    // While the earlier target is still listed only it is probed. Once it is gone (the main window was
+    // reopened or the desktop restarted) every primary page is, so select can choose afresh.
+    static func probed(_ candidates: [[String: Any]], previous: String?) -> [[String: Any]] {
+        let bound = candidates.filter { previous != nil && $0["id"] as? String == previous }
+        return bound.isEmpty ? candidates : bound
+    }
+
     struct Observation {
         let id: String
         let supported: Bool

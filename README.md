@@ -20,7 +20,8 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 
 ## 安全边界
 
-- 凭据只出现在 AuthManager 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC、日志或命令行参数。
+- 凭据只出现在 AuthManager 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC 或日志。
+- 命令行参数只有一个例外：写入 Claude 或 Codex 官方 Keychain 条目时，如果内容超出 `security -i` 的 4096 字节单行上限，会改作 `/usr/bin/security` 的命令行参数传入。写入的那一刻，同一 macOS 用户下的进程能在进程列表里看到它。
 - 界面进程拿不到凭据；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
 - 除你为某个 Claude 账号开启的预热外，AuthManager 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。

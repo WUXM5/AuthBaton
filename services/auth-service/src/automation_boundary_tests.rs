@@ -115,7 +115,9 @@ if request['operation'].startswith('auto_'):
         print(json.dumps({'ok':True,'instance':'synthetic-instance','cancelled':True}));sys.exit(0)
     statefile.write_text(json.dumps(tasks))
     if (root/('fail-'+op)).exists():
-        print(json.dumps({'ok':False,'code':'resume_unconfirmed' if op=='auto_resume' else 'task_probe_failed'}));sys.exit(0)
+        code = (root/('fail-'+op)).read_text()
+        if code != 'tasks_waiting': code = 'resume_unconfirmed' if op=='auto_resume' else 'task_probe_failed'
+        print(json.dumps({'ok':False,'code':code}));sys.exit(0)
     print(json.dumps({'ok':True,'tasks':tasks,'owner':owner,'target':'synthetic-target','instance':'synthetic-instance','hash':'synthetic','mode':'chatgptAuthTokens','boundOwner':owner}));sys.exit(0)
 "#;
 
@@ -171,6 +173,25 @@ fn lost_prepare_reply_keeps_batch_id_and_can_be_cancelled() {
             .collect::<Vec<_>>(),
         vec!["auto_prepare", "auto_cancel"]
     );
+}
+#[test]
+fn tasks_awaiting_input_delay_the_switch_without_stopping_anything_else() {
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    fs::write(f.root.join("fail-auto_prepare"), b"tasks_waiting").unwrap();
+    settle(&mut m);
+    // The bridge refused before it made a batch: nothing was paused, so nothing waits on the user.
+    assert!(m.db.automation.run.is_none());
+    assert!(m.db.automation.config.enabled);
+    assert!(m.automation.message.contains("延后"));
+    assert!(m.quota_paused().is_none());
+    assert!(m.request_quota(Some("b")).is_ok());
+    // Once the tasks are answered, the strategy switches on its own.
+    fs::remove_file(f.root.join("fail-auto_prepare")).unwrap();
+    m.automation.next_check = 0;
+    settle(&mut m);
+    assert!(m.db.automation.run.is_none());
+    assert!(m.db.accounts[1].native);
 }
 #[test]
 fn lost_resume_reply_restart_and_missing_renderer_never_replay() {
@@ -1252,4 +1273,114 @@ fn reset_of_the_signed_in_claude_account_is_announced_to_the_companion_mod() {
         (change.kind, change.label),
         ("reset", m.db.accounts[0].label.clone())
     );
+}
+
+#[test]
+fn a_credit_gone_before_the_post_leaves_the_episode_open_for_another() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static POSTS: AtomicUsize = AtomicUsize::new(0);
+    fn credit2() -> Value {
+        json!({"available_count":1,"credits":[{"id":"credit2","reset_type":"codex_rate_limits","status":"available","expires_at":"2099-01-01T00:00:00Z"}]})
+    }
+    // The chosen credit was used elsewhere; another one is still available.
+    fn reset(_: &Access, r: &Request) -> Result<Response> {
+        match r {
+            Request::ResetCredits => Ok(Response {
+                status: 200,
+                retry_after: None,
+                body: credit2(),
+            }),
+            Request::Consume { .. } => {
+                POSTS.fetch_add(1, Ordering::SeqCst);
+                Ok(Response {
+                    status: 200,
+                    retry_after: None,
+                    body: json!({"code":"reset"}),
+                })
+            }
+            Request::Usage => unreachable!(),
+        }
+    }
+    fn low_with_credit2(_: &Access, r: &Request) -> Result<Response> {
+        if let Request::ResetCredits = r {
+            return Ok(Response {
+                status: 200,
+                retry_after: None,
+                body: credit2(),
+            });
+        }
+        Ok(response(r, 99))
+    }
+    POSTS.store(0, Ordering::SeqCst);
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    m.db.automation.config.accounts[0].order = Order::ResetOnly;
+    m.desktop.connected = false;
+    m.reset_transport = Some(reset);
+    m.automation_tick();
+    m.finish_reset();
+    let first = m.db.reset_attempts.last().unwrap();
+    assert_eq!(first.outcome, crate::resets::Outcome::NoCredit);
+    assert_eq!(POSTS.load(Ordering::SeqCst), 0);
+    // Nothing was spent, so the episode stays open, and a restart does not close it either.
+    assert!(!m.db.automation.latches.contains_key("a"));
+    assert!(!f.manager().db.automation.latches.contains_key("a"));
+    quota(&mut m, "a", low_with_credit2, now());
+    m.automation.retry_after.clear(); // the wait has passed
+    m.automation.next_check = 0;
+    m.automation_tick();
+    assert!(m.reset_job.is_some());
+    m.finish_reset();
+    assert_eq!(POSTS.load(Ordering::SeqCst), 1);
+    assert_eq!(m.db.reset_attempts.last().unwrap().credit_id, "credit2");
+}
+
+#[test]
+fn a_claim_the_server_keeps_refusing_waits_longer_each_time() {
+    use crate::claude_resets::{Access as ClaudeAccess, Request as ClaudeRequest};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static POSTS: AtomicUsize = AtomicUsize::new(0);
+    fn claim(_: &ClaudeAccess, request: &ClaudeRequest) -> Result<(u16, Value)> {
+        match request {
+            ClaudeRequest::Status => Ok((200, claude_usage(101))),
+            ClaudeRequest::Claim { .. } => {
+                POSTS.fetch_add(1, Ordering::SeqCst);
+                Ok((403, json!({"error":"forbidden"})))
+            }
+        }
+    }
+    POSTS.store(0, Ordering::SeqCst);
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    let mut c = claude("c", "SYNTHETIC_REFRESH_C");
+    c.credential["expiresAt"] = json!((now() + 3600) * 1000);
+    f.platform.vault_write("c", &c.encoded()).unwrap();
+    m.db.accounts.push(account("c", &c, false));
+    m.save().unwrap();
+    m.claude_reset_transport = Some(claim);
+    let mut config = m.db.automation.config.clone();
+    config.accounts[0].participate = false;
+    config.accounts[1].participate = false;
+    config.accounts.push(Rule {
+        id: "c".into(),
+        order: Order::ResetOnly,
+        participate: true,
+        below: 2,
+    });
+    m.configure_strategy(config, true).unwrap();
+    m.desktop.connected = false;
+    let mut waits = vec![];
+    for _ in 0..8 {
+        claude_quota(&mut m, &c, claude_low);
+        m.automation.retry_after.clear(); // the wait has passed
+        m.automation.next_check = 0;
+        m.automation_tick();
+        if m.reset_job.is_some() {
+            m.finish_reset();
+        }
+        waits.push(m.automation.retry_after["c"] - now());
+    }
+    assert_eq!(POSTS.load(Ordering::SeqCst), 8);
+    assert!(waits.windows(2).all(|w| w[1] >= w[0]), "{waits:?}");
+    assert!(waits[0] <= 60 && waits[7] >= 3600, "{waits:?}");
 }
