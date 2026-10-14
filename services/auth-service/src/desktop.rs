@@ -171,6 +171,7 @@ pub struct Runtime {
     // Account to switch to once a desktop restarted for that switch connects, with a deadline.
     pub pending_switch: Option<(String, u64)>,
     pub undebugged: fn(u16) -> Result<Undebugged>,
+    pub startup_finished: fn(&Path, u32, u64) -> Option<u64>,
     // The last such desktop already handled: restarted, or left running.
     pub settled_pid: Option<u32>,
     pub last_watch: u64,
@@ -206,6 +207,11 @@ impl Default for Runtime {
             undebugged: undebugged_desktop,
             #[cfg(test)]
             undebugged: |_| Ok(None),
+            #[cfg(not(test))]
+            startup_finished,
+            // Tests treat every desktop as having finished starting when it launched.
+            #[cfg(test)]
+            startup_finished: |_, _, age| Some(crate::status::now().saturating_sub(age)),
             settled_pid: None,
             last_watch: 0,
             restart_failed: false,
@@ -352,8 +358,64 @@ const DESKTOP_EXECUTABLES: [&str; 2] = [
     "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
     "/Applications/Codex.app/Contents/MacOS/Codex",
 ];
-// Seconds a desktop counts as just started; one running longer may be in use.
+// Seconds after its startup finished that a desktop counts as just started; one running longer
+// may be in use.
 pub const FRESH_DESKTOP_SECS: u64 = 60;
+// How long to wait for a desktop to finish starting, such as after an update that rebuilds its
+// history; one still starting after this is left alone.
+pub const STARTUP_WAIT_SECS: u64 = 600;
+// Codex desktop logs this once its startup has finished. Quitting it earlier makes it show
+// "failed to start" and stay open, so a restart waits for the line.
+const STARTUP_FINISHED: &str = "Host startup critical-path phases completed";
+// When the desktop with this pid finished starting, from its own main log; None while it is
+// still starting. `age` is how long the process has run.
+pub fn startup_finished(home: &Path, pid: u32, age: u64) -> Option<u64> {
+    let now = crate::status::now();
+    let launched = now.saturating_sub(age + 1);
+    let logs = home.join("Library/Logs/com.openai.codex");
+    let name = format!("-{pid}-t0-");
+    // Each process's main log is under the UTC date it started on.
+    let mut days = vec![utc_day(launched)?, utc_day(now)?];
+    days.dedup();
+    for day in days {
+        let Ok(entries) = std::fs::read_dir(logs.join(day)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file = entry.file_name();
+            let file = file.to_string_lossy();
+            // A log last written before this process started belongs to an earlier one.
+            let current = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .is_some_and(|t| t.as_secs() >= launched);
+            if !file.starts_with("codex-desktop-") || !file.contains(&name) || !current {
+                continue;
+            }
+            let text = std::fs::read(entry.path()).ok()?;
+            return String::from_utf8_lossy(&text)
+                .lines()
+                .find(|line| line.contains(STARTUP_FINISHED))
+                .and_then(|line| crate::quota::iso_time(line.split(' ').next()?));
+        }
+    }
+    None
+}
+fn utc_day(secs: u64) -> Option<String> {
+    let time = libc::time_t::try_from(secs).ok()?;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&time, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(format!(
+        "{}/{:02}/{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday
+    ))
+}
 // Tests use a synthetic process list instead, so they never restart the person's desktop.
 #[cfg_attr(test, allow(dead_code))]
 pub fn undebugged_desktop(port: u16) -> Result<Undebugged> {
@@ -565,6 +627,35 @@ mod tests {
         for bad in ["", "7", "a:01", "1-2", "1:2:3:4"] {
             assert_eq!(elapsed(bad), None);
         }
+    }
+    #[test]
+    fn startup_finished_reads_the_line_from_this_processs_own_log() {
+        let home = std::env::temp_dir().join(format!("authmanager-startup-{}", std::process::id()));
+        let day = home
+            .join("Library/Logs/com.openai.codex")
+            .join(utc_day(crate::status::now()).unwrap());
+        std::fs::create_dir_all(&day).unwrap();
+        let log =
+            day.join("codex-desktop-00000000-0000-0000-0000-000000000000-4242-t0-i1-043653-0.log");
+        let starting = "2026-10-14T04:36:53.942Z info Launching app buildFlavor=prod\n";
+        std::fs::write(&log, starting).unwrap();
+        assert_eq!(startup_finished(&home, 4242, 3), None);
+        std::fs::write(&log, format!("{starting}2026-10-14T04:36:55.000Z info [startup] [1.040] Host startup critical-path phases completed startupElapsedMs=1175\n")).unwrap();
+        assert_eq!(
+            startup_finished(&home, 4242, 3),
+            crate::quota::iso_time("2026-10-14T04:36:55.000Z")
+        );
+        // Another process's log, or one last written before this process started, does not count.
+        assert_eq!(startup_finished(&home, 424, 3), None);
+        let earlier = std::time::SystemTime::now() - Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        assert_eq!(startup_finished(&home, 4242, 3), None);
+        std::fs::remove_dir_all(&home).unwrap();
     }
     #[test]
     fn a_desktop_started_here_keeps_its_quit_confirmation() {

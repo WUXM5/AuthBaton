@@ -15,7 +15,7 @@ struct DesktopPage: View {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Codex 桌面热切换").font(.system(size: 20, weight: .semibold))
-                        Text("AuthManager 以调试模式启动 Codex 桌面并连上后，换号不用退出桌面窗口，自动换号也要靠它来暂停和接续会话。AuthManager 运行时，你照常打开的桌面，或更新后自行重启的桌面，会在刚启动、还没有任务时自动以调试模式重新打开，不会停在退出确认上；AuthManager 打开的桌面，你自己退出时照常确认。AuthManager 启动前就在用的桌面不会被重启，需要时在这里以调试模式启动一次。")
+                        Text("AuthManager 以调试模式启动 Codex 桌面并连上后，换号不用退出桌面窗口，自动换号也要靠它来暂停和接续会话。AuthManager 运行时，你照常打开的桌面，或更新后自行重启的桌面，会在启动完成、还没有任务时自动以调试模式重新打开，不会停在退出确认上；AuthManager 打开的桌面，你自己退出时照常确认。AuthManager 启动前就在用的桌面不会被重启，需要时在这里以调试模式启动一次。")
                             .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     if let error = service.accountError {
