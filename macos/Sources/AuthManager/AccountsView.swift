@@ -1,17 +1,6 @@
 import SwiftUI
 
-extension ManagedAccount {
-    var needsAction: Bool {
-        switch state {
-        case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": true
-        // The cloud renews it; the local login dates behind the notice no longer apply.
-        case "cloud_managed": false
-        default: loginNotice?.needsAttention == true
-        }
-    }
-}
-
-// Every confirmation or form the accounts page can open; the account is looked up live by ID.
+// Every confirmation or form an account surface can open; the account is looked up live by ID.
 enum AccountSheet: Identifiable {
     case login(provider: String, accountID: String?)
     case switchTo(String)
@@ -36,451 +25,361 @@ enum AccountSheet: Identifiable {
     }
 }
 
+// 账号: the account in use for each tool as a big number, the bench below in relay order.
+// Problems sit on the account they belong to.
 struct AccountsView: View {
     @EnvironmentObject private var service: ServiceController
-    @ObservedObject private var nav = AppNavigation.shared
+    @ObservedObject private var reminders = ReminderModel.shared
     @State private var sheet: AccountSheet?
-    @State private var showAdd = false
-    @State private var query = ""
-    @State private var dismissed = ReminderStore.dismissed()
     private var locked: Bool { service.accountBusy || service.directory?.busy == true }
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if let directory = service.directory {
-                HStack(spacing: 0) {
-                    ScrollView {
-                        list(directory)
-                            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 28)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                PageScaffold(title: "账号", subtitle: subtitle(directory), spacing: 24) {
+                    RefreshPill(checkedAt: latestCheck(directory), busy: service.isRefreshing) {
+                        Task {
+                            await service.refresh()
+                            await service.refreshQuotaIfNeeded()
+                        }
                     }
-                    .frame(minWidth: 520)
-                    if !directory.accounts.isEmpty {
-                        Divider()
-                        AccountInspector(account: selected(directory), directory: directory, open: { sheet = $0 })
-                            .frame(width: 340)
+                    Button { sheet = .login(provider: "codex", accountID: nil) } label: {
+                        HStack(spacing: 5) {
+                            Icon(.plus, size: 12, color: .white, weight: 2)
+                            Text("添加账号")
+                        }
+                    }
+                    .buttonStyle(.pill(.primary, height: 27))
+                    .help("登录新账号，或导入这台 Mac 上已有的登录")
+                    .disabled(locked || directory.recoveryNeeded)
+                } content: {
+                    notices(directory)
+                    if directory.accounts.isEmpty {
+                        emptyState
+                    } else {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(["codex", "claude"], id: \.self) { provider in
+                                HeroCard(provider: provider, directory: directory) { sheet = $0 }
+                            }
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        Bench(directory: directory) { sheet = $0 }
                     }
                 }
             } else if !service.isConnected && !service.isConnecting {
                 // The window's banner says why and offers to reconnect.
-                Spacer()
+                Color.clear
             } else if let error = service.directoryError {
-                Callout(icon: "exclamationmark.triangle.fill", tone: .warning, message: error).padding(20)
-                Spacer()
+                PageScaffold(title: "账号") { Banner(text: error) }
             } else {
                 ProgressView("正在载入账号列表…").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task { await service.refreshQuotaIfNeeded() }
-        .searchable(text: $query, placement: .toolbar, prompt: "搜索账号或邮箱")
-        .pageBar("账号", subtitle: subtitle) {
-            Button("刷新", systemImage: "arrow.clockwise") {
-                Task {
-                    await service.refresh()
-                    await service.refreshQuotaIfNeeded()
-                }
-            }
-            .help("刷新认证状态和额度").disabled(service.isRefreshing)
-            Button { showAdd = true } label: { Label("添加账号", systemImage: "plus").labelStyle(.titleAndIcon) }
-                .help("登录新账号或导入这台 Mac 已有的登录")
-                .disabled(locked || service.directory?.recoveryNeeded == true)
-                .popover(isPresented: $showAdd, arrowEdge: .bottom) {
-                    AddAccountChooser(login: { provider in showAdd = false; sheet = .login(provider: provider, accountID: nil) },
-                                      importCurrent: { provider in showAdd = false; importAccount(provider) })
-                        .disabled(locked || service.directory?.recoveryNeeded == true)
-                }
-        }
         .sheet(item: $sheet) { item in
             AccountSheetView(item: item, close: { sheet = nil }).environmentObject(service)
         }
     }
 
-    private var subtitle: String {
-        guard let directory = service.directory else { return "" }
-        let attention = directory.attentionCount
-        return "\(directory.accounts.count) 个账号" + (attention > 0 ? " · \(attention) 个需要处理" : "")
+    private func subtitle(_ directory: AccountDirectory) -> Text {
+        let codex = directory.current("codex") != nil, claude = directory.current("claude") != nil
+        let lead = directory.accounts.isEmpty ? "还没有账号。"
+            : codex && claude ? "Codex 和 Claude Code 都有账号在用。"
+            : codex ? "Codex 有账号在用，Claude Code 还没有。"
+            : claude ? "Claude Code 有账号在用，Codex 还没有。" : "还没有在用的账号。"
+        let count = directory.issues(dismissed: reminders.dismissed).count
+        guard count > 0 else { return Text(lead) }
+        return Text(lead) + Text("\(count) 件事要处理").foregroundStyle(Palette.attentionText).fontWeight(.semibold) + Text("，标在对应的账号上。")
     }
 
-    private func selected(_ directory: AccountDirectory) -> ManagedAccount? {
-        if let id = nav.selection, let account = directory.accounts.first(where: { $0.id == id }) { return account }
-        return directory.accounts.first(where: \.needsAction) ?? directory.current("codex") ?? directory.accounts.first
+    private func latestCheck(_ directory: AccountDirectory) -> Double? {
+        directory.accounts.compactMap { $0.usage?.checkedAt }.max()
     }
 
-    @ViewBuilder private func list(_ directory: AccountDirectory) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let error = service.accountError, service.accountErrorID == nil || !directory.accounts.contains(where: { $0.id == service.accountErrorID }) {
-                Callout(icon: "exclamationmark.triangle.fill", tone: .warning, message: error) {
-                    Button("知道了") { service.clearAccountError() }.controlSize(.small)
-                }
-            }
-            if let error = service.directoryError {
-                Callout(icon: "exclamationmark.triangle.fill", tone: .warning, message: error)
-            }
-            if !directory.accounts.isEmpty { nowStrip(directory) }
-            alerts(directory)
-            if directory.accounts.isEmpty {
-                emptyState
-            }
-            let shown = directory.accounts.filter { account in
-                (nav.filter == nil || account.provider == nav.filter)
-                    && (query.isEmpty || "\(account.label) \(account.identity ?? "")".localizedCaseInsensitiveContains(query))
-            }
-            ForEach(["codex", "claude"], id: \.self) { provider in
-                let rows = shown.filter { $0.provider == provider }
-                if !rows.isEmpty {
-                    groupHeader(provider, count: rows.count, directory: directory)
-                    AccountTable(accounts: rows, selected: selected(directory)?.id, reminders: Set(ExpiryReminder.all(rows).flatMap(\.itemIDs))) { id in
-                        nav.selection = id
-                    }
-                }
-            }
-            if !directory.accounts.isEmpty && shown.isEmpty {
-                Text("没有匹配「\(query)」的账号").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 24)
-            }
-            HStack(spacing: 6) {
-                Image(systemName: "clock")
-                Text("额度每 5 分钟自动查询；橙色圆点是 7 天内到期的重置次数。关闭窗口后继续在菜单栏运行。")
-            }
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // MARK: 正在使用
-
-    private func nowStrip(_ directory: AccountDirectory) -> some View {
-        let pi = service.snapshot?.providers.first { $0.id == "pi" }
-        return HStack(spacing: 10) {
-            ForEach(["codex", "claude"], id: \.self) { provider in
-                if let current = directory.current(provider) {
-                    nowCard(glyph: provider, title: "\(ProviderGlyph.name(provider)) 正在使用", name: current.displayName,
-                            detail: nowDetail(current), tone: current.lowestPrimary.map { Meter.tone(Double($0)) } ?? .neutral) {
-                        nav.selection = current.id
-                    }
-                } else if directory.accounts.contains(where: { $0.provider == provider }) {
-                    nowCard(glyph: provider, title: "\(ProviderGlyph.name(provider))", name: "没有当前账号", detail: "在列表里选择一个设为当前", tone: .neutral) {}
-                }
-            }
-            if let pi {
-                nowCard(glyph: "pi", title: "pi 取用", name: pi.state == "configured" ? "跟随 Codex 当前" : pi.stateLabel,
-                        detail: directory.current("codex").map { "新任务用 \($0.displayName)" } ?? pi.summary, tone: .neutral) {
-                    nav.show(.clients)
-                }
+    // What belongs to no single account: an interrupted switch, a service notice, a login, a stalled rule.
+    @ViewBuilder private func notices(_ directory: AccountDirectory) -> some View {
+        if let error = service.accountError, service.accountErrorID == nil || !directory.accounts.contains(where: { $0.id == service.accountErrorID }) {
+            Banner(text: error) {
+                Button("知道了") { service.clearAccountError() }.buttonStyle(.pill(.onAttention, height: 20))
             }
         }
-    }
-
-    private func nowDetail(_ account: ManagedAccount) -> String {
-        guard let window = account.primaryWindows.min(by: { $0.remaining < $1.remaining }) else {
-            return account.quotaCaption ?? account.health.title
-        }
-        return "剩余 \(window.remaining)% · \(window.shortReset)重置"
-    }
-
-    private func nowCard(glyph: String, title: String, name: String, detail: String, tone: Tone, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                ProviderGlyph(provider: glyph, size: 28)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.caption2).foregroundStyle(.secondary)
-                    Text(name).font(.callout.weight(.semibold)).lineLimit(1)
-                    Text(detail).font(.caption).monospacedDigit().lineLimit(1)
-                        .foregroundStyle(tone == .warning || tone == .danger ? tone.color : Palette.muted)
-                }
-                Spacer(minLength: 0)
+        if let error = service.directoryError { Banner(text: error) }
+        if directory.recoveryNeeded { RecoveryBanner() }
+        if let notice = directory.notice { Banner(glyph: .info, text: notice) }
+        if let strategy = directory.strategy, strategy.phase == "attention" {
+            Banner(glyph: .relay, title: "自动换号停下了", text: strategy.message) {
+                Button("去看看") { AppNavigation.shared.show(.automation) }.buttonStyle(.pill(.onAttention, height: 20))
             }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.hairline))
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: 提醒
-
-    @ViewBuilder private func alerts(_ directory: AccountDirectory) -> some View {
-        if directory.recoveryNeeded {
-            // Only a plain switch interrupted while writing the default login; desktop switches keep no record.
-            Callout(icon: "arrow.uturn.backward.circle.fill", tone: .danger, title: "上次切换尚未确认",
-                    message: "上次切换在写入默认登录时中断。结束相关任务后重试，AuthManager 会按实际登录状态收尾。") {
-                Button("重试上次切换（结束任务后）") { Task { await service.accountOperation("accounts.recover") } }
-                    .buttonStyle(.borderedProminent).controlSize(.small).padding(.top, 2)
-            }
-        }
-        if let notice = directory.notice {
-            Callout(icon: "info.circle.fill", tone: .warning, message: notice)
         }
         if let login = service.login {
-            Callout(icon: login.isActive ? "person.badge.clock.fill" : "person.crop.circle.badge.checkmark", tone: .accent,
-                    message: "\(ProviderGlyph.name(login.provider)) · \(login.phaseLabel)") {
+            HStack(spacing: 9) {
+                if login.isActive { ProgressView().controlSize(.small) } else { Icon(login.phase == "succeeded" ? .check : .info, size: 14, color: Palette.ink3) }
+                Text("\(GlyphTile.name(login.provider)) · \(login.phaseLabel)").font(.system(size: 12))
+                Spacer()
                 Button(login.isActive ? "查看登录进度" : "查看最近登录结果") {
                     sheet = .login(provider: login.provider, accountID: service.loginTarget?.accountID)
                 }
-                    .controlSize(.small)
+                .buttonStyle(.pill(.secondary))
             }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .loopCard(radius: 12)
         }
-        let urgent = directory.accounts.filter(\.needsAction)
-        let reminders = ExpiryReminder.all(directory.accounts, dismissed: dismissed)
-        let desktopBlocked = directory.desktop?.enabled == true && directory.desktop?.connected == false
-        if !urgent.isEmpty || !reminders.isEmpty || desktopBlocked {
-            VStack(spacing: 0) {
-                ForEach(urgent) { account in
-                    alertRow(tone: account.health.tone, icon: "exclamationmark.triangle.fill",
-                             title: "\(account.displayName)：\(account.health.title)",
-                             detail: account.health.detail ?? account.message) {
-                        Button("查看") { nav.selection = account.id }
-                        if let fix = fixAction(account, directory) {
-                            Button(fix.0) { sheet = fix.1 }.buttonStyle(.borderedProminent).disabled(locked)
-                        }
-                    }
-                }
-                if desktopBlocked {
-                    alertRow(tone: .warning, icon: "macwindow",
-                             title: "Codex 桌面热切换已开启，但桌面没有连上",
-                             detail: directory.strategy?.config.enabled == true
-                                ? "现在手动和自动都换不了 Codex 账号；额度见底时只会重置。以调试模式启动桌面后恢复。"
-                                : "现在换不了 Codex 账号。以调试模式启动桌面，或关闭热切换改用普通切换。") {
-                        Button("去连接") { nav.show(.desktop) }
-                    }
-                }
-                ForEach(reminders) { reminder in
-                    alertRow(tone: .warning, icon: "ticket", title: reminder.title, detail: reminder.detail) {
-                        Button("查看") { nav.selection = reminder.accountID }
-                        Button("知道了") { ReminderStore.dismiss(reminder.itemIDs); dismissed = ReminderStore.dismissed() }
-                    }
-                }
-            }
-            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.hairline))
-        }
-    }
-
-    private func fixAction(_ account: ManagedAccount, _ directory: AccountDirectory) -> (String, AccountSheet)? {
-        switch directory.primaryAction(for: account) {
-        case .recover: (account.recoverTitle, .recover(account.id))
-        case .relogin: ("重新登录", .login(provider: account.provider, accountID: account.id))
-        default: nil
-        }
-    }
-
-    private func alertRow<Actions: View>(tone: Tone, icon: String, title: String, detail: String, @ViewBuilder actions: () -> Actions) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon).foregroundStyle(tone.color).frame(width: 18).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            HStack(spacing: 6) { actions() }.controlSize(.small)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
-    }
-
-    // MARK: 分组
-
-    private func groupHeader(_ provider: String, count: Int, directory: AccountDirectory) -> some View {
-        HStack(spacing: 8) {
-            ProviderGlyph(provider: provider, size: 20)
-            Text(ProviderGlyph.name(provider)).font(.callout.weight(.semibold))
-            Text("\(count)").font(.callout).foregroundStyle(.tertiary).monospacedDigit()
-            Spacer()
-            if provider == "codex", let strategy = directory.strategy {
-                Button { nav.show(.automation) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bolt")
-                        if strategy.config.enabled {
-                            Text("主额度见底时自动处理")
-                            if directory.desktop?.connected != true {
-                                Text("· 桌面未连接，只会重置").foregroundStyle(Palette.warning)
-                            }
-                        } else {
-                            Text("自动换号与重置已关闭")
-                        }
-                    }
-                    .font(.caption)
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.top, 4)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "person.crop.circle.badge.plus")
-                .font(.system(size: 40, weight: .light)).foregroundStyle(Palette.accent)
-            Text("把常用账号放到一个列表").font(.title3.weight(.semibold))
-            Text("可以登录新账号独立保存，也可以导入这台 Mac 上官方客户端已有的登录；当前账号不会因此被替换。")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 440)
-            HStack(spacing: 10) {
-                Button("登录 Codex 账号") { sheet = .login(provider: "codex", accountID: nil) }
-                Button("登录 Claude Code 账号") { sheet = .login(provider: "claude", accountID: nil) }
+        VStack(spacing: 12) {
+            BrandTile(size: 44)
+            Text("把常用账号放在一起").font(.system(size: 14, weight: .bold))
+            Text("可以登录新账号单独保存，也可以导入这台 Mac 上官方客户端已有的登录；现在的默认登录不会被换掉。")
+                .font(.system(size: 12)).foregroundStyle(Palette.ink2).multilineTextAlignment(.center).frame(maxWidth: 374)
+            HStack(spacing: 9) {
+                Button("添加 Codex 账号") { sheet = .login(provider: "codex", accountID: nil) }.buttonStyle(.pill(.primary, height: 27))
+                Button("添加 Claude 账号") { sheet = .login(provider: "claude", accountID: nil) }.buttonStyle(.pill(.secondary, height: 27))
             }
             .disabled(locked || service.directory?.recoveryNeeded == true)
         }
-        .frame(maxWidth: .infinity).padding(.vertical, 36).card()
-    }
-
-    private func importAccount(_ provider: String) {
-        // A blank name lets the service name the account after its login email.
-        Task { await service.accountOperation("accounts.import", params: LoginParams(provider: provider)) }
+        .frame(maxWidth: .infinity).padding(.vertical, 34)
+        .loopCard(radius: 19, raised: true)
     }
 }
 
-// MARK: 账号表
+// MARK: 在用
 
-struct AccountTable: View {
-    let accounts: [ManagedAccount]
-    let selected: String?
-    let reminders: Set<String>
-    let select: (String) -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("账号").frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
-                Text("状态").frame(width: 108, alignment: .leading)
-                Text("主额度剩余 · 下次重置").frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                Text("重置次数").frame(width: 62, alignment: .leading)
-            }
-            .font(.system(size: 11)).foregroundStyle(.tertiary)
-            .padding(.horizontal, 14).frame(height: 28)
-            .background(Palette.raised)
-            ForEach(accounts) { account in
-                Divider()
-                AccountRow(account: account, selected: account.id == selected,
-                           soonCredits: Set(account.codexCredits.map(\.id)).intersection(reminders)) { select(account.id) }
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.hairline))
-    }
-}
-
-private struct AccountRow: View {
-    @EnvironmentObject private var service: ServiceController
-    let account: ManagedAccount
-    let selected: Bool
-    let soonCredits: Set<String>
-    let action: () -> Void
-    @State private var hovering = false
+private struct HeroCard: View {
+    let provider: String
+    let directory: AccountDirectory
+    let open: (AccountSheet) -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(account.displayName).font(.callout.weight(.semibold)).lineLimit(1)
-                        if account.native { Tag(text: "当前", tone: .accent, filled: true) }
-                        if service.directory?.desktop?.selected == account.id { Tag(text: "桌面", tone: .accent) }
-                    }
-                    // The plan rides on the second line so an email-length name keeps the full column.
-                    let detail = [account.identityLine, account.plan?.uppercased()].compactMap { $0 }.joined(separator: " · ")
-                    Text(detail.isEmpty ? " " : detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
-                HealthLabel(health: account.health).frame(width: 108, alignment: .leading)
-                VStack(alignment: .leading, spacing: 5) {
-                    if account.primaryWindows.isEmpty {
-                        Text(account.quotaCaption ?? "—").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(account.primaryWindows.prefix(2).enumerated()), id: \.offset) { _, window in
-                            QuotaLine(quota: window)
-                        }
-                        if let caption = account.quotaCaption {
-                            Text(caption).font(.caption2).foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                credits.frame(width: 62, alignment: .leading)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .frame(minHeight: 54)
-            .background(selected ? Palette.accent.opacity(0.10) : hovering ? Palette.track.opacity(0.6) : .clear)
-            .overlay(alignment: .leading) {
-                if account.needsAction {
-                    UnevenRoundedRectangle(bottomTrailingRadius: 3, topTrailingRadius: 3).fill(Palette.danger).frame(width: 3).padding(.vertical, 8)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    @ViewBuilder private var credits: some View {
-        if account.provider == "claude" {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(account.creditCount.map { "\($0) 次" } ?? "—").font(.caption).monospacedDigit()
-                Text("官方重置").font(.caption2).foregroundStyle(.tertiary)
-            }
-        } else if account.codexCredits.isEmpty, let count = account.usage?.resetCredits?.availableCount, count > 0 {
-            // The details request failed but the usage summary still counts the credits; unknown expiry is not zero.
-            HStack(spacing: 3) {
-                ForEach(0..<min(count, 5), id: \.self) { _ in Circle().fill(Palette.muted).frame(width: 6, height: 6) }
-                Text("\(count)").font(.caption).foregroundStyle(.secondary).monospacedDigit().padding(.leading, 2)
-            }
-            .help("官方这次没有返回明细，到期时间在下次查询后显示")
-        } else if account.codexCredits.isEmpty {
-            Text(account.usage?.resetCredits == nil ? "—" : "无").font(.caption).foregroundStyle(.tertiary)
+        let current = directory.current(provider)
+        let any = directory.accounts.contains { $0.provider == provider }
+        if !any {
+            AddCard(provider: provider, open: open, lead: "还没有 \(GlyphTile.name(provider)) 账号", detail: "登录一个，或导入这台 Mac 上已有的登录。")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            HStack(spacing: 3) {
-                ForEach(account.codexCredits.prefix(5)) { credit in
-                    Circle().fill(soonCredits.contains(credit.id) ? Palette.warning : Palette.accent).frame(width: 6, height: 6)
-                        .help("\(QuotaResetCredit.expiryLabel(credit.expiresAt)) 到期")
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 9) {
+                        GlyphTile(provider: provider, size: 26)
+                        Button { AppNavigation.shared.show(provider == "codex" ? .codex : .claude) } label: {
+                            Text(GlyphTile.name(provider)).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink)
+                        }
+                        .buttonStyle(.plain)
+                        .help("查看全部 \(GlyphTile.name(provider)) 账号")
+                        Spacer(minLength: 7)
+                        AccountSwitcher(provider: provider, current: current, directory: directory, open: open)
+                    }
+                    if let current {
+                        QuotaFigures(account: current, notch: directory.notch(for: current), size: 49) {
+                            ChancesTicket(account: current)
+                            if let warmup = current.warmup, warmup.enabled {
+                                HStack(spacing: 5) {
+                                    Icon(.sun, size: 11, color: Palette.ink2)
+                                    Text(String(format: "每天 %02d:00 预热", warmup.hour))
+                                }
+                                .font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                                .padding(.horizontal, 9).frame(height: 20)
+                                .background(Palette.chip, in: Capsule())
+                                .help("到点发一条短消息，让 5 小时窗口提前开始计时" + (warmup.last.map { "；\(When.text($0.at)) \($0.message)" } ?? ""))
+                            }
+                        }
+                        .padding(.top, 19)
+                    } else {
+                        VStack(alignment: .leading, spacing: 3.5) {
+                            Text("没有在用的账号").font(.system(size: 19, weight: .semibold)).foregroundStyle(Palette.ink3)
+                            Text("在右上角选一个换上。").font(.system(size: 12)).foregroundStyle(Palette.ink3)
+                        }
+                        .padding(.top, 19)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Text("\(account.codexCredits.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit().padding(.leading, 2)
+                .padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 15)
+                if let current {
+                    AccountStrips(account: current, directory: directory, open: open, desktop: .all).padding(.horizontal, 19)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .loopCard(radius: 19, raised: true)
+        }
+    }
+}
+
+// The in-use account as a button: its menu lists who can take over.
+private struct AccountSwitcher: View {
+    @EnvironmentObject private var service: ServiceController
+    let provider: String
+    let current: ManagedAccount?
+    let directory: AccountDirectory
+    let open: (AccountSheet) -> Void
+
+    var body: some View {
+        let others = directory.relay(provider).filter { !$0.native }
+        Menu {
+            ForEach(others) { account in
+                let action = directory.primaryAction(for: account)
+                Button(action == .switchTo ? "换上 \(account.displayName)" + (account.lowestPrimary.map { " · 剩余 \($0)%" } ?? "")
+                                           : "\(account.displayName) · \(account.health.title)") {
+                    open(.switchTo(account.id))
+                }
+                .disabled(action != .switchTo || service.accountBusy || directory.switchDisabled(for: account))
+            }
+            if !others.isEmpty { Divider() }
+            Button("添加 \(GlyphTile.name(provider)) 账号…") { open(.login(provider: provider, accountID: nil)) }
+        } label: {
+            HStack(spacing: 7) {
+                if let current { Seal(current.displayName, style: .inUse, size: 22) }
+                Text(current?.displayName ?? "选一个账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                Icon(.chevronDown, size: 9, color: Palette.ink3, weight: 2.4)
+            }
+            .padding(.leading, current == nil ? 10 : 3.5).padding(.trailing, 9)
+            .frame(height: 27)
+            .background(Palette.ground, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel(current.map { "\(GlyphTile.name(provider)) 在用 \($0.displayName)，换一个账号" } ?? "选一个 \(GlyphTile.name(provider)) 账号")
+    }
+}
+
+// MARK: 备用
+
+private struct Bench: View {
+    let directory: AccountDirectory
+    let open: (AccountSheet) -> Void
+
+    var body: some View {
+        let groups = ["codex", "claude"].map { provider in (provider, directory.relay(provider).filter { !$0.native }) }.filter { !$0.1.isEmpty }
+        let singles = ["codex", "claude"].filter { provider in directory.accounts.filter { $0.provider == provider }.count == 1 }
+        if !groups.isEmpty || !singles.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("备用").font(.system(size: 14, weight: .bold))
+                    Text(directory.strategy?.config.enabled == true ? "见底时按这个顺序换上" : "随时可以换上")
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Spacer()
+                    if directory.strategy != nil {
+                        Button("换号与重置 ›") { AppNavigation.shared.show(.automation) }.buttonStyle(.pill(.link))
+                    }
+                }
+                if !groups.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(groups, id: \.0) { provider, rows in
+                            HStack(spacing: 7) {
+                                Icon(.provider(provider), size: 13)
+                                Text(GlyphTile.name(provider)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 15).frame(height: 34)
+                            .overlay(alignment: .top) { if provider != groups.first?.0 { Rectangle().fill(Palette.divider).frame(height: 1) } }
+                            ForEach(rows) { account in
+                                BenchRow(account: account, directory: directory, open: open)
+                                    .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
+                            }
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .loopCard()
+                }
+                ForEach(singles, id: \.self) { provider in
+                    AddCard(provider: provider, open: open, lead: "\(GlyphTile.name(provider)) 只有这一个账号", detail: "再加一个，见底时就能自动换号。")
+                }
             }
         }
     }
 }
 
-// MARK: 添加账号
-
-struct AddAccountChooser: View {
-    let login: (String) -> Void
-    let importCurrent: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("登录新账号（独立保存，不替换当前默认）").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 4)
-            AddOption(glyph: "codex", title: "Codex", detail: "官方设备授权，在浏览器中确认") { login("codex") }
-            AddOption(glyph: "claude", title: "Claude Code", detail: "官方 Claude CLI 登录") { login("claude") }
-            Divider().padding(.vertical, 6)
-            Text("导入这台 Mac 已有的登录").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 8)
-            AddOption(glyph: "codex", title: "当前 Codex 登录", detail: "按登录邮箱命名；已在列表中则只更新") { importCurrent("codex") }
-            AddOption(glyph: "claude", title: "当前 Claude Code 登录", detail: "按登录邮箱命名；已在列表中则只更新") { importCurrent("claude") }
-        }
-        .padding(8).frame(width: 340)
-    }
-}
-
-private struct AddOption: View {
-    let glyph: String
-    let title: String
-    let detail: String
-    let action: () -> Void
+private struct BenchRow: View {
+    @EnvironmentObject private var service: ServiceController
+    @ObservedObject private var reminders = ReminderModel.shared
+    let account: ManagedAccount
+    let directory: AccountDirectory
+    let open: (AccountSheet) -> Void
     @State private var hovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                ProviderGlyph(provider: glyph, size: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.callout.weight(.medium))
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
+        let action = directory.primaryAction(for: account)
+        let rule = directory.rule(for: account.id)
+        HStack(spacing: 12) {
+            Text(directory.rank(of: account).map(String.init) ?? "").font(.system(size: 11)).foregroundStyle(Palette.ink3).monospacedDigit()
+                .frame(width: 12, alignment: .leading)
+            Seal(account.displayName, style: rule?.participate == false ? .out : .standby, size: 26)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                detail
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .background(hovering ? Palette.accent.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(minWidth: 102, maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 9) {
+                if let lowest = account.lowestPrimary {
+                    QuotaBar(remaining: lowest, height: 4.5)
+                    Text("\(lowest)%").font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .lineLimit(1).frame(width: 40, alignment: .trailing)
+                } else {
+                    Text(account.quotaCaption ?? "—").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            .frame(minWidth: 77, maxWidth: 170)
+            Text(account.primaryWindows.min { $0.remaining < $1.remaining }?.refill() ?? "")
+                .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                .frame(width: 68, alignment: .leading)
+            let locked = service.accountBusy || directory.busy || directory.recoveryNeeded
+            HStack(spacing: 5) {
+                switch action {
+                case .recover:
+                    Button(account.recoverTitle) { open(.recover(account.id)) }.buttonStyle(.pill(.primary)).disabled(locked)
+                case .relogin:
+                    Button("重新登录") { open(.login(provider: account.provider, accountID: account.id)) }.buttonStyle(.pill(.primary)).disabled(locked)
+                default:
+                    if hovering { AccountActions(account: account, directory: directory, open: open) }
+                }
+            }
+            .frame(width: 170, alignment: .trailing)
+            AccountMenu(account: account, directory: directory, open: open, filled: hovering)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 15).padding(.vertical, 9)
+        .frame(minHeight: 51)
+        .background(hovering ? Palette.hover : .clear)
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+
+    // Under the name: what is wrong if anything, otherwise the reset cards.
+    @ViewBuilder private var detail: some View {
+        let health = account.health
+        if account.needsAction || !account.quietState {
+            Text(health.title).font(.system(size: 11)).foregroundStyle(health.tone.color).lineLimit(1)
+                .help(health.detail ?? account.message)
+        } else if let chances = account.chances(dismissed: reminders.dismissed) {
+            Text(chances.text).font(.system(size: 11)).foregroundStyle(chances.soon ? Palette.attentionText : Palette.ink3).lineLimit(1)
+                .help(chances.help)
+        } else {
+            Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+        }
+    }
+}
+
+// A dashed invitation to add an account.
+struct AddCard: View {
+    let provider: String
+    let open: (AccountSheet) -> Void
+    let lead: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Icon(.provider(provider), size: 15)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(lead).font(.system(size: 12, weight: .semibold))
+                Text(detail).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            }
+            Spacer(minLength: 10)
+            Button("添加 \(provider == "codex" ? "Codex" : "Claude") 账号") { open(.login(provider: provider, accountID: nil)) }
+                .buttonStyle(.pill(.secondary, height: 26))
+        }
+        .padding(.horizontal, 15).padding(.vertical, 14)
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Palette.dash, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
     }
 }

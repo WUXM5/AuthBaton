@@ -36,7 +36,9 @@ struct AuthManagerApp: App {
         Window("AuthManager", id: "main") {
             ManagedWindow(delegate: delegate).environmentObject(service)
         }
-        .defaultSize(width: 1200, height: 780)
+        // The sidebar runs up under the traffic lights; pages carry their own titles.
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1020, height: 660)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("刷新状态与额度") { Task { await service.refresh(); await service.refreshQuotaIfNeeded() } }

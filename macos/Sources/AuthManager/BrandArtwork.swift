@@ -3,11 +3,6 @@ import SwiftUI
 
 @MainActor
 enum BrandArtwork {
-    static let mark: NSImage = {
-        let url = Bundle.module.url(forResource: "BrandMark", withExtension: "png")!
-        return NSImage(contentsOf: url)!
-    }()
-
     static let menuIcon: NSImage = {
         let url = Bundle.module.url(forResource: "MenuMark", withExtension: "png")!
         let image = NSImage(contentsOf: url)!
@@ -48,13 +43,4 @@ enum BrandArtwork {
         let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png")!
         return NSImage(contentsOf: url)!
     }()
-}
-
-struct BrandMark: View {
-    var body: some View {
-        Image(nsImage: BrandArtwork.mark)
-            .resizable()
-            .scaledToFit()
-            .accessibilityLabel("AuthManager · 无垠")
-    }
 }
