@@ -45,9 +45,7 @@ impl Accounts {
             .into_iter()
             .find(|p| Path::new(p).exists())
             .ok_or("未找到官方桌面应用")?;
-        let status = std::process::Command::new("/usr/bin/open")
-            .args(["-a", app, "--args"])
-            .args(desktop::launch_args(self.db.desktop.port))
+        let status = desktop::open_desktop(app, self.db.desktop.port)
             .status()
             .map_err(|_| "无法启动官方桌面")?;
         if status.success() {
@@ -233,6 +231,13 @@ impl Accounts {
         Ok(())
     }
     pub(super) fn desktop_tick(&mut self) {
+        let skip = self.db.desktop.enabled;
+        if self.desktop.quit_confirmation_skipped != Some(skip) {
+            // Tried once per change: if it fails, a desktop about to be restarted still asks
+            // before quitting, as it did before.
+            let _ = (self.desktop.skip_quit_confirmation)(skip);
+            self.desktop.quit_confirmation_skipped = Some(skip);
+        }
         if self.desktop.job.as_ref().is_some_and(|j| j.is_finished()) {
             // Retry delay starts at completion, so slow/unavailable bridges cannot
             // keep configuration controls perpetually occupied.
@@ -622,6 +627,10 @@ impl Accounts {
     pub(super) fn desktop_stop(&mut self) {
         if let Some(job) = self.desktop.job.take() {
             let _ = job.join();
+        }
+        // Without AuthManager nothing restarts a desktop, so every desktop keeps its confirmation.
+        if self.desktop.quit_confirmation_skipped == Some(true) {
+            let _ = (self.desktop.skip_quit_confirmation)(false);
         }
         if self.db.desktop.enabled && self.desktop.connected {
             let _ = self
