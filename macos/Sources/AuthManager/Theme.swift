@@ -1,20 +1,48 @@
 import AppKit
 import SwiftUI
 
-// Colors follow the system appearance; every token has a light and a dark value.
+// 回环: one brand colour, tool colours only inside small icons, amber only where something needs a hand.
+// Every token has a light and a dark value; dark lifts the brand by one step.
 enum Palette {
-    static let canvas = dynamic(0xF4F4F6, 0x161618)
-    static let card = dynamic(0xFFFFFF, 0x1F1F23)
-    static let raised = dynamic(0xF7F7F9, 0x27272C)
-    static let hairline = dynamic(0x000000, 0xFFFFFF, alpha: (0.08, 0.09))
-    static let track = dynamic(0x000000, 0xFFFFFF, alpha: (0.07, 0.10))
-    static let accent = dynamic(0x5B5BD6, 0x8B8DF5)
-    static let success = dynamic(0x1E8A4C, 0x4CC38A)
-    static let warning = dynamic(0xB25E00, 0xF0A632)
-    static let danger = dynamic(0xCE2C31, 0xFF6B6B)
-    static let muted = Color(nsColor: .secondaryLabelColor)
-    static let codex = dynamic(0x24242A, 0x4A4A54)
-    static let claude = dynamic(0xD97757, 0xD97757)
+    // 无垠青 #0897B8. solid carries white text (buttons, switches, the in-use seal), deep is brand text on a
+    // tint, soft is tracks and bench seals, wash is tiles and chips.
+    static let brand = dynamic(0x0897B8, 0x46B1CA)
+    static let solid = dynamic(0x07809C, 0x07809C)
+    static let deep = dynamic(0x066A81, 0x7DCBDD)
+    static let soft = dynamic(0xCEEAF1, 0x1D4A57)
+    static let wash = dynamic(0xEBF7F9, 0x15323B)
+
+    static let ink = dynamic(0x15171C, 0xF1F2F4)
+    static let ink2 = dynamic(0x484C55, 0xC3C7CE)
+    static let ink3 = dynamic(0x687079, 0x8D939C)
+    static let disabled = dynamic(0x9AA0A9, 0x5D626A)
+    static let ring = dynamic(0x15171C, 0xFFFFFF, alpha: (0.06, 0.08))
+    static let edge = dynamic(0x15171C, 0xFFFFFF, alpha: (0.11, 0.16))
+    static let divider = dynamic(0xEEF0F3, 0x2B2D32)
+    static let dash = dynamic(0xD5D9DF, 0x3E4148)
+    static let dashStrong = dynamic(0xA3A9B3, 0x5D626A)
+    static let rail = dynamic(0xECEEF1, 0x18191C)
+    static let railEdge = dynamic(0xDDE0E5, 0x26282D)
+    static let ground = dynamic(0xF4F5F7, 0x141518)
+    static let card = dynamic(0xFFFFFF, 0x1E2024)
+    static let chip = dynamic(0xF1F2F5, 0x2A2C31)
+    static let panel = dynamic(0xF6F7F9, 0x25272C)
+    static let field = dynamic(0xF4F5F7, 0x2A2C31)
+    static let hover = dynamic(0xF8F9FA, 0x23252A)
+
+    static let attention = dynamic(0xB56200, 0xF0A632)
+    static let attentionText = dynamic(0x8F4C00, 0xF4B860)
+    static let attentionFill = dynamic(0xFBEBD3, 0x3B2C15)
+    static let attentionWash = dynamic(0xFDF4E6, 0x2A2217)
+    static let attentionInk = dynamic(0x6B4A1C, 0xE6CB9C)
+    static let attentionDot = dynamic(0xE58A00, 0xF0A632)
+    static let attentionDash = dynamic(0xE3A33E, 0xC98A2C)
+    static let danger = dynamic(0xB3261E, 0xFF7B72)
+
+    static let codex = dynamic(0x5E62E8, 0x8D90F6)
+    static let codexTile = dynamic(0xF1F2F8, 0x26283F)
+    static let claude = dynamic(0xD9774F, 0xE38A66)
+    static let claudeTile = dynamic(0xFBF1EC, 0x3A2A23)
 
     private static func dynamic(_ light: UInt32, _ dark: UInt32, alpha: (CGFloat, CGFloat) = (1, 1)) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
@@ -26,183 +54,395 @@ enum Palette {
     }
 }
 
+// Normal states stay uncoloured; only what needs a hand turns amber.
 enum Tone {
-    case neutral, accent, success, warning, danger
+    case neutral, active, attention
     var color: Color {
         switch self {
-        case .neutral: Palette.muted
-        case .accent: Palette.accent
-        case .success: Palette.success
-        case .warning: Palette.warning
-        case .danger: Palette.danger
+        case .neutral: Palette.ink3
+        case .active: Palette.deep
+        case .attention: Palette.attentionText
         }
     }
 }
 
+// MARK: Surfaces
+
 extension View {
-    func card(padding: CGFloat = 18, highlighted: Bool = false) -> some View {
-        self.padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(highlighted ? Palette.accent.opacity(0.5) : Palette.hairline, lineWidth: highlighted ? 1.5 : 1))
-            .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
+    // Hero cards are raised; everything else sits flat with a hairline.
+    // The shadow belongs to the card's shape; on the whole view SwiftUI would give every child its own.
+    func loopCard(radius: CGFloat = 15, raised: Bool = false) -> some View {
+        self.background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.card)
+                .shadow(color: .black.opacity(raised ? 0.06 : 0), radius: raised ? 12 : 0, y: raised ? 9 : 0)
+        }
+        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
     }
 
-    func panel(padding: CGFloat = 14) -> some View {
-        self.padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    func loopPanel(radius: CGFloat = 12) -> some View {
+        self.background(Palette.panel, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+    }
+
+    // The page column: centred, at most 960 wide.
+    func pageColumn() -> some View {
+        self.padding(.horizontal, 27).padding(.top, 26).padding(.bottom, 41)
+            .frame(maxWidth: 816, alignment: .leading)
+            .frame(maxWidth: .infinity)
     }
 }
 
 struct PageHeader<Trailing: View>: View {
     let title: String
-    let subtitle: String
+    var subtitle: Text? = nil
+    var provider: String? = nil
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 16) {
+        HStack(alignment: .bottom, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 26, weight: .bold))
-                Text(subtitle).font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 9) {
+                    if let provider {
+                        GlyphTile(provider: provider, size: 27)
+                            .overlay(RoundedRectangle(cornerRadius: 7.5, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+                    }
+                    Text(title).font(.system(size: 22, weight: .bold)).kerning(-0.26).foregroundStyle(Palette.ink)
+                }
+                if let subtitle {
+                    subtitle.font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Spacer(minLength: 16)
-            trailing
+            Spacer(minLength: 14)
+            HStack(spacing: 7) { trailing }
         }
     }
 }
 
 extension PageHeader where Trailing == EmptyView {
-    init(title: String, subtitle: String) {
-        self.init(title: title, subtitle: subtitle) { EmptyView() }
+    init(title: String, subtitle: Text? = nil, provider: String? = nil) {
+        self.init(title: title, subtitle: subtitle, provider: provider) { EmptyView() }
     }
 }
 
-struct StatusPill: View {
-    let text: String
-    let tone: Tone
+// Every page: a header, then cards in one centred column.
+struct PageScaffold<Trailing: View, Content: View>: View {
+    let title: String
+    var subtitle: Text? = nil
+    var provider: String? = nil
+    var spacing: CGFloat = 17
+    @ViewBuilder var trailing: Trailing
+    @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(tone.color).frame(width: 6, height: 6)
-            Text(text)
+        ScrollView {
+            VStack(alignment: .leading, spacing: spacing) {
+                PageHeader(title: title, subtitle: subtitle, provider: provider) { trailing }
+                content
+            }
+            .pageColumn()
         }
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(tone.color)
-        .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(tone.color.opacity(0.12), in: Capsule())
     }
 }
 
-struct Tag: View {
+extension PageScaffold where Trailing == EmptyView {
+    init(title: String, subtitle: Text? = nil, provider: String? = nil, spacing: CGFloat = 17, @ViewBuilder content: () -> Content) {
+        self.init(title: title, subtitle: subtitle, provider: provider, spacing: spacing, trailing: { EmptyView() }, content: content)
+    }
+}
+
+// MARK: Controls
+
+struct PillButtonStyle: ButtonStyle {
+    // danger is red text for a destructive link; destructive is the outlined confirm button in a sheet.
+    enum Kind { case primary, secondary, quiet, link, onAttention, danger, destructive }
+    var kind: Kind = .secondary
+    var height: CGFloat = 24
+
+    func makeBody(configuration: Configuration) -> some View {
+        PillButtonBody(configuration: configuration, kind: kind, height: height)
+    }
+}
+
+private struct PillButtonBody: View {
+    @Environment(\.isEnabled) private var enabled
+    let configuration: ButtonStyleConfiguration
+    let kind: PillButtonStyle.Kind
+    let height: CGFloat
+
+    var body: some View {
+        configuration.label
+            .font(.system(size: height >= 27 ? 12 : 11, weight: kind == .quiet ? .regular : .semibold))
+            .foregroundStyle(foreground)
+            .lineLimit(1)
+            .padding(.horizontal, kind == .link || kind == .danger ? 0 : height >= 27 ? 14 : height >= 24 ? 10 : 9)
+            .frame(height: kind == .link || kind == .danger ? nil : height)
+            .background(background, in: Capsule())
+            .overlay { if kind == .secondary || kind == .destructive { Capsule().strokeBorder(Palette.edge, lineWidth: 1) } }
+            .contentShape(Capsule())
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+
+    private var foreground: Color {
+        guard enabled else { return kind == .primary ? .white.opacity(0.9) : Palette.disabled }
+        switch kind {
+        case .primary: return .white
+        case .secondary: return Palette.ink
+        case .quiet: return Palette.ink2
+        case .link: return Palette.solid
+        case .onAttention: return Palette.attentionText
+        case .danger, .destructive: return Palette.danger
+        }
+    }
+
+    private var background: Color {
+        switch kind {
+        case .primary: enabled ? Palette.solid : Palette.solid.opacity(0.35)
+        case .secondary, .onAttention, .destructive: Palette.card
+        case .quiet: Palette.field
+        case .link, .danger: .clear
+        }
+    }
+}
+
+extension ButtonStyle where Self == PillButtonStyle {
+    static func pill(_ kind: PillButtonStyle.Kind = .secondary, height: CGFloat = 24) -> PillButtonStyle {
+        PillButtonStyle(kind: kind, height: height)
+    }
+}
+
+// Rule chips (第 1 位 · ≤ 3% · 先换号), state chips (在用) and their dashed form for what does not take part.
+struct Pill: View {
+    enum Style { case neutral, brand, attention, dashed }
     let text: String
-    var tone: Tone = .neutral
-    var filled = false
+    var style: Style = .neutral
+    var small = false
+
+    init(_ text: String, style: Style = .neutral, small: Bool = false) {
+        self.text = text
+        self.style = style
+        self.small = small
+    }
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10.5, weight: .semibold))
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .foregroundStyle(filled ? Color.white : tone.color)
-            .background(filled ? tone.color : tone.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .font(.system(size: small ? 10 : 11, weight: style == .brand || style == .attention ? .semibold : .regular))
+            .foregroundStyle(foreground)
+            .monospacedDigit()
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .frame(height: small ? 17 : 19)
+            .background(background, in: Capsule())
+            .overlay { if style == .dashed { Capsule().strokeBorder(Palette.dashStrong.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [3, 2])) } }
+    }
+
+    private var foreground: Color {
+        switch style {
+        case .neutral: Palette.ink2
+        case .brand: Palette.deep
+        case .attention: Palette.attentionText
+        case .dashed: Palette.ink3
+        }
+    }
+
+    private var background: Color {
+        switch style {
+        case .neutral: Palette.chip
+        case .brand: Palette.wash
+        case .attention: Palette.attentionFill
+        case .dashed: .clear
+        }
     }
 }
 
-struct Callout<Actions: View>: View {
-    let icon: String
-    let tone: Tone
-    var title: String? = nil
-    let message: String
-    @ViewBuilder var actions: Actions
+// The header's refresh control says how old the numbers are.
+struct RefreshPill: View {
+    let checkedAt: Double?
+    let busy: Bool
+    let action: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(tone.color)
-                .frame(width: 18)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 6) {
-                if let title { Text(title).font(.callout.weight(.semibold)) }
-                Text(message).font(.callout)
-                    .foregroundStyle(title == nil ? Color.primary : Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                actions
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Icon(.refresh, size: 12, color: Palette.ink2)
+                Text(busy ? "刷新中" : checkedAt.map { When.text($0) } ?? "刷新")
             }
-            Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tone.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tone.color.opacity(0.22)))
+        .buttonStyle(.pill(.secondary, height: 27))
+        .help("额度每 5 分钟自动查询；点一下立即刷新")
+        .disabled(busy)
     }
 }
 
-extension Callout where Actions == EmptyView {
-    init(icon: String, tone: Tone, title: String? = nil, message: String) {
-        self.init(icon: icon, tone: tone, title: title, message: message) { EmptyView() }
+// A segmented choice drawn as pills on a rail.
+struct PillSegments<Value: Hashable>: View {
+    struct Segment: Identifiable {
+        let value: Value
+        let title: String
+        var glyph: Glyph? = nil
+        var id: String { title }
+    }
+    let segments: [Segment]
+    let selection: Value
+    let select: (Value) -> Void
+    var fill = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(segments) { segment in
+                let on = segment.value == selection
+                Button { select(segment.value) } label: {
+                    HStack(spacing: 5) {
+                        if let glyph = segment.glyph { Icon(glyph, size: 13) }
+                        Text(segment.title)
+                    }
+                    .font(.system(size: 12, weight: on ? .semibold : .regular))
+                    .foregroundStyle(on ? Palette.ink : Palette.ink2)
+                    .padding(.horizontal, 15)
+                    .frame(maxWidth: fill ? .infinity : nil)
+                    .frame(height: 24)
+                    .background {
+                        if on { Capsule().fill(Palette.card).shadow(color: .black.opacity(0.12), radius: 1, y: 1) }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(Palette.rail, in: Capsule())
     }
 }
 
-struct ProviderGlyph: View {
-    let provider: String
-    var size: CGFloat = 22
+// A text field on the field tint, as in the login, rename and cloud forms.
+struct LoopField: View {
+    let placeholder: String
+    @Binding var text: String
+    var secure = false
 
     var body: some View {
         Group {
-            if provider == "pi" {
-                Text("π").font(.system(size: size * 0.58, weight: .bold, design: .serif))
-            } else {
-                Image(systemName: provider == "codex" ? "terminal.fill" : "sparkle")
-                    .font(.system(size: size * 0.46, weight: .bold))
-            }
+            if secure { SecureField(placeholder, text: $text) } else { TextField(placeholder, text: $text) }
         }
-        .foregroundStyle(.white)
-        .frame(width: size, height: size)
-        .background(tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
-        .accessibilityHidden(true)
-    }
-
-    private var tint: Color {
-        switch provider {
-        case "codex": Palette.codex
-        case "claude": Palette.claude
-        default: Palette.accent
-        }
-    }
-
-    static func name(_ provider: String) -> String {
-        switch provider {
-        case "codex": "Codex"
-        case "claude": "Claude Code"
-        default: "pi"
-        }
+        .textFieldStyle(.plain)
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .frame(height: 31)
+        .background(Palette.field, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
     }
 }
 
-// Quota bar: the filled part is what remains, colored by how little is left.
-struct Meter: View {
-    let remaining: Double
+// MARK: Problems in place
 
-    static func tone(_ remaining: Double) -> Tone {
-        remaining <= 10 ? .danger : remaining <= 30 ? .warning : .accent
-    }
+// A problem on a card sits in a strip along its bottom edge, with the one thing that fixes it.
+struct IssueStrip<Actions: View>: View {
+    var glyph: Glyph = .alert
+    var busy = false
+    let text: String
+    var tone: Tone = .attention
+    @ViewBuilder var actions: Actions
 
     var body: some View {
-        GeometryReader { geometry in
-            let fraction = min(1, max(0, remaining / 100))
-            ZStack(alignment: .leading) {
-                Capsule().fill(Palette.track)
-                Capsule().fill(Self.tone(remaining).color)
-                    .frame(width: fraction > 0 ? max(6, geometry.size.width * fraction) : 0)
+        HStack(spacing: 9) {
+            if busy {
+                ProgressView().controlSize(.small).frame(width: 14, height: 14)
+            } else {
+                Icon(glyph, size: 14, color: tone == .attention ? Palette.attention : Palette.ink3)
             }
+            Text(text).font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            actions
         }
-        .frame(height: 6)
-        .accessibilityHidden(true)
+        .padding(.vertical, 10)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
     }
 }
+
+extension IssueStrip where Actions == EmptyView {
+    init(glyph: Glyph = .alert, busy: Bool = false, text: String, tone: Tone = .attention) {
+        self.init(glyph: glyph, busy: busy, text: text, tone: tone) { EmptyView() }
+    }
+}
+
+// A problem that belongs to no single card: an amber band at the top of the page.
+struct Banner<Actions: View>: View {
+    var glyph: Glyph = .alert
+    var title: String? = nil
+    let text: String
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        HStack(alignment: title == nil ? .center : .top, spacing: 9) {
+            Icon(glyph, size: 14, color: Palette.attention).padding(.top, title == nil ? 0 : 1)
+            VStack(alignment: .leading, spacing: 2) {
+                if let title { Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.attentionText) }
+                Text(text).font(.system(size: 11)).foregroundStyle(Palette.attentionInk).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 5) { actions }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(Palette.attentionWash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+extension Banner where Actions == EmptyView {
+    init(glyph: Glyph = .alert, title: String? = nil, text: String) {
+        self.init(glyph: glyph, title: title, text: text) { EmptyView() }
+    }
+}
+
+// MARK: Sheets
+
+// Title, one line on what happens, the content, then the buttons on the right.
+struct SheetScaffold<Content: View, Actions: View>: View {
+    let title: String
+    var lead: String? = nil
+    var width: CGFloat = 408
+    @ViewBuilder var content: Content
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let lead {
+                    Text(lead).font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            content
+            HStack(spacing: 9) {
+                Spacer(minLength: 0)
+                actions
+            }
+            .padding(.top, 3.5)
+        }
+        .padding(20)
+        .frame(width: width)
+        .background(Palette.card)
+    }
+}
+
+// One "what happens / what you do" line in a confirmation.
+struct CheckItem: View {
+    enum Kind { case system, you, info }
+    let kind: Kind
+    let text: String
+    var glyph: Glyph? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Icon(glyph ?? (kind == .system ? .check : kind == .you ? .alert : .info), size: 14,
+                 color: kind == .system ? Palette.solid : kind == .you ? Palette.attention : Palette.ink3)
+                .padding(.top, 1)
+            Text(text).font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// MARK: Time
 
 // Short, human-readable times; the exact value stays available as a tooltip.
 enum When {
@@ -235,152 +475,12 @@ enum When {
         return hours > 0 && days < 3 ? "\(days) 天 \(hours) 小时后" : "\(days) 天后"
     }
 
+    // Month and day only, for expiry dates.
+    static func day(_ date: Date) -> String {
+        let parts = Calendar.current.dateComponents([.month, .day], from: date)
+        return "\(parts.month ?? 0)月\(parts.day ?? 0)日"
+    }
+
     static func exact(_ date: Date) -> String { date.formatted(date: .abbreviated, time: .shortened) }
     static func exact(_ timestamp: Double) -> String { exact(Date(timeIntervalSince1970: timestamp)) }
-}
-
-// MARK: Workbench components
-
-// Top bar of a page: title, one-line status, trailing controls.
-// Page title and actions live in the window toolbar, so no strip is left empty above the page.
-extension View {
-    func pageBar<Actions: View>(_ title: String, subtitle: String? = nil, @ViewBuilder actions: () -> Actions) -> some View {
-        navigationTitle(title)
-            .navigationSubtitle(subtitle ?? "")
-            .toolbar { ToolbarItemGroup(placement: .primaryAction) { actions() } }
-    }
-
-    func pageBar(_ title: String, subtitle: String? = nil) -> some View {
-        pageBar(title, subtitle: subtitle) { EmptyView() }
-    }
-}
-
-struct SectionLabel<Trailing: View>: View {
-    let title: String
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        HStack {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
-            Spacer()
-            trailing.font(.caption).buttonStyle(.link)
-        }
-        .padding(.bottom, 6)
-    }
-}
-
-extension SectionLabel where Trailing == EmptyView {
-    init(_ title: String) { self.init(title: title) { EmptyView() } }
-}
-
-struct Dot: View {
-    let tone: Tone
-    var size: CGFloat = 7
-    var body: some View { Circle().fill(tone.color).frame(width: size, height: size) }
-}
-
-struct HealthLabel: View {
-    let health: Health
-    var body: some View {
-        HStack(spacing: 6) {
-            Dot(tone: health.tone)
-            Text(health.title).lineLimit(1)
-        }
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(health.tone == .neutral ? Palette.muted : health.tone.color)
-    }
-}
-
-// One "what happens / what you do" line in a confirmation sheet.
-struct CheckItem: View {
-    enum Kind { case system, you, info }
-    let kind: Kind
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: kind == .system ? "checkmark.circle" : kind == .you ? "exclamationmark.triangle" : "info.circle")
-                .foregroundStyle(kind == .system ? Palette.success : kind == .you ? Palette.warning : Palette.muted)
-                .frame(width: 16)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-        }
-        .font(.callout)
-    }
-}
-
-// Standard sheet layout: title, lead, content, trailing buttons.
-struct SheetScaffold<Content: View, Actions: View>: View {
-    let title: String
-    var lead: String? = nil
-    var width: CGFloat = 480
-    @ViewBuilder var content: Content
-    @ViewBuilder var actions: Actions
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 16, weight: .semibold))
-                if let lead {
-                    Text(lead).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            content
-            HStack(spacing: 8) {
-                Spacer()
-                actions
-            }
-            .padding(.top, 4)
-        }
-        .padding(22)
-        .frame(width: width)
-    }
-}
-
-// Compact label · bar · percent · reset row used in tables and the menu bar panel.
-struct QuotaLine: View {
-    let quota: AccountQuota
-    var labelWidth: CGFloat = 34
-    var showReset = true
-
-    var body: some View {
-        let tone = Meter.tone(Double(quota.remaining))
-        HStack(spacing: 6) {
-            Text(quota.shortLabel).font(.system(size: 11)).foregroundStyle(.secondary)
-                .frame(width: labelWidth, alignment: .leading).lineLimit(1)
-            Meter(remaining: Double(quota.remaining)).frame(minWidth: 40)
-            Text("\(quota.remaining)%").font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(tone == .accent ? Color.primary : tone.color)
-                .frame(width: 38, alignment: .trailing)
-            if showReset {
-                Text(quota.shortReset).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                    .frame(width: 58, alignment: .leading).lineLimit(1)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct SwitchRow<Detail: View>: View {
-    let title: String
-    var subtitle: String? = nil
-    @Binding var isOn: Bool
-    @ViewBuilder var detail: Detail
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout)
-                if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            }
-            Spacer(minLength: 8)
-            detail
-            Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
-        }
-    }
-}
-
-extension SwitchRow where Detail == EmptyView {
-    init(title: String, subtitle: String? = nil, isOn: Binding<Bool>) {
-        self.init(title: title, subtitle: subtitle, isOn: isOn) { EmptyView() }
-    }
 }

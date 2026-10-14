@@ -135,7 +135,7 @@ fn grants(value: &Value) -> Option<Grants> {
     Some(Grants {
         eligible,
         message: if eligible {
-            "官方提供的额度重置机会".into()
+            "官方提供的重置卡".into()
         } else {
             reason(&value["ineligible_reason"])
         },

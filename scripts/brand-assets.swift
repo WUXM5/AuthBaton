@@ -22,14 +22,30 @@ func save(_ rep:NSBitmapImageRep,_ path:String)throws {
 func image(_ rep:NSBitmapImageRep)->NSImage {
     let value=NSImage(size:NSSize(width:rep.pixelsWide,height:rep.pixelsHigh));value.addRepresentation(rep);return value
 }
+// On the 无垠青 tile the mark is white with its crossing at half strength, as the app draws it;
+// the master paints the crossing opaque grey (171) and the loop near-white (243).
+let tileMark:NSImage = {
+    let source=NSBitmapImageRep(data:mark.tiffRepresentation!)!
+    let rep=bitmap(source.pixelsWide,source.pixelsHigh){source.draw(in:NSRect(x:0,y:0,width:source.pixelsWide,height:source.pixelsHigh))}
+    var pixel=[Int](repeating:0,count:4)
+    for y in 0..<rep.pixelsHigh { for x in 0..<rep.pixelsWide {
+        rep.getPixel(&pixel,atX:x,y:y)
+        guard pixel[3]>0 else {continue}
+        let light=Double(pixel[0])*255/Double(pixel[3])
+        let alpha=Int((Double(pixel[3])*min(1,max(0.5,0.5+(light-171)/(243-171)*0.5))).rounded())
+        var white=[alpha,alpha,alpha,alpha]
+        rep.setPixel(&white,atX:x,y:y)
+    } }
+    return image(rep)
+}()
 func icon(_ size:Int)->NSBitmapImageRep {
     bitmap(size,size) {
         let scale=CGFloat(size)/1024
         let t=NSAffineTransform();t.scale(by:scale);t.concat()
         let tile=NSBezierPath(roundedRect:NSRect(x:48,y:48,width:928,height:928),xRadius:208,yRadius:208)
-        NSColor(calibratedWhite:0.095,alpha:1).setFill();tile.fill()
-        NSColor(calibratedWhite:0.28,alpha:1).setStroke();tile.lineWidth=1.5;tile.stroke()
-        mark.draw(in:NSRect(x:96,y:96,width:832,height:832))
+        NSColor(srgbRed:8/255,green:151/255,blue:184/255,alpha:1).setFill();tile.fill()
+        NSColor(white:0,alpha:0.12).setStroke();tile.lineWidth=1.5;tile.stroke()
+        tileMark.draw(in:NSRect(x:96,y:96,width:832,height:832))
     }
 }
 func label(_ text:String,_ x:CGFloat,_ y:CGFloat,_ size:CGFloat=14,_ white:CGFloat=0.68) {

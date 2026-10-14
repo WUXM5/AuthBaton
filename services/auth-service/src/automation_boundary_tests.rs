@@ -977,7 +977,7 @@ fn one_line_per_account_makes_the_chosen_order_decide_at_the_line() {
     m.automation_tick();
     assert!(m.automation.job.is_none() && m.reset_job.is_none());
     let message = &m.automation.account_messages["a"];
-    assert!(message.contains("已见底") && message.contains("没有可用的重置次数"));
+    assert!(message.contains("已见底") && message.contains("没有可用的重置卡"));
     assert!(!f.root.join("desktop-operations").exists());
 }
 

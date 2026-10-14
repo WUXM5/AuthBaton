@@ -28,6 +28,20 @@ extension ManagedAccount {
         return identity == displayName ? nil : identity
     }
 
+    // Email and plan under the name.
+    var subtitle: String {
+        [identityLine, plan?.uppercased()].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    var needsAction: Bool {
+        switch state {
+        case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": true
+        // The cloud renews it; the local login dates behind the notice no longer apply.
+        case "cloud_managed": false
+        default: loginNotice?.needsAttention == true
+        }
+    }
+
     // Claude's coordinated states, or any unsaved result. An unanswered renewal needs no hand:
     // the service reconciles it on its own.
     var recoverable: Bool {
@@ -40,40 +54,43 @@ extension ManagedAccount {
     var lowestPrimary: Int? { primaryWindows.map(\.remaining).min() }
     var quotaReady: Bool { usage?.state == "ready" }
 
+    // Only states that need a hand are amber; "可用" is the quiet default.
     var health: Health {
-        if let label = checkLabel { return Health(tone: .accent, title: label, detail: nil) }
+        if let label = checkLabel { return Health(tone: .active, title: label, detail: nil) }
         switch state {
-        case "reauth": return Health(tone: .danger, title: "需重新登录", detail: message)
+        case "reauth": return Health(tone: .attention, title: "需重新登录", detail: message)
         case "unsaved":
             return provider == "claude" && native
-                ? Health(tone: .warning, title: "续期备份未同步", detail: "Claude CLI 可以照常使用；AuthManager 会自动重试同步，不会重复续期。")
-                : Health(tone: .warning, title: "续期结果待保存", detail: message)
-        case "uncertain": return Health(tone: .warning, title: "等待重新确认", detail: message)
-        case "attention": return Health(tone: .danger, title: "需要处理", detail: message)
-        case "backup_pending": return Health(tone: .warning, title: "备份待同步", detail: message)
+                ? Health(tone: .attention, title: "续期备份没同步", detail: "CLI 照常可用，AuthManager 会自动重试，不会重复续期。")
+                : Health(tone: .attention, title: "续期结果待保存", detail: message)
+        case "uncertain": return Health(tone: .neutral, title: "等待重新确认", detail: message)
+        case "attention": return Health(tone: .attention, title: "需要处理", detail: message)
+        case "backup_pending": return Health(tone: .attention, title: "备份待同步", detail: message)
         // Handed to the cloud: this Mac no longer renews it, and its local login dates are stale.
-        case "cloud_transfer": return Health(tone: .warning, title: "云端交接未完成", detail: message)
+        case "cloud_transfer": return Health(tone: .attention, title: "云端交接未完成", detail: message)
         case "cloud_managed": return Health(tone: .neutral, title: "由云端维护", detail: message)
         default: break
         }
         if let notice = loginNotice, notice.needsAttention {
-            return Health(tone: .warning, title: notice.state == "expired" ? "登录已到期" : "登录即将到期", detail: notice.message)
+            return Health(tone: .attention, title: notice.state == "expired" ? "登录已到期" : "登录即将到期", detail: notice.message)
         }
         switch state {
-        case "retry": return Health(tone: .warning, title: "等待重试", detail: message)
-        case "limited": return Health(tone: .warning, title: "在线查询受限", detail: message)
-        case "pending": return Health(tone: .accent, title: "等待登录", detail: message)
-        case "checking": return Health(tone: .accent, title: "正在检查", detail: message)
-        // "当前" is already a tag next to the name, so health only says whether the login is usable.
-        case "delegated": return Health(tone: .success, title: "可用", detail: "由官方客户端续期；额度独立查询，无需退出客户端。")
+        case "retry": return Health(tone: .neutral, title: "等待重试", detail: message)
+        case "limited": return Health(tone: .neutral, title: "在线查询受限", detail: message)
+        case "pending": return Health(tone: .active, title: "等待登录", detail: message)
+        case "checking": return Health(tone: .active, title: "正在检查", detail: message)
+        case "delegated": return Health(tone: .neutral, title: "可用", detail: "由官方客户端续期；额度独立查询，无需退出客户端。")
         case "saved": return Health(tone: .neutral, title: "已保存", detail: "已保存在本机，尚未在线验证。")
-        case "healthy": return Health(tone: .success, title: "可用", detail: nil)
+        case "healthy": return Health(tone: .neutral, title: "可用", detail: nil)
         // A state this build does not know says nothing about whether the login works.
-        default: return Health(tone: .warning, title: "状态未识别", detail: message)
+        default: return Health(tone: .attention, title: "状态未识别", detail: message)
         }
     }
 
-    // Short status for the quota cell; stale or unknown quota is muted, not alarming.
+    // A state worth a line on the account even when nothing is broken: waiting, checking, unknown.
+    var quietState: Bool { ["delegated", "healthy", "saved"].contains(state) && checkLabel == nil && !needsAction }
+
+    // Short status for the quota line; stale or unknown quota is muted, not alarming.
     var quotaCaption: String? {
         guard let usage else { return "尚未查询额度" }
         switch usage.state {
@@ -94,6 +111,55 @@ extension ManagedAccount {
     }
     // Resets the strategy can spend: listed Codex credits, or Claude's official grants (unknown counts as none).
     var usableResets: Int { provider == "claude" ? creditCount ?? 0 : codexCredits.count }
+
+    // The reset chances as one ticket: how many, and how many run out within a week.
+    func chances(dismissed: Set<String>, now: Date = Date()) -> ResetChances? {
+        var dates: [(id: String, count: Int, date: Date?)] = []
+        let total: Int
+        if provider == "codex" {
+            guard let credits = usage?.resetCredits else { return nil }
+            let listed = codexCredits
+            dates = listed.map { ($0.id, 1, $0.expiryDate) }
+            // The details request failed but the summary still counts them; unknown expiry is not zero.
+            total = listed.isEmpty ? credits.availableCount : listed.count
+        } else {
+            guard let remaining = usage?.claudeResets?.grants?.remaining else { return nil }
+            total = remaining
+            dates = (usage?.claudeResets?.grants?.items ?? []).filter { $0.remaining > 0 }
+                .map { ("\(id):\($0.endsAt ?? "")", $0.remaining, QuotaResetCredit.date($0.endsAt)) }
+        }
+        let soon = dates.filter { item in
+            guard let date = item.date else { return false }
+            return date > now && date.timeIntervalSince(now) <= ExpiryReminder.window && !dismissed.contains(item.id)
+        }
+        let expiries = dates.compactMap { item in item.date.map { "\(When.exact($0)) 到期" + (item.count > 1 ? "（\(item.count) 张）" : "") } }
+        return ResetChances(total: total, soonCount: soon.reduce(0) { $0 + $1.count },
+                            earliestSoon: soon.compactMap(\.date).min(), expiries: expiries)
+    }
+
+    // Why this account cannot be removed right now, if it cannot.
+    func removeBlocker(_ directory: AccountDirectory) -> String? {
+        if native || directory.desktop?.selected == id { return "在用的账号不能移除，先换上别的账号。" }
+        if reset?.unresolved == true { return "先确认上次重置的结果。" }
+        if usage?.refreshing == true { return "额度查询进行中，稍后再移除。" }
+        if warmup?.running == true { return "正在发送预热，稍后再移除。" }
+        return nil
+    }
+}
+
+struct ResetChances {
+    let total: Int
+    let soonCount: Int
+    let earliestSoon: Date?
+    let expiries: [String]
+
+    var soon: Bool { soonCount > 0 }
+    var text: String {
+        guard total > 0 else { return "没有重置卡" }
+        guard let earliest = earliestSoon, soonCount > 0 else { return "\(total) 张重置卡" }
+        return "\(total) 张重置卡 · \(soonCount) 张 \(When.day(earliest))\(soonCount > 1 ? "起" : "")到期"
+    }
+    var help: String { expiries.isEmpty ? text : expiries.joined(separator: "\n") }
 }
 
 extension AccountQuota {
@@ -104,18 +170,17 @@ extension AccountQuota {
     var shortLabel: String {
         label.replacingOccurrences(of: "窗口", with: "").replacingOccurrences(of: "额度", with: "")
     }
-    var resetCaption: String {
-        guard let date = resetDate else { return "官方未提供重置时间" }
-        let verb = expires == true ? "到期" : "重置"
-        if let countdown = When.countdown(to: date) { return "\(countdown)\(verb) · \(When.text(date))" }
-        return "\(verb)时间已过，等待下次查询"
-    }
-    // Whole days only, so it fits table cells and the menu bar; the inspector shows the exact time.
-    var shortReset: String {
-        guard let date = resetDate else { return "—" }
+    // "7 天额度剩余" under the big number.
+    var remainingCaption: String { "\(shortLabel)额度剩余" }
+
+    // When the window fills back up. Compact keeps whole days only, for cards and rows.
+    func refill(compact: Bool = true, exact: Bool = false) -> String {
+        guard let date = resetDate else { return "官方没给回满时间" }
+        let verb = expires == true ? "到期" : "回满"
+        guard let countdown = When.countdown(to: date) else { return "\(verb)时间已过，等下次查询" }
         let seconds = date.timeIntervalSinceNow
-        if seconds >= 86400 { return "\(Int(seconds / 86400)) 天后" }
-        return When.countdown(to: date) ?? "已过"
+        let short = compact && seconds >= 86400 ? "\(Int(seconds / 86400)) 天后" : countdown
+        return short + verb + (exact ? " · \(When.text(date))" : "")
     }
 }
 
@@ -136,11 +201,11 @@ struct ExpiryReminder: Identifiable {
 
     static let window: TimeInterval = 7 * 86400
 
-    var title: String { "\(accountName) 有 \(count) 次重置 7 天内到期" }
+    var title: String { "\(accountName) 有 \(count) 张重置卡 7 天内到期" }
     var detail: String {
         let when = When.countdown(to: earliest).map { "（\($0)）" } ?? ""
         return "\(count > 1 ? "最早 " : "")\(When.text(earliest)) 到期\(when)"
-            + (provider == "claude" ? "，过期后作废；可在「换号与重置」里设为见底时自动使用。" : "，过期后作废。")
+            + (provider == "claude" ? "，过期作废；可以在「换号与重置」里设成见底时自动用。" : "，过期作废。")
     }
 
     static func all(_ accounts: [ManagedAccount], dismissed: Set<String> = [], now: Date = Date()) -> [ExpiryReminder] {
@@ -177,12 +242,35 @@ enum ReminderStore {
     }
 }
 
+// The window and the menu bar both count reminders, so a dismissal has to reach every view at once.
+@MainActor
+final class ReminderModel: ObservableObject {
+    static let shared = ReminderModel()
+    @Published private(set) var dismissed = ReminderStore.dismissed()
+
+    func dismiss(_ ids: [String]) {
+        ReminderStore.dismiss(ids)
+        dismissed = ReminderStore.dismissed()
+    }
+
+    func reload() { dismissed = ReminderStore.dismissed() }
+}
+
 extension AccountDirectory {
     // A desktop switch finishes after the request returns; this is its report for an attempt
     // started at or after `since` (service time, whole seconds).
     func desktopAttempt(for id: String, since: Double) -> DesktopConnection.Action? {
         guard let action = desktop?.action, action.id == id, (action.at ?? 0) >= since else { return nil }
         return action
+    }
+
+    // The desktop's last word on this account while it still reads as news: a switch in progress,
+    // a refusal within the hour, a success within ten minutes.
+    func recentDesktopAction(for id: String, now: Double = Date().timeIntervalSince1970) -> DesktopConnection.Action? {
+        guard let action = desktop?.action, action.id == id else { return nil }
+        if action.pending { return action }
+        let age = now - (action.at ?? 0)
+        return action.state == "failed" ? (age < 3600 ? action : nil) : (age < 600 ? action : nil)
     }
 }
 
@@ -215,8 +303,8 @@ extension AccountDirectory {
     // The service refuses every local operation naming an account handed to the cloud, strategy rules included.
     func cloudBound(_ id: String) -> Bool { cloud?.transfers.contains { $0.localId == id } == true }
 
-    // The one thing an account's main button offers. The inspector and the menu bar share it,
-    // so neither offers a switch to an account whose saved login is broken or unconfirmed.
+    // The one thing an account's main button offers. Every page and the menu bar share it,
+    // so none offers a switch to an account whose saved login is broken or unconfirmed.
     func primaryAction(for account: ManagedAccount) -> PrimaryAction {
         if ["cloud_transfer", "cloud_managed"].contains(account.state) { return .wait }
         if account.recoverable { return .recover }
@@ -227,96 +315,73 @@ extension AccountDirectory {
     }
 
     var attentionCount: Int { accounts.filter(\.needsAction).count + (recoveryNeeded ? 1 : 0) }
+
+    // Hot switch is on but the desktop does not answer: Codex cannot switch, by hand or by rule.
+    var desktopBlocked: Bool { desktop?.enabled == true && desktop?.connected == false }
+
+    // MARK: Strategy rules
+
+    func rule(for id: String) -> CodexStrategyConfig.Rule? { strategy?.config.accounts.first { $0.id == id } }
+
+    // Priority counts only accounts of the same provider.
+    func rank(of account: ManagedAccount) -> Int? {
+        let rules = (strategy?.config.accounts ?? []).filter { rule in accounts.contains { $0.id == rule.id && $0.provider == account.provider } }
+        return rules.firstIndex { $0.id == account.id }.map { $0 + 1 }
+    }
+
+    // The 见底线 notch is only drawn where a rule is actually watching the account.
+    func notch(for account: ManagedAccount) -> Int? {
+        guard strategy?.config.enabled == true, let rule = rule(for: account.id), rule.participate else { return nil }
+        return rule.below
+    }
+
+    // Accounts of a provider in relay order; those without a rule come last.
+    func relay(_ provider: String) -> [ManagedAccount] {
+        let order = strategy?.config.accounts.map(\.id) ?? []
+        return accounts.filter { $0.provider == provider }.enumerated().sorted { a, b in
+            let x = order.firstIndex(of: a.element.id) ?? order.count + a.offset
+            let y = order.firstIndex(of: b.element.id) ?? order.count + b.offset
+            return x < y
+        }.map(\.element)
+    }
+
+    // A reset needs a fresh quota reading and an idle service; an unconfirmed earlier reset comes first,
+    // and the service refuses any local operation on an account handed to the cloud.
+    func resetBlocked(_ account: ManagedAccount, busy accountBusy: Bool) -> Bool {
+        accountBusy || busy || recoveryNeeded || maintenanceRunning != true || account.usage?.refreshing == true || cloudBound(account.id)
+            || account.usage?.state != "ready" || account.reset?.unresolved == true || account.codexCredits.isEmpty
+    }
+
+    // Everything that needs a hand, once each: the badge, the menu bar and the accounts page count these.
+    func issues(dismissed: Set<String>) -> [Issue] {
+        var result: [Issue] = []
+        if recoveryNeeded { result.append(Issue(id: "recovery", summary: "上次切换没确认", account: nil)) }
+        for account in accounts where account.needsAction {
+            result.append(Issue(id: "account-\(account.id)", summary: account.health.title, account: account.id))
+        }
+        // Without a Codex account there is nothing the desktop would switch.
+        if desktopBlocked, accounts.contains(where: { $0.provider == "codex" }) {
+            result.append(Issue(id: "desktop", summary: "桌面没连上", account: nil))
+        }
+        if strategy?.phase == "attention" { result.append(Issue(id: "strategy", summary: "自动换号停下了", account: nil)) }
+        let reminders = ExpiryReminder.all(accounts, dismissed: dismissed)
+        if !reminders.isEmpty {
+            result.append(Issue(id: "reminders", summary: "\(reminders.reduce(0) { $0 + $1.count }) 张重置卡快到期", account: reminders.first?.accountID))
+        }
+        return result
+    }
+}
+
+struct Issue: Identifiable {
+    let id: String
+    let summary: String
+    let account: String?
 }
 
 enum PrimaryAction {
     case recover    // 恢复同步 / 重试保存
     case relogin    // 重新登录
-    case switchTo   // 设为当前，或由 AuthManager 接管当前登录
+    case switchTo   // 换上，或由 AuthManager 接管当前登录
     case wait       // nothing to do yet; health says why
     case current    // already the current default
-}
-
-// Plain-language preview of what the strategy would do for the current Codex account right now.
-// Mirrors the service: at the account's own line, the first doable action in its order runs;
-// a later doable action is only a fallback; a switch ends the episode.
-struct StrategyPreview {
-    struct Step: Identifiable {
-        let id = UUID()
-        let title: String
-        let detail: String
-        let active: Bool
-    }
-    let below: Int?
-    let steps: [Step]
-    let others: [String]
-
-    init(config: CodexStrategyConfig, accounts: [ManagedAccount], desktop: DesktopConnection?) {
-        let codex = accounts.filter { $0.provider == "codex" }
-        let name = { (id: String) in codex.first { $0.id == id }?.displayName ?? "账号" }
-        // Claude needs no desktop: the current one switches in place, every one can reset on its own.
-        others = config.accounts.compactMap { r in
-            guard r.participate, let account = accounts.first(where: { $0.id == r.id }) else { return nil }
-            let count = account.usableResets
-            let reset = "自动重置" + (count == 0 ? "（现在没有次数）" : "（\(count) 次可用）")
-            if account.provider == "claude" {
-                let change = "换到下一个 Claude 账号（不暂停会话）"
-                let action: String? = switch (account.native, r.order) {
-                case (true, .resetFirst): "先\(reset)，仍见底再\(change)"
-                case (true, .switchFirst): "先\(change)，换不了再\(reset)"
-                case (true, .switchOnly): change
-                case (_, .resetOnly), (false, .resetFirst), (false, .switchFirst): reset
-                case (false, .switchOnly): nil
-                }
-                return action.map { "\(account.displayName)（Claude）：剩余 ≤ \(r.below)% 时\($0)" }
-            }
-            guard r.order.resets, account.provider == "codex", !account.native else { return nil }
-            return "\(account.displayName)：剩余 ≤ \(r.below)% 时\(reset)"
-        }
-        guard let current = codex.first(where: \.native),
-              let rule = config.accounts.first(where: { $0.id == current.id }) else {
-            below = nil
-            steps = [Step(title: "没有当前 Codex 账号", detail: "设定当前账号后才会自动处理。", active: false)]
-            return
-        }
-        below = rule.below
-        guard rule.participate else {
-            steps = [Step(title: "\(current.displayName) 未参与自动处理", detail: "在下表打开「参与」后才会生效。", active: false)]
-            return
-        }
-        let switchAvailable = desktop?.enabled == true && desktop?.connected == true
-        let candidate = config.accounts.first { r in
-            r.participate && r.id != current.id && (codex.first { $0.id == r.id }.flatMap(\.lowestPrimary) ?? 0) > r.below
-        }
-        let credits = current.codexCredits
-        let reset: (title: String, detail: String?, skip: String) = (
-            "用 1 次重置",
-            credits.first.map { "用最早到期的那次（\(QuotaResetCredit.expiryLabel($0.expiresAt))），还剩 \(credits.count) 次。" },
-            "跳过：现在没有可用的重置次数。")
-        let change: (title: String, detail: String?, skip: String) = {
-            guard let candidate else { return ("换号", nil, "跳过：没有额度高于各自见底线的候选账号。") }
-            return ("换到 \(name(candidate.id))", switchAvailable ? "暂停运行中的桌面会话，换号确认后逐个接续；这一轮就此结束。" : nil,
-                    "跳过：Codex 桌面未连接，没法暂停和接续会话。")
-        }()
-        let chain = switch rule.order {
-        case .resetFirst: [reset, change]
-        case .switchFirst: [change, reset]
-        case .resetOnly: [reset]
-        case .switchOnly: [change]
-        }
-        var result: [Step] = []
-        var decided = false
-        for action in chain {
-            guard let detail = action.detail else {
-                result.append(Step(title: action.title, detail: action.skip, active: false))
-                continue
-            }
-            // Only the first doable action runs; after a switch nothing else happens this round.
-            let fallback = rule.order == .resetFirst ? "后备，重置后仍见底时：" : "后备，换不了号时："
-            result.append(Step(title: action.title, detail: decided ? fallback + detail : detail, active: !decided))
-            decided = true
-        }
-        result.append(Step(title: "都做不了时停下", detail: "在账号页和菜单栏提醒；额度回到 \(rule.below)% 以上后重新开始。", active: false))
-        steps = result
-    }
 }

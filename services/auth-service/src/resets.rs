@@ -168,11 +168,11 @@ impl Outcome {
     pub fn message(self) -> &'static str {
         match self {
             Self::Pending => "正在提交额度重置，请勿重复操作",
-            Self::Unknown => "上次重置结果待确认；请重试同一次操作，不会改用另一张重置券",
-            Self::Reset => "已使用 1 次额度重置；用量和剩余次数将重新查询",
-            Self::AlreadyRedeemed => "已确认上次重置成功，没有重复使用次数",
-            Self::NothingToReset => "官方返回当前没有可重置的额度窗口，本次未使用次数",
-            Self::NoCredit => "所选重置次数已不可用，本次未使用次数",
+            Self::Unknown => "上次重置结果待确认；请重试同一次操作，不会改用另一张重置卡",
+            Self::Reset => "已用 1 张重置卡；用量和剩余张数将重新查询",
+            Self::AlreadyRedeemed => "已确认上次重置成功，没有重复用卡",
+            Self::NothingToReset => "官方返回当前没有可重置的额度窗口，这次没有用卡",
+            Self::NoCredit => "所选重置卡已不可用，这次没有用卡",
             Self::NotSent => "未提交重置：请更新认证和额度明细后重新操作",
         }
     }

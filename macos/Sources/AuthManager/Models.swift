@@ -158,10 +158,10 @@ enum CodexStrategyOrder: String, Codable, CaseIterable, Identifiable, Sendable {
     var switches: Bool { self != .resetOnly }
     var explanation: String {
         switch self {
-        case .resetFirst: "见底时先用 1 次重置；没有次数，或重置后仍见底，再换号。"
-        case .switchFirst: "见底时先换号；换不了（不是当前账号、没有候选，或 Codex 桌面未连接），再用 1 次重置。"
-        case .resetOnly: "见底时只用重置次数，不会从这个账号换走。"
-        case .switchOnly: "见底时只换号，不消耗重置次数。"
+        case .resetFirst: "见底时先用 1 张重置卡；没有卡，或重置后仍见底，再换号。"
+        case .switchFirst: "见底时先换号；换不了（不在用、没有候选，或 Codex 桌面没连上），再用 1 张重置卡。"
+        case .resetOnly: "见底时只用重置卡，不会从这个账号换走。"
+        case .switchOnly: "见底时只换号，不用重置卡。"
         }
     }
 }
@@ -470,7 +470,7 @@ struct ResetHistoryEntry: Decodable, Identifiable, Sendable {
         case "pending": "执行中"
         case "unknown": "结果待确认"
         case "nothing_to_reset": "无需重置"
-        case "no_credit": "次数不可用"
+        case "no_credit": "重置卡不可用"
         default: "未提交"
         }
     }
