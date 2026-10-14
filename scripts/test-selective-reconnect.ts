@@ -1,5 +1,6 @@
 // Exact production selective-ui.js with synthetic DOM, fibers, RPC and queries.
-// Covers the 26.924 reconnect race (the reset's fetch still runs stale options) and revision upgrades.
+// Covers the 26.924 reconnect race (the reset's fetch still runs stale options), open tasks across the
+// switch (26.1007 opens the page it remembers for the new account) and revision upgrades.
 // Does not open or connect to a browser, read credentials, or modify repository files.
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -11,13 +12,18 @@ const source = fs.readFileSync(fileURLToPath(new URL('../macos/Sources/DesktopBr
 function fixture(existing?: object) {
   let identity = 'a', data: any = {userId: 'a', accountId: 'w'}, refetches = 0, answerOnRefetch = true;
   const created: string[] = [], added: unknown[] = [];
-  const next = {getConversation() {return null;}};
+  // Open task routes, and the tasks each manager has resumed. The new manager starts empty.
+  let routes: object[] = [], resumedBefore = new Set<string>(), resumeAfter: Record<string, number> = {}, polls = 0;
+  const next = {getConversation(id: string) {
+    polls++;
+    return id in resumeAfter && polls > resumeAfter[id] ? {resumeState: 'resumed'} : null;
+  }};
   function _Sl() {}
   function qwl() {}
   function gf() {}
   function OS() {}
   const token = {}, chain = new Map(), node: any = {token};
-  const manager = {getConversation() {return null;}};
+  const manager = {getConversation: (id: string) => resumedBefore.has(id) ? {resumeState: 'resumed'} : null};
   const query = {state: {fetchStatus: 'idle'}};
   const client = {
     async cancelQueries() {},
@@ -34,7 +40,8 @@ function fixture(existing?: object) {
   };
   const scope = {node, chain, queryClient: client, get: (key: unknown) => key === refs.Csn ? 'ready' : {}, set() {}};
   node.scope = scope;
-  const scopeFiber = {type: gf, memoizedProps: {scope: token}, memoizedState: {memoizedState: {current: {node, chain}}}};
+  const scopeFiber: any = {type: gf, memoizedProps: {scope: token}, memoizedState: {memoizedState: {current: {node, chain}}},
+    get child() {return routes.reduceRight((sibling: any, value) => ({type: gf, memoizedProps: {scope: OS, value}, sibling}), null);}};
   const boundary = {type: _Sl, child: {child: {tag: 7, key: 'nonce:a', child: {type: qwl, child: scopeFiber}}}};
   const root = {querySelectorAll: () => [], scrollTop: 0, scrollLeft: 0, __reactContainer$fixture: {stateNode: {current: {child: boundary}}}};
   const context = vm.createContext({
@@ -51,12 +58,15 @@ function fixture(existing?: object) {
     Up: {identityKey: () => identity, isReady: () => true, async refresh() {}},
     Csn: {resolve() {}}, O_: 'O_',
     // refreshRendererManager deletes first; the adapter must never call it.
-    X3: class {getForHostId() {return manager;} addManager(m: unknown) {added.push(m);} refreshRendererManager() {throw Error('delete-first refresh');}},
+    X3: class {getForHostId() {return added.at(-1) ?? manager;} addManager(m: unknown) {added.push(m);} refreshRendererManager() {throw Error('delete-first refresh');}},
     loi: (_scope: unknown, host: string) => {created.push(host); return next;}, OS,
   };
   const adapter = context.__authManagerSelectiveUIV1;
   return {installed, adapter, refs, attach: () => adapter.attach(refs), switchTo: (next: string) => {identity = next;},
-          refetches: () => refetches, created: () => [...created], added: () => [...added], next, noAnswer: () => {answerOnRefetch = false;}};
+          refetches: () => refetches, created: () => [...created], added: () => [...added], next, noAnswer: () => {answerOnRefetch = false;},
+          // Opens a task the old manager had resumed; the new one resumes it after `polls` reads, or never.
+          openTask: (id: string, polls?: number) => {routes = [{routeKind: 'local-thread', conversationId: id}]; resumedBefore.add(id); if (polls !== undefined) resumeAfter[id] = polls;},
+          goHome: () => {routes = [{routeKind: 'home'}];}};
 }
 
 let passed = 0;
@@ -96,11 +106,52 @@ await test('reconnect still fails, after its deadline, when account info never a
   assert.equal(f.refetches(), 37);
 });
 
+await test('a task the page left during the switch is not awaited', async () => {
+  // 13:49 on 2026-10-14: Codex opened the home page it remembered for the new account, the task never resumed
+  // and the switch failed after 15 seconds although the new account was in place.
+  const f = fixture();
+  f.attach();
+  f.openTask('task-1');
+  await f.adapter.begin(true);
+  f.switchTo('b');
+  f.goHome();
+  const result = await f.adapter.reconnect('codex:b:w');
+  assert.equal(result.ok, true);
+  assert.equal(result.contextPreserved, false);
+  assert.equal(result.threadsResumed, undefined);
+  assert.equal(f.adapter.state().phase, 'idle');
+});
+
+await test('a task still open is awaited until the new manager resumes it', async () => {
+  const f = fixture();
+  f.attach();
+  f.openTask('task-1', 20);
+  await f.adapter.begin(true);
+  f.switchTo('b');
+  const result = await f.adapter.reconnect('codex:b:w');
+  assert.equal(result.ok, true);
+  assert.equal(result.contextPreserved, true);
+  assert.equal(result.threadsResumed, undefined);
+});
+
+await test('a task that stays open and never resumes releases the page instead of holding it', async () => {
+  const f = fixture();
+  f.attach();
+  f.openTask('task-1');
+  await f.adapter.begin(true);
+  f.switchTo('b');
+  const result = await f.adapter.reconnect('codex:b:w');
+  assert.equal(result.ok, true);
+  assert.equal(result.contextPreserved, false);
+  assert.equal(result.threadsResumed, false);
+  assert.equal(f.adapter.state().phase, 'idle');
+});
+
 await test('an idle older adapter is disposed and replaced', async () => {
   let disposed = 0;
   const f = fixture({revision: 3, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
   assert.equal(disposed, 1);
-  assert.equal(f.adapter.revision, 4);
+  assert.equal(f.adapter.revision, 5);
 });
 
 await test('an older adapter with an unfinished switch is kept for its recovery', async () => {

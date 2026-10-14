@@ -67,7 +67,9 @@ if request['operation'] == 'poll' and (root / 'poll.json').exists():
 if request['operation'] == 'reply':
     (root / 'reply-hash').write_text(hashlib.sha256(auth.get('accessToken','').encode()).hexdigest())
 owner = params.get('owner', 'codex:a:workspace-a')
-print(json.dumps({'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':hashlib.sha256(auth.get('accessToken','').encode()).hexdigest(),'requests':[]}))
+response = {'ok':True,'confirmed':not (root / 'fail-completion').exists(),'owner':owner,'boundOwner':owner,'mode':'chatgptAuthTokens','target':'synthetic-target','instance':'synthetic-instance','hash':hashlib.sha256(auth.get('accessToken','').encode()).hexdigest(),'requests':[]}
+if request['operation'] == 'apply' and (root / 'apply-override.json').exists(): response.update(json.loads((root / 'apply-override.json').read_text()))
+print(json.dumps(response))
 "#;
 
 #[test]
@@ -748,6 +750,60 @@ fn a_switch_is_logged_without_credentials_and_reports_takeover() {
     for secret in ["SYNTHETIC-", "x.ey", "example.invalid", "workspace-"] {
         assert!(!text.contains(secret), "{secret}");
     }
+}
+
+#[test]
+fn a_switch_whose_open_task_did_not_resume_completes_and_says_what_to_do() {
+    let fixture = Fixture::new();
+    let (mut manager, _, b) = setup(&fixture);
+    fs::write(
+        fixture.root.join("apply-override.json"),
+        br#"{"contextPreserved":false,"threadsResumed":false}"#,
+    )
+    .unwrap();
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    // The account is in place, so nothing is left to recover.
+    assert!(manager.db.switch.is_none());
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("b"));
+    assert_eq!(
+        manager
+            .native("codex")
+            .unwrap()
+            .read(&fixture.platform)
+            .unwrap()
+            .credential,
+        b.credential
+    );
+    assert!(manager.desktop.message.contains("切到别的任务再切回来"));
+    assert_eq!(
+        manager.notice.as_deref(),
+        Some(manager.desktop.message.as_str())
+    );
+    let log = desktop_log(&fixture);
+    assert_eq!(log.last().unwrap()["op"], "apply_done");
+    assert_eq!(
+        log.last().unwrap()["reason"],
+        "已切换；打开的任务没有自动重连"
+    );
+}
+
+#[test]
+fn a_failed_reconnect_names_the_recovery_action_once() {
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    fs::write(
+        fixture.root.join("apply-override.json"),
+        br#"{"ok":false,"code":"ui_services_unavailable"}"#,
+    )
+    .unwrap();
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    assert!(manager.db.switch.is_some());
+    assert_eq!(
+        manager.desktop.message,
+        "账号服务尚未重新连接；请恢复当前登录状态"
+    );
 }
 
 #[test]

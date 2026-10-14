@@ -8,6 +8,11 @@ enum DesktopTargets {
               let url = URLComponents(string: address), url.scheme == "app", url.host == "-",
               url.path == "/index.html" else { return false }
         let route = url.queryItems?.first { $0.name == "initialRoute" }?.value ?? ""
+        // Codex keeps a hidden page window warm (`/space/…?window=page&prewarm=1`) and rebuilds it after
+        // every account change; counting it leaves two candidates whenever no target is bound yet.
+        if URLComponents(string: route)?.queryItems?.contains(where: { $0.name == "prewarm" && $0.value == "1" }) == true {
+            return false
+        }
         return !["/avatar-overlay", "/global-dictation", "/hotkey-window",
                  "/chatgpt/quick-chat-prewarm", "/chatgpt/quick-chat", "/debug"].contains {
             route == $0 || route.hasPrefix($0 + "/") || route.hasPrefix($0 + "?")

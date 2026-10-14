@@ -10,7 +10,7 @@ function jwt(user:string,generation=1):string {
     return `header.${Buffer.from(JSON.stringify({exp:2000000000,generation,'https://api.openai.com/auth':{chatgpt_user_id:user,chatgpt_account_id:`workspace-${user}`}})).toString('base64url')}.synthetic`;
 }
 function fixture() {
-    let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0;
+    let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,threadsResumed:boolean|undefined;
     // Latest turn status of a thread in systemError; null when the thread is not in that state.
     let errored:string|null=null;
     let phase='idle',uiAvailable=true,uiFails=false,uiBegins=0,uiReconnects=0;
@@ -38,20 +38,21 @@ function fixture() {
         queueMicrotask(()=>{
             emit({type:'mcp-response',hostId:'local',message:{id,...readFails&&method==='account/read'?{error:{code:-32603,message:'synthetic-private-error'}}:{result}}});
             if(method==='account/login/start') {
-                notify('account/login/completed',{loginId:null,success});
-                if(success)notify('account/updated',{authMode:mode});
+                // Codex reads the account online before it reports completion.
+                const complete=()=>{notify('account/login/completed',{loginId:null,success});if(success)notify('account/updated',{authMode:mode});};
+                if(completionDelay)setTimeout(complete,completionDelay);else complete();
             }
         });
     };
     class Clock extends Date {static now():number{return Date.now()+clockOffset;}}
     const context=vm.createContext({window:{electronBridge:{sendMessageFromView:send},addEventListener:(_:string,l:(e:any)=>void)=>listeners.push(l),removeEventListener:(_:string,l:(e:any)=>void)=>{const i=listeners.indexOf(l);if(i>=0)listeners.splice(i,1)}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,atob,Date:Clock,setTimeout,clearTimeout});
-    context.__authManagerSelectiveUIV1={ready:()=>uiAvailable,state:()=>({phase}),begin:async()=>{uiBegins++;phase='switching'},reconnect:async()=>{uiReconnects++;if(uiFails)throw Error('ui_services_unavailable');phase='idle';return{contextPreserved:true}},failed:()=>{if(phase!=='idle')phase='failed'}};
+    context.__authManagerSelectiveUIV1={ready:()=>uiAvailable,state:()=>({phase}),begin:async()=>{uiBegins++;phase='switching'},reconnect:async()=>{uiReconnects++;if(uiFails)throw Error('ui_services_unavailable');phase='idle';return{contextPreserved:threadsResumed!==false,...threadsResumed===undefined?{}:{threadsResumed}}},failed:()=>{if(phase!=='idle')phase='failed'}};
     vm.runInContext(source,context);
     const call=(operation:string,params:any={}):Promise<any>=>operation==='preflight'?vm.runInContext(preflightSource,context):context.__authManagerDesktopV1.call({operation,params});
     const auth=(user:string,generation=1)=>({accessToken:jwt(user,generation),chatgptAccountId:`workspace-${user}`,chatgptPlanType:'pro'});
     const apply=(user:string)=>call('apply',{previousOwner:'codex:a:workspace-a',owner:`codex:${user}:workspace-${user}`,auth:auth(user)});
     const refresh=(id:number,workspace='workspace-b')=>emit({type:'mcp-request',hostId:'local',request:{id,method:'account/chatgptAuthTokens/refresh',params:{reason:'unauthorized',previousAccountId:workspace}}});
-    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,phase,uiBegins,uiReconnects}),setUIAvailable:(v:boolean)=>{uiAvailable=v},setUIFails:(v:boolean)=>{uiFails=v},setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms}};
+    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,phase,uiBegins,uiReconnects}),setUIAvailable:(v:boolean)=>{uiAvailable=v},setUIFails:(v:boolean)=>{uiFails=v},setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setThreadsResumed:(v:boolean)=>{threadsResumed=v}};
 }
 let passed=0;
 async function test(name:string,run:()=>Promise<void>):Promise<void>{await run();passed++;console.log(`PASS ${name}`);}
@@ -112,6 +113,17 @@ await test('UI failure keeps recovery pending; recovery does not repeat successf
 });
 await test('active task blocks injection, including empty active flags',async()=>{
     const f=fixture();f.setActive(true);assert.equal((await f.apply('b')).code,'tasks_active');assert.equal(f.state().injections,0);
+});
+await test('a login Codex completes after 2.5 seconds is still confirmed',async()=>{
+    // Ten real switches took 0.9–1.95 s from the ack to completion; the old 2 s wait had no margin.
+    const f=fixture();f.setCompletionDelay(2500);
+    const result=await f.apply('b');
+    assert.equal(result.confirmed,true);assert.equal(result.threadsResumed,true);assert.equal(f.state().phase,'idle');
+});
+await test('an open task that did not resume is reported, not failed',async()=>{
+    const f=fixture();f.setThreadsResumed(false);
+    const result=await f.apply('b');
+    assert.equal(result.confirmed,true);assert.equal(result.contextPreserved,false);assert.equal(result.threadsResumed,false);
 });
 await test('ack and changed memory cannot hide failed completion notification',async()=>{
     const f=fixture();f.setSuccess(false);const r=await f.apply('b');assert.equal(r.confirmed,false);assert.equal(r.owner,'codex:b:workspace-b');

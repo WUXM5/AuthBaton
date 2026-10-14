@@ -1,7 +1,7 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===4) return true;
+  if (globalThis[key]?.revision===5) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
     if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
@@ -93,7 +93,7 @@
     }
   });
   globalThis[key] = {
-    revision:4,
+    revision:5,
     async call(input) {
       try {
         if(input.operation.startsWith('auto_')) {
@@ -127,14 +127,15 @@
             if(account.account?.type!=='chatgpt')throw Error('unsupported_auth');
             const restored=await ui.reconnect(p.owner);
             const current=await status();
-            return {ok:true,instance,...current,boundOwner:binding?.owner??null,confirmed:current.owner===p.owner && current.mode==='chatgptAuthTokens',contextPreserved:restored.contextPreserved};
+            return {ok:true,instance,...current,boundOwner:binding?.owner??null,confirmed:current.owner===p.owner && current.mode==='chatgptAuthTokens',contextPreserved:restored.contextPreserved,threadsResumed:restored.threadsResumed!==false};
           }
           receipt=null;
           ++epoch; binding={...tokenIdentity}; completed=null; updated=false;
           const result=await rpc('account/login/start',{type:'chatgptAuthTokens',...p.auth});
           if (result?.type!=='chatgptAuthTokens') throw Error('invalid_login');
           // RPC ack precedes routing validation. Failure is a partially applied operation.
-          for (let i=0; i<40 && completed===null; i++) await new Promise(r=>setTimeout(r,50));
+          // Completion waits for Codex to read the account online: 0.9–1.95 s in ten real switches.
+          for (let i=0; i<160 && completed===null; i++) await new Promise(r=>setTimeout(r,50));
           const current=await status();
           const account=await rpc('account/read',{refreshToken:false});
           const confirmed=current.owner===p.owner && current.mode==='chatgptAuthTokens' && completed===true && updated && account.account?.type==='chatgpt';
@@ -144,7 +145,7 @@
             const restored=await ui.reconnect(p.owner);
             const verified=await status();
             if(verified.owner!==p.owner || verified.mode!=='chatgptAuthTokens')throw Error('identity_changed');
-            return {ok:true,instance,...verified,boundOwner:binding.owner,confirmed:true,contextPreserved:restored.contextPreserved};
+            return {ok:true,instance,...verified,boundOwner:binding.owner,confirmed:true,contextPreserved:restored.contextPreserved,threadsResumed:restored.threadsResumed!==false};
           }
           return {ok:true, instance, ...current, boundOwner:binding.owner, confirmed};
         }

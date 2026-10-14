@@ -13,6 +13,9 @@ import Foundation
                       "/chatgpt/quick-chat-prewarm","/chatgpt/quick-chat/synthetic","/debug"] {
             precondition(!DesktopTargets.isPrimaryPage(page(route)))
         }
+        // The hidden page window Codex keeps warm is not a candidate; a page window someone opened still is.
+        precondition(!DesktopTargets.isPrimaryPage(page("/space/local-page-synthetic?window=page&prewarm=1")))
+        precondition(DesktopTargets.isPrimaryPage(page("/space/local-page-synthetic?window=page")))
         for address in ["app://-/detached-window.html","https://example.invalid/index.html","app://other/index.html"] {
             precondition(!DesktopTargets.isPrimaryPage(["type":"page","url":address]))
         }

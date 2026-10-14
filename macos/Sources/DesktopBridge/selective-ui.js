@@ -2,7 +2,7 @@
 (() => {
   const key = '__authManagerSelectiveUIV1';
   const existing = globalThis[key];
-  if (existing?.revision === 4) return true;
+  if (existing?.revision === 5) return true;
   // A switch is finished or recovered by the adapter that started it; an idle older one is replaced.
   if (existing && ['switching','failed','reconnecting'].includes(existing.state().phase)) return true;
   existing?.dispose();
@@ -64,13 +64,17 @@
       else Promise.resolve().then(() => request.original.apply(request.query,request.args)).then(request.resolve,request.reject);
     }
   }
+  function routes() {
+    return fibers(root().fiber).filter(node=>node.type===refs.gf && node.memoizedProps?.scope===refs.OS).map(node=>node.memoizedProps.value);
+  }
+  function openThreads() {
+    return routes().filter(route=>route?.routeKind==='local-thread').map(route=>route.conversationId);
+  }
   function capture() {
     const element = root().element, selection = window.getSelection();
-    const routes=fibers(root().fiber).filter(node=>node.type===refs.gf && node.memoizedProps?.scope===refs.OS).map(node=>node.memoizedProps.value);
-    if(routes.some(route=>['remote-thread','chatgpt-thread'].includes(route?.routeKind)))throw Error('ui_scope_unsupported');
+    if(routes().some(route=>['remote-thread','chatgpt-thread'].includes(route?.routeKind)))throw Error('ui_scope_unsupported');
     const manager=hosts.getForHostId('local');
-    const threads=routes.filter(route=>route?.routeKind==='local-thread').map(route=>route.conversationId)
-      .filter(id=>typeof id==='string' && manager.getConversation(id)?.resumeState==='resumed');
+    const threads=openThreads().filter(id=>typeof id==='string' && manager.getConversation(id)?.resumeState==='resumed');
     return {
       route:location.href, element, active:document.activeElement,
       threads,
@@ -100,7 +104,7 @@
   function block() {
     banner = document.createElement('div');
     banner.setAttribute('role','status');
-    banner.textContent = '正在切换账号并重新连接服务；当前页面与草稿保留，请稍候。';
+    banner.textContent = '正在切换账号并重新连接服务，请稍候。';
     banner.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:10px 18px;border-radius:10px;background:#24272b;color:#f3f3f3;font:13px system-ui;box-shadow:0 2px 14px #0006;pointer-events:none';
     document.body.appendChild(banner);
     const events=['keydown','beforeinput','click','pointerdown','submit','paste','drop'];
@@ -124,7 +128,7 @@
   }
 
   const adapter = {
-    revision:4,
+    revision:5,
     configure(name) {
       if(phase!=='uninstalled' || typeof name!=='string' || !/^[A-Za-z_$][\w$]*$/.test(name))return fail();
       boundaryName=name;return true;
@@ -218,22 +222,31 @@
       void client.resetQueries().catch(()=>{}); current(generation);releaseQueries();
       // Official query options follow the account-input state on a later render, so the fetch started by the
       // reset can still run options computed while that state was `error`. Ask again until the new account lands.
+      let matches=false;
       for(let attempt=0;attempt<375;attempt++) {
         current(generation);
         const info=client.getQueryData(['vscode','account-info']);
         const manager=hosts.getForHostId('local');
-        const threadsReady=context.threads.every(id=>manager?.getConversation(id)?.resumeState==='resumed');
-        const matches=info && `codex:${info.userId}:${info.accountId}`===owner;
+        // After an account change Codex itself may open the page it remembers for the new account.
+        // A task the page has left is resumed by the official route when opened again, so only open ones are awaited.
+        const pending=context.threads.filter(id=>manager?.getConversation(id)?.resumeState!=='resumed');
+        const threadsReady=!pending.length || !openThreads().some(id=>pending.includes(id));
+        matches=!!info && `codex:${info.userId}:${info.accountId}`===owner;
         if(!matches && attempt%10===9 && client.getQueryCache().find({queryKey:['vscode','account-info']})?.state.fetchStatus!=='fetching')
           void client.refetchQueries({queryKey:['vscode','account-info']}).catch(()=>{});
         if(threadsReady && matches) {
           current(generation);
-          contextPreserved=restorePosition();
+          const open=openThreads();
+          contextPreserved=context.threads.every(id=>open.includes(id)) && restorePosition();
           identity=refs.Up.identityKey(); phase='idle'; unblock(); return {ok:true,contextPreserved};
         }
         await sleep(40);
       }
-      throw Error('ui_services_unavailable');
+      if(!matches)throw Error('ui_services_unavailable');
+      // The new account is confirmed; an open task that never resumed costs only the preserved page.
+      // Its official route resumes it once opened again, so the page is released instead of held for recovery.
+      current(generation);
+      contextPreserved=false; identity=refs.Up.identityKey(); phase='idle'; unblock(); return {ok:true,contextPreserved,threadsResumed:false};
     },
     failed() {
       if(phase==='uninstalled' || phase==='idle')return;
