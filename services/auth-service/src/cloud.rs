@@ -649,7 +649,6 @@ pub fn native_sync(
                 .map_err(|_| "本机云端投影记录无效")?,
         )
     };
-    native.preflight_write(&platform, &target)?;
     if activate {
         if let Some(original) = expected.as_ref().filter(|b| b.metadata().is_ok()) {
             // Include an unregistered native login: it may be the only full copy.

@@ -662,7 +662,6 @@ impl Accounts {
             }
             let target = self.native(&account.provider)?;
             let old = target.login(&self.platform)?;
-            target.preflight_write(&self.platform, &bundle)?;
             if let Some(old) = &old {
                 if !old.same_owner(&bundle)? {
                     return Err("原生账号已变化，未应用重新登录结果");
@@ -972,7 +971,6 @@ impl Accounts {
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
         let old = native.login(&self.platform)?;
         let next = Bundle::decode(self.platform.vault_read(&target.id)?)?;
-        native.preflight_write(&self.platform, &next)?;
         if let Some(old) = &old {
             // Keeps the source's latest material, including a refresh an official client just saved.
             self.adopt_native(old.clone(), "原生账号")?;

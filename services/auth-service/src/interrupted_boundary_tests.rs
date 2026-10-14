@@ -534,7 +534,7 @@ fn codex_login_for(user: &str, padding: usize) -> Bundle {
 }
 
 #[test]
-fn a_codex_login_too_large_for_the_keychain_writer_is_refused_before_the_switch_starts() {
+fn a_codex_keychain_login_beyond_the_writer_line_limit_switches() {
     let fixture = Fixture::new();
     let mut manager = fixture.manager();
     let home = manager.sources.codex_home.clone();
@@ -547,40 +547,24 @@ fn a_codex_login_too_large_for_the_keychain_writer_is_refused_before_the_switch_
     let native = NativeStore::codex(&home, false).unwrap();
     let current = codex_login_for("synthetic-user-a", 0);
     let large = codex_login_for("synthetic-user-b", 3000);
-    let small = codex_login_for("synthetic-user-c", 0);
     fixture
         .platform
         .write_key(&native.service, &native.account, &current.credential)
         .unwrap();
-    for (id, bundle) in [("a", &current), ("b", &large), ("c", &small)] {
+    for (id, bundle) in [("a", &current), ("b", &large)] {
         fixture.platform.vault_write(id, &bundle.encoded()).unwrap();
         manager.db.accounts.push(account(id, bundle, id == "a"));
     }
     manager.save().unwrap();
 
-    assert_eq!(
-        manager.activate("b", true),
-        Err(crate::credentials::CODEX_KEYCHAIN_TOO_LARGE)
-    );
-    assert!(manager.db.switch.is_none());
-    assert!(fixture.manager().db.switch.is_none());
-    assert_eq!(
-        fixture
-            .platform
-            .read_key(&native.service, &native.account)
-            .unwrap(),
-        Some(current.credential.clone())
-    );
-
-    // A login the writer can hold still switches.
-    manager.activate("c", true).unwrap();
+    manager.activate("b", true).unwrap();
     assert!(manager.db.switch.is_none());
     assert_eq!(
         fixture
             .platform
             .read_key(&native.service, &native.account)
             .unwrap(),
-        Some(small.credential)
+        Some(large.credential)
     );
 }
 
