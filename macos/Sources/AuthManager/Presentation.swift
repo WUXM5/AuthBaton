@@ -226,7 +226,7 @@ extension AccountDirectory {
 enum PrimaryAction {
     case recover    // 恢复同步 / 重试保存
     case relogin    // 重新登录
-    case switchTo   // 设为当前，或接管 Codex 桌面
+    case switchTo   // 设为当前，或由 AuthManager 接管当前登录
     case wait       // nothing to do yet; health says why
     case current    // already the current default
 }

@@ -369,7 +369,7 @@ impl Accounts {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
         let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":a.warmup.as_ref().map(|p|(p,true)).or(a.warmup_off.as_ref().map(|p|(p,false))).map(|(p,enabled)|json!({"enabled":enabled,"hour":p.hour,"running":self.warmup.running(&a.id),"last":p.last}))})).collect();
-        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop.snapshot(&self.db.desktop),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot()})
+        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot()})
     }
     pub fn import(&mut self, provider: &str, label: &str) -> Result<()> {
         self.ensure_idle()?;
@@ -1291,9 +1291,6 @@ impl Accounts {
                 }
                 if result.refreshed {
                     a.last_refresh = Some(now());
-                    if self.db.desktop.selected.as_deref() == Some(&job.id) {
-                        self.desktop.dirty = true;
-                    }
                 }
                 a.state = result.state;
                 a.message = result.message;
@@ -1302,6 +1299,13 @@ impl Accounts {
                 } else {
                     now() + backoff(a.failures)
                 };
+                if result.refreshed && self.db.desktop.selected.as_deref() == Some(&job.id) {
+                    self.desktop_log(
+                        "renewed",
+                        Some(&job.id),
+                        "AuthManager 续期了桌面绑定的账号；桌面下次要令牌时直接给它",
+                    );
+                }
             }
             Ok(JobResult::Observed(bundle, delegated)) => {
                 self.sync_native_codex(index, &bundle);

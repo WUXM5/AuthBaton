@@ -105,7 +105,7 @@ struct DashboardView: View {
             }
             Section("连接") {
                 sidebarRow("Codex 桌面", icon: "macwindow",
-                           tone: desktop?.enabled == true ? (desktop?.connected == true ? .success : .warning) : nil,
+                           tone: desktop?.enabled == true ? (desktop?.managed == true ? .success : .warning) : nil,
                            text: desktop?.enabled == true ? nil : "关")
                     .tag(SidebarItem.page(.desktop))
                 Label("客户端与服务", systemImage: "square.grid.2x2").tag(SidebarItem.page(.clients))
