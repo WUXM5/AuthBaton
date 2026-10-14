@@ -69,9 +69,8 @@ enum FixtureFailure: Error { case unexpectedCall }
         catch UIAdapterFailure.unsupported {}
         if CommandLine.arguments.count > 1 {
             let current = try SelectiveSymbols.read(app: CommandLine.arguments[1])
-            precondition(current.references.count == 17)
-            precondition(current.references["Qd"]?.providerScope == true)
-            print("Static installed bundle: 17 unique roles, including shared-module scope reader")
+            precondition(current.references.count == SelectiveSymbols.roles.count)
+            print("Static installed bundle: \(current.references.count) unique roles; shared-module scope: \(current.references.filter { $0.value.providerScope }.keys.sorted())")
         }
         print("Synthetic renamed/shared-module install and missing/ambiguous rejection passed; live CDP: 0")
     }

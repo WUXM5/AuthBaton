@@ -1014,7 +1014,7 @@ mod tests {
 
 // Normalize the provider's RFC3339 boundary into the same expiry used for Codex
 // policy decisions. Keep the original ISO field for existing UI consumers.
-fn iso_time(input: &str) -> Option<u64> {
+pub(crate) fn iso_time(input: &str) -> Option<u64> {
     if !input.is_ascii() || input.len() < 20 || input.len() > 40 {
         return None;
     }

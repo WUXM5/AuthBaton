@@ -150,6 +150,7 @@ pub enum Completion {
         id: String,
         result: Result<()>,
     },
+    Restart(Result<()>),
 }
 #[derive(Clone)]
 pub struct Refresh {
@@ -169,6 +170,11 @@ pub struct Runtime {
     pub turns_running: fn(&Path) -> Result<bool>,
     // Account to switch to once a desktop restarted for that switch connects, with a deadline.
     pub pending_switch: Option<(String, u64)>,
+    pub undebugged: fn(u16) -> Result<Undebugged>,
+    // The last such desktop already handled: restarted, or left running.
+    pub settled_pid: Option<u32>,
+    pub last_watch: u64,
+    pub restart_failed: bool,
     #[cfg(test)]
     pub helper: Option<PathBuf>,
     pub target: Option<String>,
@@ -193,6 +199,13 @@ impl Default for Runtime {
             relaunch,
             turns_running,
             pending_switch: None,
+            #[cfg(not(test))]
+            undebugged: undebugged_desktop,
+            #[cfg(test)]
+            undebugged: |_| Ok(None),
+            settled_pid: None,
+            last_watch: 0,
+            restart_failed: false,
             #[cfg(test)]
             helper: None,
             target: None,
@@ -297,6 +310,54 @@ pub fn desktop_running() -> Result<bool> {
             || s.trim() == "/Applications/Codex.app/Contents/MacOS/Codex"
     }))
 }
+// A desktop started without the debug port: its pid and seconds since it started.
+pub type Undebugged = Option<(u32, u64)>;
+const DESKTOP_EXECUTABLES: [&str; 2] = [
+    "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    "/Applications/Codex.app/Contents/MacOS/Codex",
+];
+// Seconds a desktop counts as just started; one running longer may be in use.
+pub const FRESH_DESKTOP_SECS: u64 = 60;
+// Tests use a synthetic process list instead, so they never restart the person's desktop.
+#[cfg_attr(test, allow(dead_code))]
+pub fn undebugged_desktop(port: u16) -> Result<Undebugged> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,etime=,args="])
+        .output()
+        .map_err(|_| "无法检查桌面进程")?;
+    Ok(undebugged_in(
+        &String::from_utf8_lossy(&output.stdout),
+        port,
+    ))
+}
+fn undebugged_in(listing: &str, port: u16) -> Undebugged {
+    let flag = format!("--remote-debugging-port={port}");
+    listing.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let pid = fields.next()?.parse().ok()?;
+        let age = elapsed(fields.next()?)?;
+        let executable = fields.next()?;
+        (DESKTOP_EXECUTABLES.contains(&executable) && !fields.any(|arg| arg == flag))
+            .then_some((pid, age))
+    })
+}
+// `ps` elapsed time: [[dd-]hh:]mm:ss.
+fn elapsed(text: &str) -> Option<u64> {
+    let (days, clock) = match text.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, text),
+    };
+    let parts: Vec<u64> = clock
+        .split(':')
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    let (hours, minutes, seconds) = match parts[..] {
+        [minutes, seconds] => (0, minutes, seconds),
+        [hours, minutes, seconds] => (hours, minutes, seconds),
+        _ => return None,
+    };
+    Some(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
+}
 // Quits a running desktop the normal way (never forcibly), then starts it with the debug port.
 pub fn relaunch(port: u16) -> Result<()> {
     let app = DESKTOP_APPS
@@ -341,6 +402,18 @@ pub fn relaunch(port: u16) -> Result<()> {
 // first message, so a running turn is already on disk.
 pub fn turns_running(codex_home: &Path) -> Result<bool> {
     let cutoff = std::time::SystemTime::now() - Duration::from_secs(86400);
+    Ok(!open_turns(codex_home, cutoff)?.is_empty())
+}
+// A running turn that started at or after `since`; one without a readable start time counts.
+pub fn turns_started_since(codex_home: &Path, since: u64) -> Result<bool> {
+    let cutoff = std::time::UNIX_EPOCH + Duration::from_secs(since);
+    Ok(open_turns(codex_home, cutoff)?
+        .into_iter()
+        .any(|started| started.is_none_or(|t| t >= since)))
+}
+// Start times of the open turns in rollouts written since `cutoff`.
+fn open_turns(codex_home: &Path, cutoff: std::time::SystemTime) -> Result<Vec<Option<u64>>> {
+    let mut starts = Vec::new();
     let mut dirs = vec![codex_home.join("sessions")];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -361,24 +434,23 @@ pub fn turns_running(codex_home: &Path) -> Result<bool> {
                 continue;
             }
             let text = std::fs::read_to_string(&path).map_err(|_| "无法读取 Codex 会话记录")?;
-            let mut open = false;
+            let mut open = None;
             for line in text.lines().filter(|l| l.contains("\"event_msg\"")) {
-                match serde_json::from_str::<Value>(line)
-                    .ok()
-                    .and_then(|v| v["payload"]["type"].as_str().map(String::from))
-                    .as_deref()
-                {
-                    Some("task_started") => open = true,
-                    Some("task_complete" | "turn_aborted") => open = false,
+                let Ok(value) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                match value["payload"]["type"].as_str() {
+                    Some("task_started") => {
+                        open = Some(value["timestamp"].as_str().and_then(crate::quota::iso_time))
+                    }
+                    Some("task_complete" | "turn_aborted") => open = None,
                     _ => {}
                 }
             }
-            if open {
-                return Ok(true);
-            }
+            starts.extend(open);
         }
     }
-    Ok(false)
+    Ok(starts)
 }
 
 // Only the inspected desktop's descendants may share the managed native credential file.
@@ -437,4 +509,27 @@ pub fn other_codex_clients() -> bool {
         }
         true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_a_main_desktop_process_without_this_debug_port_is_reported() {
+        let listing = "  101 02-01:16:00 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+  102 00:07 /Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper --type=renderer
+";
+        assert_eq!(
+            undebugged_in(listing, 9522),
+            Some((101, 2 * 86400 + 3600 + 960))
+        );
+        let debug = "  103 00:07 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-address=127.0.0.1 --remote-debugging-port=9522\n";
+        assert_eq!(undebugged_in(debug, 9522), None);
+        assert_eq!(undebugged_in(debug, 9600), Some((103, 7)));
+        assert_eq!(undebugged_in("  104 00:07 /tmp/ChatGPT\n", 9522), None);
+        assert_eq!(elapsed("1:02:03"), Some(3723));
+        for bad in ["", "7", "a:01", "1-2", "1:2:3:4"] {
+            assert_eq!(elapsed(bad), None);
+        }
+    }
 }

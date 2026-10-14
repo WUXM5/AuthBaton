@@ -459,6 +459,138 @@ fn failed_relaunch_reports_on_the_attempt_and_leaves_nothing_pending() {
     );
 }
 
+static RESTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static DESKTOP_AGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(3);
+fn counted_restart(_: u16) -> Result<()> {
+    RESTARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+fn fresh_desktop(_: u16) -> Result<crate::desktop::Undebugged> {
+    Ok(Some((
+        4242,
+        DESKTOP_AGE.load(std::sync::atomic::Ordering::SeqCst),
+    )))
+}
+fn iso(secs: u64) -> String {
+    let time = secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::gmtime_r(&time, &mut tm) };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+fn open_turn(manager: &Accounts, name: &str, started: u64) {
+    let day = manager.sources.codex_home.join("sessions/2026/10/14");
+    fs::create_dir_all(&day).unwrap();
+    let line = format!(
+        "{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n",
+        iso(started)
+    );
+    fs::write(day.join(name), line).unwrap();
+}
+
+#[test]
+fn a_desktop_that_just_started_without_the_debug_port_is_restarted_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    DESKTOP_AGE.store(3, SeqCst);
+    let before = RESTARTS.load(SeqCst);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_some());
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+    // The restarted desktop is polled at once.
+    let operations = fs::read_to_string(fixture.root.join("desktop-operations")).unwrap();
+    assert_eq!(operations.lines().collect::<Vec<_>>(), ["poll"]);
+    assert!(manager.desktop.connected);
+    // The same process seen again is not restarted a second time.
+    manager.desktop.last_watch = 0;
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
+#[test]
+fn a_desktop_in_use_or_with_hot_switch_off_is_left_running() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    let before = RESTARTS.load(SeqCst);
+    DESKTOP_AGE.store(crate::desktop::FRESH_DESKTOP_SECS + 1, SeqCst);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    manager.desktop = crate::desktop::Runtime::default();
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    manager.db.desktop.enabled = false;
+    DESKTOP_AGE.store(3, SeqCst);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    assert_eq!(RESTARTS.load(SeqCst), before);
+}
+
+#[test]
+fn only_a_turn_started_since_the_desktop_launched_keeps_it_from_restarting() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.undebugged = fresh_desktop;
+    DESKTOP_AGE.store(30, SeqCst);
+    let before = RESTARTS.load(SeqCst);
+    open_turn(&manager, "rollout-new.jsonl", now() - 10);
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+    // A turn that was already running elsewhere, such as in the CLI, does not count.
+    fs::remove_file(
+        manager
+            .sources
+            .codex_home
+            .join("sessions/2026/10/14/rollout-new.jsonl"),
+    )
+    .unwrap();
+    open_turn(&manager, "rollout-cli.jsonl", now() - 600);
+    manager.desktop.settled_pid = None;
+    manager.desktop.last_watch = 0;
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
+#[test]
+fn a_failed_restart_is_not_retried() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = |_| Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再切换");
+    manager.desktop.undebugged = fresh_desktop;
+    DESKTOP_AGE.store(3, SeqCst);
+    manager.desktop_tick();
+    finish(&mut manager);
+    assert!(manager.desktop.restart_failed);
+    assert!(
+        manager
+            .desktop
+            .message
+            .starts_with("Codex 桌面未能以调试模式重新启动")
+    );
+    manager.desktop.undebugged = |_| Ok(Some((4343, 2)));
+    manager.desktop.last_watch = 0;
+    manager.desktop_tick();
+    assert!(manager.desktop.job.is_none());
+}
+
 #[test]
 fn running_turns_come_from_the_latest_turn_of_recent_rollouts() {
     let fixture = Fixture::new();

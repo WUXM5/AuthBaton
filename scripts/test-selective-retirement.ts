@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 const sourcePath = process.argv[2] || fileURLToPath(new URL('../macos/Sources/DesktopBridge/selective-ui.js',import.meta.url));
 const source = fs.readFileSync(sourcePath, 'utf8');
-let identity = 'a', isReady = true, managersAdded = 0, managerConstructions = 0, queryMutations = 0;
+let identity = 'a', isReady = true, managersRefreshed = 0, queryMutations = 0;
 function _Sl() {}
 function qwl() {}
 function gf() {}
@@ -24,8 +24,6 @@ const scope = {
   node, chain, queryClient: client,
   get(key) {
     if (key === refs.Csn) return 'ready';
-    if (key === 'UE') return manager;
-    if (key === 'WE') return [manager];
     if (key === 'O_') return {};
     return {};
   },
@@ -56,9 +54,8 @@ const jsx = {jsx() {}, jsxs() {}};
 const refs = {
   SSl: jsx, _Sl, qwl, gf, $: token, Qd: (_token, _chain, node) => node.scope,
   Up: {identityKey: () => identity, isReady: () => isReady, async refresh() {}},
-  Csn: {resolve() {}}, UE: 'UE', O_: 'O_', HE: 'HE', WE: 'WE', i6n() {}, R8n: 'R8n',
-  V4n: () => {managerConstructions++; return manager;},
-  uD: class {addManager() {managersAdded++;}}, OS,
+  Csn: {resolve() {}}, O_: 'O_',
+  X3: class {getForHostId() {return manager;} refreshRendererManager() {managersRefreshed++;}}, OS,
 };
 adapter.attach(refs);
 
@@ -78,8 +75,7 @@ adapter.attach(refs);
   const outcome = await pending;
   assert.equal(outcome.resolved, false);
   assert.equal(outcome.error, 'ui_adapter_unavailable');
-  assert.equal(managerConstructions, 0);
-  assert.equal(managersAdded, 0);
+  assert.equal(managersRefreshed, 0);
   assert.equal(queryMutations - mutationsAtRetirement, 0);
   assert.equal(adapter.state().phase, 'uninstalled');
   // The caller's normal error handler must not revive the retired lease either.
@@ -88,8 +84,7 @@ adapter.attach(refs);
   console.log(JSON.stringify({
     evidence: 'exact production JS in pure memory; not a browser or desktop test',
     trials: 1, retired, outcome,
-    managerConstructionsAfterRetire: managerConstructions,
-    managersAddedAfterRetire: managersAdded,
+    managersRefreshedAfterRetire: managersRefreshed,
     queryMutationsAfterRetire: queryMutations - mutationsAtRetirement,
     finalState: adapter.state(),
   }, null, 2));

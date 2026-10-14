@@ -10,6 +10,7 @@ const source = fs.readFileSync(fileURLToPath(new URL('../macos/Sources/DesktopBr
 
 function fixture(existing?: object) {
   let identity = 'a', data: any = {userId: 'a', accountId: 'w'}, refetches = 0, answerOnRefetch = true;
+  const refreshed: string[] = [];
   function _Sl() {}
   function qwl() {}
   function gf() {}
@@ -30,7 +31,7 @@ function fixture(existing?: object) {
     getQueryData: () => data,
     getQueryCache: () => ({getAll: () => [], subscribe: () => () => {}, find: () => query}),
   };
-  const scope = {node, chain, queryClient: client, get: (key: unknown) => key === refs.Csn ? 'ready' : key === 'UE' ? manager : {}, set() {}};
+  const scope = {node, chain, queryClient: client, get: (key: unknown) => key === refs.Csn ? 'ready' : {}, set() {}};
   node.scope = scope;
   const scopeFiber = {type: gf, memoizedProps: {scope: token}, memoizedState: {memoizedState: {current: {node, chain}}}};
   const boundary = {type: _Sl, child: {child: {tag: 7, key: 'nonce:a', child: {type: qwl, child: scopeFiber}}}};
@@ -47,12 +48,12 @@ function fixture(existing?: object) {
   const refs = {
     SSl: jsx, _Sl, qwl, gf, $: token, Qd: (_t: unknown, _c: unknown, n: any) => n.scope,
     Up: {identityKey: () => identity, isReady: () => true, async refresh() {}},
-    Csn: {resolve() {}}, UE: 'UE', O_: 'O_', HE: 'HE', WE: 'WE', i6n() {}, R8n: 'R8n',
-    V4n: () => manager, uD: class {addManager() {}}, OS,
+    Csn: {resolve() {}}, O_: 'O_',
+    X3: class {getForHostId() {return manager;} refreshRendererManager(host: string) {refreshed.push(host);}}, OS,
   };
   const adapter = context.__authManagerSelectiveUIV1;
   return {installed, adapter, refs, attach: () => adapter.attach(refs), switchTo: (next: string) => {identity = next;},
-          refetches: () => refetches, noAnswer: () => {answerOnRefetch = false;}};
+          refetches: () => refetches, refreshed: () => [...refreshed], noAnswer: () => {answerOnRefetch = false;}};
 }
 
 let passed = 0;
@@ -66,7 +67,15 @@ await test('reconnect asks for account info again when the reset fetch ran stale
   const result = await f.adapter.reconnect('codex:b:w');
   assert.equal(result.ok, true);
   assert.equal(f.refetches(), 1);
+  assert.deepEqual(f.refreshed(), ['local']);
   assert.equal(f.adapter.state().phase, 'idle');
+});
+
+await test('a host registry without the official refresh is refused', async () => {
+  const f = fixture();
+  f.refs.X3 = class {getForHostId() {return {};}};
+  assert.throws(() => f.attach(), /ui_adapter_unavailable/);
+  assert.equal(f.adapter.state().phase, 'uninstalled');
 });
 
 await test('reconnect still fails, after its deadline, when account info never arrives', async () => {
@@ -81,14 +90,14 @@ await test('reconnect still fails, after its deadline, when account info never a
 
 await test('an idle older adapter is disposed and replaced', async () => {
   let disposed = 0;
-  const f = fixture({revision: 1, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
+  const f = fixture({revision: 2, state: () => ({phase: 'idle'}), dispose() {disposed++;}});
   assert.equal(disposed, 1);
-  assert.equal(f.adapter.revision, 2);
+  assert.equal(f.adapter.revision, 3);
 });
 
 await test('an older adapter with an unfinished switch is kept for its recovery', async () => {
   let disposed = 0;
-  const old = {revision: 1, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
+  const old = {revision: 2, state: () => ({phase: 'failed'}), dispose() {disposed++;}};
   const f = fixture(old);
   assert.equal(f.installed, true);
   assert.equal(disposed, 0);
