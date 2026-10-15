@@ -17,11 +17,12 @@ cp -R "$SWIFT_BIN/AuthManager_DesktopBridge.bundle" "$APP/Contents/Resources/"
 cp -R "$SWIFT_BIN/AuthManager_AuthManager.bundle" "$APP/Contents/Resources/"
 cp "$PROJECT_ROOT/assets/brand/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$SWIFT_BIN/AuthManager" "$APP/Contents/MacOS/AuthManager"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+# AUTHMANAGER_BUNDLE_ID keeps the bundle ID of an existing install.
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>io.github.wuxm5.authbaton</string>
+<key>CFBundleIdentifier</key><string>${AUTHMANAGER_BUNDLE_ID:-io.github.wuxm5.authbaton}</string>
 <key>CFBundleName</key><string>AuthBaton</string>
 <key>CFBundleDisplayName</key><string>AuthBaton</string>
 <key>CFBundleExecutable</key><string>AuthManager</string>
