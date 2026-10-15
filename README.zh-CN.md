@@ -1,11 +1,11 @@
-# BatonPass
+# AuthBaton
 
 [English](README.md) | 简体中文
 
-macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订阅账号：登录、续期、查额度、切换默认账号。你继续使用官方客户端，BatonPass 只负责账号和凭据。账号快见底时，BatonPass 可以用掉一次重置，或者把接力棒交给另一个账号，让工作接着进行。
+macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订阅账号：登录、续期、查额度、切换默认账号。你继续使用官方客户端，AuthBaton 只负责账号和凭据。账号快见底时，AuthBaton 可以用掉一次重置，或者把接力棒交给另一个账号，让工作接着进行。
 
 > [!NOTE]
-> BatonPass 开发时叫 AuthManager。App 包的文件名（`AuthManager.app`）、数据目录、源码目录和各集成里的名字还沿用旧名。
+> AuthBaton 开发时叫 AuthManager。App 包的文件名（`AuthManager.app`）、数据目录、源码目录和各集成里的名字还沿用旧名。
 
 > [!IMPORTANT]
 > 这是非官方项目，与 OpenAI、Anthropic 没有关系。它依赖官方客户端的本地存储格式和未公开接口，官方更新后可能失效。是否符合各服务的使用条款，请你自行确认。
@@ -23,11 +23,11 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 
 ## 安全边界
 
-- 凭据只出现在 BatonPass 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC 或日志。
+- 凭据只出现在 AuthBaton 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC 或日志。
 - 命令行参数只有一个例外：写入 Claude 或 Codex 官方 Keychain 条目时，如果内容超出 `security -i` 的 4096 字节单行上限，会改作 `/usr/bin/security` 的命令行参数传入。写入的那一刻，同一 macOS 用户下的进程能在进程列表里看到它。
-- 开启 Codex 桌面热切换后，BatonPass 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 BatonPass 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；BatonPass 自己打开的桌面传入 `=0`，退出时照常确认。重启前会在 Codex 桌面自己的日志（`~/Library/Logs/com.openai.codex/`）里查找该进程「启动完成」的那一行，启动完成前不会让它退出；只读这一行，不保存日志内容。
+- 开启 Codex 桌面热切换后，AuthBaton 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 AuthBaton 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；AuthBaton 自己打开的桌面传入 `=0`，退出时照常确认。重启前会在 Codex 桌面自己的日志（`~/Library/Logs/com.openai.codex/`）里查找该进程「启动完成」的那一行，启动完成前不会让它退出；只读这一行，不保存日志内容。
 - 界面进程拿不到凭据；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
-- 除你为某个 Claude 账号开启的预热外，BatonPass 不发起模型请求，也不用模型请求冒充认证检查。
+- 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。桌面操作记录 `desktop-log.jsonl`（0600，超过 512 KB 轮换一次）只记时间、对 Codex 桌面做的操作、账号 ID 和固定原因，不含凭据。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。
 
 ## 架构
@@ -97,7 +97,7 @@ bash scripts/accounts-preview/render.sh interact        # 编译生产界面接�
 
 ## 许可
 
-BatonPass 按 [PolyForm Noncommercial License 1.0.0](LICENSE.md) 发布。
+AuthBaton 按 [PolyForm Noncommercial License 1.0.0](LICENSE.md) 发布。
 
 - **可以免费使用**：个人出于学习、研究、自用等非商业目的使用；慈善机构、教育机构、公共研究机构、政府机构等非营利组织使用。
 - **需要商业授权**：公司及其他营利组织使用（包括员工为工作使用），以及其他任何商业用途。
