@@ -1,13 +1,13 @@
-# BatonPass
+# AuthBaton
 
 English | [简体中文](README.zh-CN.md)
 
-A macOS menu-bar app that manages several Codex (ChatGPT) and Claude Code subscription accounts: sign-in, token renewal, quota and switching. You keep using the official clients; BatonPass only handles the accounts and their credentials. When an account runs low, BatonPass can use a reset or pass the baton to another account, so your work keeps going.
+A macOS menu-bar app that manages several Codex (ChatGPT) and Claude Code subscription accounts: sign-in, token renewal, quota and switching. You keep using the official clients; AuthBaton only handles the accounts and their credentials. When an account runs low, AuthBaton can use a reset or pass the baton to another account, so your work keeps going.
 
 The interface is in Chinese. Free for personal, noncommercial use; companies need a commercial license.
 
 > [!NOTE]
-> BatonPass was developed under the name AuthManager. The app bundle file (`AuthManager.app`), its data directory, the source folders and the integration names still use that name.
+> AuthBaton was developed under the name AuthManager. The app bundle file (`AuthManager.app`), its data directory, the source folders and the integration names still use that name.
 
 > [!IMPORTANT]
 > This is an unofficial project, not affiliated with OpenAI or Anthropic. It relies on the official clients' local storage formats and undocumented interfaces, so it may stop working when they update. Check for yourself whether your use complies with each service's terms.
@@ -15,9 +15,9 @@ The interface is in Chinese. Free for personal, noncommercial use; companies nee
 ## Features
 
 - **Accounts**: sign in new accounts in an isolated directory, take over the account you are already signed in to, or import an existing Codex `auth.json`. Make any account the official default sign-in.
-- **Keeping sign-ins valid**: local checks, online authentication checks and automatic renewal per account. For the current Claude account, renewal follows the official lock protocol together with the CLI. If a renewal response is lost, BatonPass reconciles automatically and never resends old credentials.
+- **Keeping sign-ins valid**: local checks, online authentication checks and automatic renewal per account. For the current Claude account, renewal follows the official lock protocol together with the CLI. If a renewal response is lost, AuthBaton reconciles automatically and never resends old credentials.
 - **Quota**: every 5 minutes, a read-only query of the 5-hour and weekly windows, model windows, remaining resets and their expiry. Queries come faster when an account is close to empty.
-- **Switching and resets**: each account has a low line and an order (reset first, switch first, reset only, switch only). When an account reaches its line, BatonPass acts automatically and keeps a record. Off by default.
+- **Switching and resets**: each account has a low line and an order (reset first, switch first, reset only, switch only). When an account reaches its line, AuthBaton acts automatically and keeps a record. Off by default.
 - **Codex desktop (experimental)**: connects to the official desktop app through a local debugging port and switches accounts without quitting it. Running sessions can be paused and continued after the switch.
 - **Claude**: switches accounts without quitting the client; running sessions pick up the change within about 30 seconds. Optional 5-hour window warm-up: each day at a set hour, one Haiku message is sent through the official CLI. Off by default.
 - **Integrations**: the pi extension takes access tokens per account. The Claude Code plugin reports quota, and a turn cut off by the quota limit resumes automatically after the switch.
@@ -25,11 +25,11 @@ The interface is in Chinese. Free for personal, noncommercial use; companies nee
 
 ## Security boundaries
 
-- Credentials exist only in BatonPass's Keychain Vault, the storage the official clients need, and private pipes between processes. They are never written to SQLite, the UI's IPC or logs.
+- Credentials exist only in AuthBaton's Keychain Vault, the storage the official clients need, and private pipes between processes. They are never written to SQLite, the UI's IPC or logs.
 - There is one exception for command-line arguments. When an official Claude or Codex Keychain entry is larger than the 4096-byte single-line limit of `security -i`, it is passed to `/usr/bin/security` as a command-line argument instead. While that write runs, processes of the same macOS user can see the entry in the process list.
-- With Codex desktop hot switching on, BatonPass sets `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1` in the login session environment (`launchctl setenv`) while it runs. It clears the variable when hot switching is turned off or BatonPass quits. This keeps a desktop app opened from the Dock, or restarted after an update, from stopping at the quit confirmation when BatonPass restarts it in debugging mode. A desktop app that BatonPass opens itself gets `=0` and asks for confirmation on quit as usual. Before a restart, BatonPass looks in the desktop app's own log (`~/Library/Logs/com.openai.codex/`) for the line that says the process has finished starting, and does not let it quit before then. It reads only that line and keeps nothing from the log.
+- With Codex desktop hot switching on, AuthBaton sets `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1` in the login session environment (`launchctl setenv`) while it runs. It clears the variable when hot switching is turned off or AuthBaton quits. This keeps a desktop app opened from the Dock, or restarted after an update, from stopping at the quit confirmation when AuthBaton restarts it in debugging mode. A desktop app that AuthBaton opens itself gets `=0` and asks for confirmation on quit as usual. Before a restart, AuthBaton looks in the desktop app's own log (`~/Library/Logs/com.openai.codex/`) for the line that says the process has finished starting, and does not let it quit before then. It reads only that line and keeps nothing from the log.
 - The UI process never gets credentials. The Rust service is the only source of account state, and IPC responses use a field allowlist.
-- Apart from the warm-up you turn on for a Claude account, BatonPass sends no model requests and never uses one as an authentication check.
+- Apart from the warm-up you turn on for a Claude account, AuthBaton sends no model requests and never uses one as an authentication check.
 - The runtime directory `~/Library/Application Support/AuthManager/` has mode 0700; sockets and the database are 0600. The desktop operation log `desktop-log.jsonl` (0600, rotated once it passes 512 KB) records only the time, the operation on the Codex desktop app, the account ID and a fixed reason. It contains no credentials. These measures protect against mistakes and credential leaks; they cannot defend against malicious programs running as the same macOS user.
 
 ## Architecture
@@ -102,7 +102,7 @@ Tests that need a real environment are skipped by default:
 
 ## License
 
-BatonPass is released under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+AuthBaton is released under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
 
 - **Free to use**: by individuals, for noncommercial purposes such as learning, research and personal use; and by noncommercial organizations such as charities, educational institutions, public research organizations and government bodies.
 - **Commercial license required**: for companies and other for-profit organizations (including employees using it for work), and for any other commercial use.
