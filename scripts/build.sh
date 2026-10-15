@@ -27,8 +27,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>AuthManager</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>0.19.2</string>
-<key>CFBundleVersion</key><string>67</string>
+<key>CFBundleShortVersionString</key><string>0.19.3</string>
+<key>CFBundleVersion</key><string>68</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
