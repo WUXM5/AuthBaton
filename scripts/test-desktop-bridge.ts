@@ -107,9 +107,21 @@ await test('same-account adoption and token refresh never reload the page',async
 await test('active task blocks injection, including empty active flags',async()=>{
     const f=fixture();f.setActive(true);assert.equal((await f.apply('b')).code,'tasks_active');assert.equal(f.state().injections,0);
 });
+// The background sources each script skips, read from the shipped JavaScript.
+const backgroundSources=(file:string):string[]=>{
+    const text=readFileSync(new URL(`../macos/Sources/DesktopBridge/${file}`,import.meta.url),'utf8');
+    return text.match(/const background = thread =>[^[]*\[([^\]]*)\]\.includes/)?.[1].match(/'[a-z_]+'/g)?.map(s=>s.slice(1,-1)) ?? [];
+};
+await test('preflight, apply and the automatic carry-over skip the same background sources',async()=>{
+    const list=backgroundSources('preflight.js');
+    assert.equal(list.length,15);
+    assert.deepEqual(backgroundSources('bridge.js'),list);
+    assert.deepEqual(backgroundSources('automatic.js'),list);
+});
 await test("the desktop's own background generations never block a switch; a side chat still does",async()=>{
     // 2026-10-15: an ambient-suggestions thread refused two switches while the person had nothing running.
-    for(const origin of [{ephemeral:true,threadSource:'ambient_suggestions'},{ephemeral:true,threadSource:'ambient_suggestion_safety'},{ephemeral:true,threadSource:'mcp_extension_host'},{ephemeral:true,threadSource:null},{ephemeral:true}]) {
+    // The next-message prediction (composer_predictions) runs after every turn: 108 times in 3.2 days.
+    for(const origin of [...backgroundSources('preflight.js').map(threadSource=>({ephemeral:true,threadSource})),{ephemeral:true,threadSource:null},{ephemeral:true}]) {
         const f=fixture();f.setActive(true);f.setOrigin(origin);
         assert.equal((await f.call('preflight')).mode,'chatgpt',JSON.stringify(origin));
         assert.equal((await f.apply('b')).confirmed,true,JSON.stringify(origin));

@@ -70,6 +70,8 @@ await test('a systemError thread counts only while its latest turn is still runn
 await test("the desktop's background generations are never paused or resumed; a side chat is",async()=>{
   const f=fixture();
   f.threads.set('suggestions',{status:'active',flags:[],turn:{id:'turn-suggestions',status:'inProgress'},ephemeral:true,threadSource:'ambient_suggestions'});
+  // The next-message prediction forks the conversation right after a turn, when a quota line is usually crossed.
+  f.threads.set('prediction',{status:'active',flags:[],turn:{id:'turn-prediction',status:'inProgress'},ephemeral:true,threadSource:'composer_predictions'});
   f.threads.set('generation',{status:'active',flags:[],turn:{id:'turn-generation',status:'inProgress'},ephemeral:true,threadSource:undefined});
   f.threads.set('side-chat',{status:'active',flags:[],turn:{id:'turn-side-chat',status:'inProgress'},ephemeral:true,threadSource:'user'});
   const plan=await f.call('prepare');
@@ -77,7 +79,7 @@ await test("the desktop's background generations are never paused or resumed; a 
   for(const t of plan.tasks)await f.call('pause',{threadId:t.thread_id});
   f.owner('B');
   for(const t of plan.tasks)await f.call('resume',{threadId:t.thread_id});
-  for(const id of ['suggestions','generation'])assert(!f.calls.some(c=>c===`turn/interrupt:${id}`||c===`turn/start:${id}`));
+  for(const id of ['suggestions','prediction','generation'])assert(!f.calls.some(c=>c===`turn/interrupt:${id}`||c===`turn/start:${id}`));
   assert(f.calls.includes('turn/start:side-chat'));
 });
 await test('pending approval stops before interruption',async()=>{

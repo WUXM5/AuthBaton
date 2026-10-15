@@ -20,12 +20,17 @@
     window.electronBridge.sendMessageFromView({type:'mcp-request',hostId:'local',request:{id,method,params}})
       .catch(() => {clearTimeout(timer);pending.delete(id);reject(Error('task_probe_failed'));});
   });
-  // Background generations the desktop runs for itself (ambient suggestions and their safety check, safety
-  // recourse, the MCP extension host) use ephemeral threads whose source is unset or one of these; the
-  // user never sees them and nothing in them needs finishing. A side chat is ephemeral too but carries
-  // `user`, so it still counts. Same rule in bridge.js and automatic.js.
-  const background = thread => thread?.ephemeral === true && (thread.threadSource == null
-    || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
+  // Background generations the desktop runs for itself use ephemeral threads whose source is unset or one of
+  // these (desktop 26.1007): ambient suggestions and their safety check, safety recourse, the MCP extension
+  // host, the next-message prediction after each turn, thread titles and summaries, commit and pull request
+  // messages, dictation cleanup, inline edits, schedule advice and the ads summary. The user never sees them
+  // and nothing in them needs finishing. A side chat is ephemeral too but carries `user`, and an unknown
+  // source still counts. Same list in bridge.js and automatic.js.
+  const background = thread => thread?.ephemeral === true && (thread.threadSource == null || [
+    'ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host','composer_predictions',
+    'thread_title','thread_description','thread_summary','commit_message','commit_pull_request_message',
+    'pull_request_message','dictation_cleanup','inline_edit','scheduled_setup_advice','ads_manager_performance_summary',
+  ].includes(thread.threadSource));
   // Same rule as bridge.js: a systemError thread is busy only while its latest turn is still in progress.
   const running = async (threadId, thread) => {
     const status = thread?.status;
