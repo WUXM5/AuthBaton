@@ -97,9 +97,4 @@ bash scripts/accounts-preview/render.sh interact        # 编译生产界面接�
 
 ## 许可
 
-AuthBaton 按 [PolyForm Noncommercial License 1.0.0](LICENSE.md) 发布。
-
-- **可以免费使用**：个人出于学习、研究、自用等非商业目的使用；慈善机构、教育机构、公共研究机构、政府机构等非营利组织使用。
-- **需要商业授权**：公司及其他营利组织使用（包括员工为工作使用），以及其他任何商业用途。
-
-商业授权请在 GitHub 上联系 [@WUXM5](https://github.com/WUXM5)。
+AuthBaton 按 [MIT License](LICENSE.md) 发布。
