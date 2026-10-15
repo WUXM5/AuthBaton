@@ -219,7 +219,7 @@ enum Fixture {
         }
         return data
     }
-    static let snapshot = #"{"checked_at":1790649075,"service_version":"0.15.0","verification":"仅检查本地凭据和 Claude CLI 登录状态，未请求模型，也未验证刷新能力。","providers":[{"id":"codex","name":"Codex","state":"configured","auth_kind":"ChatGPT OAuth","summary":"本地 access token 尚未到期","source":"~/.codex/auth.json","expires_at":1790778068,"details":[]},{"id":"claude","name":"Claude Code","state":"configured","auth_kind":"Claude 订阅","summary":"Claude CLI 报告已登录","source":"/opt/homebrew/bin/claude","expires_at":null,"details":[]},{"id":"pi","name":"pi · OpenAI Codex","state":"configured","auth_kind":"BatonPass 本机服务","summary":"已安装统一账号插件","source":"~/.pi/agent/auth.json","expires_at":null,"details":[]}]}"#
+    static let snapshot = #"{"checked_at":1790649075,"service_version":"0.15.0","verification":"仅检查本地凭据和 Claude CLI 登录状态，未请求模型，也未验证刷新能力。","providers":[{"id":"codex","name":"Codex","state":"configured","auth_kind":"ChatGPT OAuth","summary":"本地 access token 尚未到期","source":"~/.codex/auth.json","expires_at":1790778068,"details":[]},{"id":"claude","name":"Claude Code","state":"configured","auth_kind":"Claude 订阅","summary":"Claude CLI 报告已登录","source":"/opt/homebrew/bin/claude","expires_at":null,"details":[]},{"id":"pi","name":"pi · OpenAI Codex","state":"configured","auth_kind":"AuthBaton 本机服务","summary":"已安装统一账号插件","source":"~/.pi/agent/auth.json","expires_at":null,"details":[]}]}"#
 
     // `action` is the desktop's report on the latest switch attempt, as the service publishes it.
     @MainActor static func load(_ scenario: String, into state: ServiceController, action: [String: Any]? = nil) {
@@ -828,10 +828,10 @@ extension NSWindow {
         select(.desktop)
         check.expect(Driver.visible("已连接 · 未接管"), "已连接但没接管时写明「已连接 · 未接管」")
         select(.codex)
-        check.expect(Driver.visible("交给 BatonPass"), "Codex 页在用的卡片说明要接管")
+        check.expect(Driver.visible("交给 AuthBaton"), "Codex 页在用的卡片说明要接管")
         check.expect(Driver.near("orbit", "接管") != nil, "在用的卡片给出「接管」")
         select(.accounts)
-        check.expect(Driver.visible("交给 BatonPass") && !Driver.hits("接管", .exact).isEmpty, "账号页在用的卡片说明并给出「接管」")
+        check.expect(Driver.visible("交给 AuthBaton") && !Driver.hits("接管", .exact).isEmpty, "账号页在用的卡片说明并给出「接管」")
         Fixture.load("connected", into: state)
         select(.desktop)
         check.expect(Driver.visible("已连接 · 已接管"), "接管后写明「已连接 · 已接管」")

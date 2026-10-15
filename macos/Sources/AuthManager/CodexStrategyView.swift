@@ -209,7 +209,7 @@ struct AutomationPage: View {
         let left = accounts.filter { account in !draft.accounts.contains { $0.id == account.id } }
         if draft.accounts.count >= Self.ruleLimit, !left.isEmpty {
             Banner(glyph: .info, title: "规则最多 \(Self.ruleLimit) 个账号",
-                   text: "\(left.map(\.displayName).joined(separator: "、")) 不在规则里，不会自动换号或重置。要让它们参与，先从 BatonPass 移除不用的账号。")
+                   text: "\(left.map(\.displayName).joined(separator: "、")) 不在规则里，不会自动换号或重置。要让它们参与，先从 AuthBaton 移除不用的账号。")
         }
     }
 

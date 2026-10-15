@@ -411,10 +411,10 @@ private struct ClaudeSide: View {
     private var removal: some View {
         let blocker = account.removeBlocker(directory)
         return VStack(alignment: .leading, spacing: 2) {
-            Button("从 BatonPass 移除…", role: .destructive) { open(.remove(account.id)) }
+            Button("从 AuthBaton 移除…", role: .destructive) { open(.remove(account.id)) }
                 .buttonStyle(.pill(.danger))
                 .disabled(blocker != nil || locked)
-            Text((blocker ?? "") + "只删 BatonPass 保存的记录和凭据，不注销官方账号。")
+            Text((blocker ?? "") + "只删 AuthBaton 保存的记录和凭据，不注销官方账号。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 3.5)

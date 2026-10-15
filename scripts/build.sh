@@ -22,8 +22,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.github.wuxm5.authbaton</string>
-<key>CFBundleName</key><string>BatonPass</string>
-<key>CFBundleDisplayName</key><string>BatonPass</string>
+<key>CFBundleName</key><string>AuthBaton</string>
+<key>CFBundleDisplayName</key><string>AuthBaton</string>
 <key>CFBundleExecutable</key><string>AuthManager</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>

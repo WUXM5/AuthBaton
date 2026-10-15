@@ -157,7 +157,7 @@ struct CloudConnectionView: View {
             Text("两种模式").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .top, spacing: 14) {
                 mode("本地", "沿用这台 Mac 上的登录和维护，账号不离开本机。")
-                mode("云端", "只用你主动导入的账号。中心在本机应用退出后也能续期；本机客户端的凭据同步仍要 BatonPass 在运行。")
+                mode("云端", "只用你主动导入的账号。中心在本机应用退出后也能续期；本机客户端的凭据同步仍要 AuthBaton 在运行。")
             }
         }
         .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 17)
@@ -264,7 +264,7 @@ struct CloudAccountsView: View {
                 Text("还没有云端账号。可以直接导入本机已有的登录，不用重新授权。").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                     .frame(maxWidth: .infinity).padding(.vertical, 27)
             }
-            Text("用量每 5 分钟单独查询。原生同步是实验功能：第一次启用要退出对应客户端。Claude 提前收到新凭据已有合成验证，401 后的原请求不保证自动重试；请让本机 BatonPass 保持运行。")
+            Text("用量每 5 分钟单独查询。原生同步是实验功能：第一次启用要退出对应客户端。Claude 提前收到新凭据已有合成验证，401 后的原请求不保证自动重试；请让本机 AuthBaton 保持运行。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
         Color.clear.frame(height: 0)
@@ -375,7 +375,7 @@ private struct CloudIntent {
         switch action {
         case "unselect": "本机不再同步「\(label)」，并清除它的 pi 默认选择。已发出的短期凭据保留到过期；不会恢复旧的刷新凭据。之后可以选别的账号。"
         case "remove": "移除「\(label)」后，其他设备也不能再领取它的凭据。不会撤销上游已经发出的短期凭据。"
-        case "activate": "把「\(label)」写入本机原生存储，使用云端提供的短期凭据。先结束任务并退出对应客户端；BatonPass 不会替你退出。"
+        case "activate": "把「\(label)」写入本机原生存储，使用云端提供的短期凭据。先结束任务并退出对应客户端；AuthBaton 不会替你退出。"
         case "cancel_import": "只有云端还没接管时才能恢复本地维护；已轮换的旧凭据不会恢复。先退出对应客户端。"
         default: "把「\(label)」的登录凭据发到已配置的个人认证中心。确认其他机器没有单独使用同一份刷新凭据；如果它是本机在用的登录，先退出对应客户端。完成后本机不再单独续期，不用重新登录。"
         }
