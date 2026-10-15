@@ -1182,7 +1182,9 @@ impl Accounts {
         self.notice = None;
         self.save()?;
         if let Some(id) = operation.previous.filter(|id| id.starts_with("backup-")) {
-            let _ = self.platform.delete_key("io.github.wuxm5.authbaton.vault", &id);
+            let _ = self
+                .platform
+                .delete_key("io.github.wuxm5.authbaton.vault", &id);
         }
         Ok(())
     }
