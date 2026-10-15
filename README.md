@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 A macOS menu-bar app that manages several Codex (ChatGPT) and Claude Code subscription accounts: sign-in, token renewal, quota and switching. You keep using the official clients; AuthBaton only handles the accounts and their credentials. When an account runs low, AuthBaton can use a reset or pass the baton to another account, so your work keeps going.
 
-The interface is in Chinese. Free for personal, noncommercial use; companies need a commercial license.
+The interface is in Chinese.
 
 > [!NOTE]
 > AuthBaton was developed under the name AuthManager. The app bundle file (`AuthManager.app`), its data directory, the source folders and the integration names still use that name.
@@ -102,9 +102,4 @@ Tests that need a real environment are skipped by default:
 
 ## License
 
-AuthBaton is released under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
-
-- **Free to use**: by individuals, for noncommercial purposes such as learning, research and personal use; and by noncommercial organizations such as charities, educational institutions, public research organizations and government bodies.
-- **Commercial license required**: for companies and other for-profit organizations (including employees using it for work), and for any other commercial use.
-
-For a commercial license, contact [@WUXM5](https://github.com/WUXM5) on GitHub.
+AuthBaton is released under the [MIT License](LICENSE.md).
