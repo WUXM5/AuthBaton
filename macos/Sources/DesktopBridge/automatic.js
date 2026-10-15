@@ -1,12 +1,16 @@
 // Desktop-only task coordination. No auth material, storage, process restart or UI navigation.
 (() => {
-  if (globalThis.__authManagerTasksV1?.revision===4) return true;
+  if (globalThis.__authManagerTasksV1?.revision===5) return true;
   globalThis.__authManagerTasksV1 = ({rpc, status, idle, instance}) => {
     let batch = null, generation = 0, preparing = null;
     const valid = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
-    // The desktop's own background generations are never paused or resumed. Same rule as bridge.js.
-    const background = thread => thread?.ephemeral===true && (thread.threadSource==null
-      || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
+    // The desktop's own background generations are never paused or resumed: resuming a next-message
+    // prediction would start a hidden turn on a copy of the conversation. Same list as preflight.js.
+    const background = thread => thread?.ephemeral===true && (thread.threadSource==null || [
+      'ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host','composer_predictions',
+      'thread_title','thread_description','thread_summary','commit_message','commit_pull_request_message',
+      'pull_request_message','dictation_cleanup','inline_edit','scheduled_setup_advice','ads_manager_performance_summary',
+    ].includes(thread.threadSource));
     const read = async id => {
       const {thread} = await rpc('thread/read', {threadId:id,includeTurns:false});
       const page = await rpc('thread/turns/list', {threadId:id,limit:1,sortDirection:'desc',itemsView:'summary'});
@@ -131,6 +135,6 @@
       } finally {b.working=false;}
     };
   };
-  globalThis.__authManagerTasksV1.revision = 4;
+  globalThis.__authManagerTasksV1.revision = 5;
   return true;
 })();

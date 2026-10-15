@@ -1,7 +1,7 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===8) return true;
+  if (globalThis[key]?.revision===9) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
     if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
@@ -47,9 +47,12 @@
     return {...identity(value.authToken), mode:value.authMethod, hash};
   }
   // The desktop's own background generations (ephemeral, source unset or one of these) are never tasks;
-  // a side chat is ephemeral too but carries `user`. Matches preflight.js and automatic.js.
-  const background = thread => thread?.ephemeral===true && (thread.threadSource==null
-    || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
+  // a side chat is ephemeral too but carries `user`. Same list as preflight.js, which names each source.
+  const background = thread => thread?.ephemeral===true && (thread.threadSource==null || [
+    'ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host','composer_predictions',
+    'thread_title','thread_description','thread_summary','commit_message','commit_pull_request_message',
+    'pull_request_message','dictation_cleanup','inline_edit','scheduled_setup_advice','ads_manager_performance_summary',
+  ].includes(thread.threadSource));
   // systemError only records that the latest turn hit an error and lasts until the next turn starts,
   // so for it the turn itself says whether anything is still running. Matches preflight.js.
   async function running(threadId, thread) {
@@ -115,7 +118,7 @@
     if (changed) setTimeout(() => location.reload(), 200);
   }
   globalThis[key] = {
-    revision:8,
+    revision:9,
     async call(input) {
       let previousOwner=null, loginSent=false;
       try {
