@@ -47,7 +47,7 @@ struct MenuBarPanel: View {
     private var header: some View {
         let checked = directory?.accounts.compactMap { $0.usage?.checkedAt }.max()
         return HStack(spacing: 3.5) {
-            Text("AuthManager").font(.system(size: 12, weight: .semibold))
+            Text("BatonPass").font(.system(size: 12, weight: .semibold))
             if !service.isConnected {
                 Circle().fill(Palette.attentionDot).frame(width: 5, height: 5).padding(.leading, 3.5)
             }
@@ -63,7 +63,7 @@ struct MenuBarPanel: View {
                 Icon(.window, size: 14, color: Palette.ink2).frame(width: 24, height: 24).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("打开 AuthManager")
+            .help("打开 BatonPass")
             .accessibilityLabel("打开主窗口")
         }
         .padding(.leading, 3.5)
@@ -90,7 +90,7 @@ struct MenuBarPanel: View {
     @ViewBuilder private func rings(_ directory: AccountDirectory) -> some View {
         let providers = ["codex", "claude"].filter { provider in directory.accounts.contains { $0.provider == provider } }
         if providers.isEmpty {
-            Text("还没有账号；打开 AuthManager 添加。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(7)
+            Text("还没有账号；打开 BatonPass 添加。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(7)
         } else {
             HStack(spacing: 9) {
                 ForEach(providers, id: \.self) { provider in ringCard(provider, current: directory.current(provider)) }
@@ -125,7 +125,7 @@ struct MenuBarPanel: View {
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("在 AuthManager 里查看 \(GlyphTile.name(provider))")
+        .help("在 BatonPass 里查看 \(GlyphTile.name(provider))")
     }
 
     private func caption(_ account: ManagedAccount?, _ windows: [AccountQuota]) -> String {
@@ -194,7 +194,7 @@ struct MenuBarPanel: View {
         let route = directory.switchRoute(for: account)
         let blocked = route == .desktopDisconnected
         let text: String = switch route {
-        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能经过桌面换号，但桌面没连上。桌面里没有任务在运行时，可以让 AuthManager 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
+        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能经过桌面换号，但桌面没连上。桌面里没有任务在运行时，可以让 BatonPass 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
         case .desktop: "同时更新 Codex 桌面和默认文件。先结束桌面任务，退出独立的 Codex CLI；VS Code 的 Codex 插件在后台运行，要停用它或退出 VS Code。桌面窗口可以开着。"
         case .plain: account.provider == "codex"
             ? "更新 ~/.codex/auth.json。先结束任务，退出 Codex 桌面和 CLI，停用 VS Code 的 Codex 插件或退出 VS Code，换完再打开。"
@@ -306,7 +306,7 @@ struct MenuBarPanel: View {
     private var footer: some View {
         VStack(spacing: 0) {
             Rectangle().fill(Palette.edge.opacity(0.7)).frame(height: 1).padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 5)
-            MenuRow(title: "打开 AuthManager", action: openWindow)
+            MenuRow(title: "打开 BatonPass", action: openWindow)
             MenuRow(title: "退出", shortcut: "⌘Q", key: "q") { NSApplication.shared.terminate(nil) }
         }
     }
@@ -385,6 +385,6 @@ struct MenuBarLabel: View {
             Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))
             if let lowest { Text("\(lowest)%").monospacedDigit() }
         }
-        .accessibilityLabel(offline ? "AuthManager，后台服务未连接" : urgent ? "AuthManager，有需要处理的事项" : "AuthManager")
+        .accessibilityLabel(offline ? "BatonPass，后台服务未连接" : urgent ? "BatonPass，有需要处理的事项" : "BatonPass")
     }
 }

@@ -382,7 +382,7 @@ impl Accounts {
                                 a.automatic = true;
                                 a.next_check = now() + 60;
                                 a.message =
-                                    "桌面与全局默认已切换；由 AuthManager 维护桌面凭据".into();
+                                    "桌面与全局默认已切换；由 BatonPass 维护桌面凭据".into();
                                 a.state = "saved".into();
                             }
                             self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();

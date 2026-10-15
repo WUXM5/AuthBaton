@@ -74,7 +74,7 @@ struct LoginView: View {
                                  detail: provider == "codex" ? "拿到授权码后，在浏览器里选账号并确认。" : "Claude CLI 会打开浏览器，登录后保存在本机。",
                                  selected: !importing) { importing = false }
                     MethodOption(title: "导入这台 Mac 上已有的登录",
-                                 detail: "把 \(name) 现在的登录交给 AuthManager 一起管。",
+                                 detail: "把 \(name) 现在的登录交给 BatonPass 一起管。",
                                  selected: importing) { importing = true }
                 }
                 .padding(.top, 12)

@@ -267,7 +267,7 @@ impl Platform {
                     .map_err(|_| "账号存储格式无效")
             }
             Some("missing") => Ok(None),
-            _ => Err("AuthManager 账号存储暂不可读；请检查钥匙串权限"),
+            _ => Err("BatonPass 账号存储暂不可读；请检查钥匙串权限"),
         }
     }
     pub fn vault_write(&self, id: &str, value: &Value) -> Result<()> {
@@ -292,7 +292,7 @@ impl Platform {
         if output["status"] == "ok" {
             Ok(())
         } else {
-            Err("AuthManager 账号保存失败；未修改官方登录")
+            Err("BatonPass 账号保存失败；未修改官方登录")
         }
     }
     fn require_unlocked_keychain(&self) -> Result<()> {

@@ -797,7 +797,7 @@ impl Accounts {
     }
     pub fn remove(&mut self, id: &str, confirmed: bool) -> Result<()> {
         if !confirmed {
-            return Err("请先确认从 AuthManager 移除账号及其保存的凭据");
+            return Err("请先确认从 BatonPass 移除账号及其保存的凭据");
         }
         self.ensure_idle()?;
         let Some(index) = self.db.accounts.iter().position(|account| account.id == id) else {
@@ -1301,7 +1301,7 @@ impl Accounts {
                     self.desktop_log(
                         "renewed",
                         Some(&job.id),
-                        "AuthManager 续期了桌面绑定的账号；桌面下次要令牌时直接给它",
+                        "BatonPass 续期了桌面绑定的账号；桌面下次要令牌时直接给它",
                     );
                 }
             }
@@ -1441,7 +1441,7 @@ impl Accounts {
         }
         if self.quota_paused().is_some() {
             return Err(
-                "AuthManager 有待处理的问题（数据库故障、换号恢复或自动换号流程），暂不能查询额度",
+                "BatonPass 有待处理的问题（数据库故障、换号恢复或自动换号流程），暂不能查询额度",
             );
         }
         self.quota.request(id, now());
@@ -1579,7 +1579,7 @@ fn remove_owned_profile(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("无法清理此账号的 AuthManager 临时目录，请重试移除"),
+        Err(_) => Err("无法清理此账号的 BatonPass 临时目录，请重试移除"),
     }
 }
 fn valid_label(value: &str) -> Result<String> {

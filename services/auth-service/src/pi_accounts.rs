@@ -20,10 +20,10 @@ impl Accounts {
             return self.cloud_pi_access(None);
         }
         if self.storage_fault.get() {
-            return Err("账号存储故障；请在 AuthManager 修复后重试");
+            return Err("账号存储故障；请在 BatonPass 修复后重试");
         }
         if self.db.switch.is_some() {
-            return Err("账号切换尚未确认；请先在 AuthManager 恢复当前状态");
+            return Err("账号切换尚未确认；请先在 BatonPass 恢复当前状态");
         }
         let id = match requested {
             Some(id) => id.to_owned(),
@@ -35,9 +35,9 @@ impl Accounts {
                     .filter(|a| a.provider == "codex" && a.native);
                 let account = current
                     .next()
-                    .ok_or("尚未选择全局 Codex 当前账号，请在 AuthManager 设为当前")?;
+                    .ok_or("尚未选择全局 Codex 当前账号，请在 BatonPass 设为当前")?;
                 if current.next().is_some() {
-                    return Err("全局当前账号不唯一，请在 AuthManager 核对");
+                    return Err("全局当前账号不唯一，请在 BatonPass 核对");
                 }
                 account.id.clone()
             }
@@ -52,7 +52,7 @@ impl Accounts {
                 "reauth" | "attention" | "unsaved" | "uncertain" | "pending"
             )
         {
-            return Err("此账号需要处理，请先在 AuthManager 检查登录或恢复续期");
+            return Err("此账号需要处理，请先在 BatonPass 检查登录或恢复续期");
         }
         if self.pending_login.is_some()
             || self.desktop.job.is_some()
@@ -91,15 +91,15 @@ impl Accounts {
             );
         }
         if !account.automatic {
-            return Err("此账号即将到期且自动维护已关闭，请在 AuthManager 检查认证");
+            return Err("此账号即将到期且自动维护已关闭，请在 BatonPass 检查认证");
         }
         if account.native && !self.desktop_owns(&id) && (self.client_running)("codex") {
             return Err(
-                "当前账号由官方 Codex 客户端续期；请等待其更新，或在 AuthManager 接管桌面维护",
+                "当前账号由官方 Codex 客户端续期；请等待其更新，或在 BatonPass 接管桌面维护",
             );
         }
         if account.state == "retry" && account.next_check > now() {
-            return Err("认证续期正在退避等待，请在 AuthManager 查看维护状态");
+            return Err("认证续期正在退避等待，请在 BatonPass 查看维护状态");
         }
         if self.job.is_none() && self.check_queue.is_empty() && self.reset_job.is_none() {
             // Use the existing owner-aware, persisted maintenance path, not a pi refresh grant.
