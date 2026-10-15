@@ -431,6 +431,49 @@ fn busy_thread_refusal_names_the_thread_and_leaves_no_standing_notice() {
     assert!(manager.db.switch.is_none());
 }
 
+// 2026-10-15: an untitled background thread showed only as 「未命名任务」 and the log kept no trace of it.
+#[test]
+fn untitled_busy_threads_are_described_by_source_and_logged_by_id() {
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.save().unwrap();
+    manager.desktop.connected = true;
+    fs::write(fixture.root.join("fail-preflight"), "tasks_active").unwrap();
+    fs::write(
+        fixture.root.join("fail-preflight-tasks.json"),
+        r#"[{"id":"thread-1","name":"","status":"active","flags":[],"source":"user"},
+            {"id":"thread-2","name":"","status":"active","flags":["waitingOnApproval"],"source":"automation"},
+            {"id":"thread-3","name":"","status":"active","flags":[],"source":null}]"#,
+    )
+    .unwrap();
+    manager.activate("b", true).unwrap();
+    finish(&mut manager);
+    let snapshot = manager.snapshot();
+    let message = snapshot["desktop"]["action"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Codex 桌面仍有运行或等待中的任务"),
+        "{message}"
+    );
+    for part in [
+        "没有标题的对话（运行中）",
+        "没有标题的任务（automation，等待审批）",
+        "没有标题的任务（运行中）",
+    ] {
+        assert!(message.contains(part), "{message}");
+    }
+    assert!(!message.contains("未命名"), "{message}");
+    let log = desktop_log(&fixture);
+    let failed = log
+        .iter()
+        .rev()
+        .find(|e| e["op"] == "preflight_failed")
+        .unwrap();
+    assert_eq!(
+        failed["reason"],
+        "桌面有任务在运行：thread-1 user active；thread-2 automation active+waitingOnApproval；thread-3 - active"
+    );
+}
+
 #[test]
 fn a_switch_asked_for_during_a_poll_or_a_check_waits_for_it_and_then_starts() {
     for poll_running in [true, false] {

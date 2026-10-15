@@ -1,7 +1,7 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===7) return true;
+  if (globalThis[key]?.revision===8) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
     if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
@@ -46,10 +46,15 @@
     observedOwner=owner;
     return {...identity(value.authToken), mode:value.authMethod, hash};
   }
+  // The desktop's own background generations (ephemeral, source unset or one of these) are never tasks;
+  // a side chat is ephemeral too but carries `user`. Matches preflight.js and automatic.js.
+  const background = thread => thread?.ephemeral===true && (thread.threadSource==null
+    || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
   // systemError only records that the latest turn hit an error and lasts until the next turn starts,
   // so for it the turn itself says whether anything is still running. Matches preflight.js.
-  async function running(threadId, status) {
-    if (['idle','notLoaded'].includes(status?.type)) return false;
+  async function running(threadId, thread) {
+    const status=thread?.status;
+    if (background(thread) || ['idle','notLoaded'].includes(status?.type)) return false;
     if (status?.type!=='systemError') return true;
     const page = await rpc('thread/turns/list', {threadId, limit:1, sortDirection:'desc', itemsView:'notLoaded'});
     if (!Array.isArray(page.data)) throw Error('task_probe_failed');
@@ -62,7 +67,7 @@
       if (!Array.isArray(list.data)) throw Error('invalid_threads');
       for (const threadId of list.data) {
         const {thread} = await rpc('thread/read', {threadId, includeTurns:false});
-        if (await running(threadId, thread?.status)) throw Error('tasks_active');
+        if (await running(threadId, thread)) throw Error('tasks_active');
       }
       if (!list.nextCursor) return;
       cursor = list.nextCursor;
@@ -110,7 +115,7 @@
     if (changed) setTimeout(() => location.reload(), 200);
   }
   globalThis[key] = {
-    revision:7,
+    revision:8,
     async call(input) {
       let previousOwner=null, loginSent=false;
       try {
