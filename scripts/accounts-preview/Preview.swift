@@ -739,9 +739,12 @@ extension NSWindow {
         Fixture.load("connected", into: state, action: ["id": "synthetic-nova", "state": "checking", "message": "正在检查桌面任务", "at": now])
         check.visible("正在检查桌面任务", "检查中在框内显示进度")
         check.expect(Driver.visible("正在换"), "检查中按钮变为「正在换…」")
-        let refusal = "Codex 仍有运行或等待中的任务：「合成任务」等待审批；切换未开始"
+        let refusal = "Codex 桌面仍有运行或等待中的任务，请结束后切换：「合成任务」等待审批；切换未开始"
         Fixture.load("connected", into: state, action: ["id": "synthetic-nova", "state": "failed", "message": refusal, "at": now])
-        check.visible("合成任务", "被拒时框内点名是哪个任务")
+        check.visible("切换未开始", "被拒时框内显示原因")
+        // The full refusal wraps, so the thread's name may be split across two lines.
+        let refused = main.attachedSheet.map { Driver.read($0).map(\.text).joined() } ?? ""
+        check.expect(refused.contains("合成任务"), "被拒时框内点名是哪个任务")
         state.calls.removeAll()
         Driver.press("重试", .exact)
         check.expect(check.lastCall("accounts.activate")?.contains("synthetic-nova") == true, "「重试」再次调用 accounts.activate")
@@ -880,7 +883,7 @@ extension NSWindow {
         Driver.press("换上 nova")
         check.expect(check.lastCall("accounts.activate")?.contains("synthetic-nova") == true, "连上后点「换上 nova」调用 accounts.activate")
         Fixture.load("connected", into: state, action: ["id": "synthetic-nova", "state": "failed", "at": Date().timeIntervalSince1970,
-                                                        "message": "Codex 仍有运行或等待中的任务：「合成任务」运行中；切换未开始"])
+                                                        "message": "Codex 桌面仍有运行或等待中的任务，请结束后切换：「合成任务」运行中；切换未开始"])
         check.visible("合成任务", "面板展开行内显示被拒原因")
         check.expect(Driver.visible("重试"), "被拒后按钮变为「重试」")
         Fixture.load("connected", into: state, action: ["id": "synthetic-nova", "state": "complete", "message": "已切换到 nova", "at": Date().timeIntervalSince1970 + 1])

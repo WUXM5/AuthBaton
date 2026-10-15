@@ -335,27 +335,27 @@ impl Accounts {
             let completion = self.desktop.job.take().unwrap().join();
             match completion {
                 Ok(Completion::Preflight { id, result }) => {
-                    let (failure, declined) = match result {
-                        Err(message) => (Some(message.to_string()), false),
+                    // A refusal for busy threads logs which ones, so a block can be traced later.
+                    let (failure, busy) = match result {
+                        Err(message) => (Some(message.to_string()), None),
                         Ok(value) if value["ok"] != true => (
                             Some(desktop::refusal(&value)),
-                            desktop::declined_for_tasks(&value),
+                            desktop::declined_for_tasks(&value)
+                                .then(|| desktop::busy_threads(&value)),
                         ),
                         Ok(value) => (
                             self.commit_desktop(&id, value).err().map(str::to_string),
-                            false,
+                            None,
                         ),
                     };
                     if let Some(message) = failure {
-                        self.desktop_log(
-                            "preflight_failed",
-                            Some(&id),
-                            if declined {
-                                "桌面有任务在运行"
-                            } else {
-                                "检查未通过"
-                            },
-                        );
+                        let declined = busy.is_some();
+                        let reason = match busy.as_deref() {
+                            None => "检查未通过".to_string(),
+                            Some("") => "桌面有任务在运行".to_string(),
+                            Some(threads) => format!("桌面有任务在运行：{threads}"),
+                        };
+                        self.desktop_log("preflight_failed", Some(&id), &reason);
                         if !declined {
                             self.desktop.connected = false;
                             self.desktop.target = None;

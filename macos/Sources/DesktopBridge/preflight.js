@@ -20,9 +20,16 @@
     window.electronBridge.sendMessageFromView({type:'mcp-request',hostId:'local',request:{id,method,params}})
       .catch(() => {clearTimeout(timer);pending.delete(id);reject(Error('task_probe_failed'));});
   });
+  // Background generations the desktop runs for itself (ambient suggestions and their safety check, safety
+  // recourse, the MCP extension host) use ephemeral threads whose source is unset or one of these; the
+  // user never sees them and nothing in them needs finishing. A side chat is ephemeral too but carries
+  // `user`, so it still counts. Same rule in bridge.js and automatic.js.
+  const background = thread => thread?.ephemeral === true && (thread.threadSource == null
+    || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
   // Same rule as bridge.js: a systemError thread is busy only while its latest turn is still in progress.
-  const running = async (threadId, status) => {
-    if (['idle','notLoaded'].includes(status?.type)) return false;
+  const running = async (threadId, thread) => {
+    const status = thread?.status;
+    if (background(thread) || ['idle','notLoaded'].includes(status?.type)) return false;
     if (status?.type !== 'systemError') return true;
     const page = await rpc('thread/turns/list', {threadId,limit:1,sortDirection:'desc',itemsView:'notLoaded'});
     if (!Array.isArray(page.data)) throw Error('task_probe_failed');
@@ -40,8 +47,8 @@
       if (!Array.isArray(list.data)) throw Error('task_probe_failed');
       for (const threadId of list.data) {
         const {thread} = await rpc('thread/read', {threadId,includeTurns:false});
-        if (await running(threadId, thread?.status)) {
-          busy.push({name:String(thread?.name || thread?.preview || '').slice(0,40), status:String(thread?.status?.type), flags:thread?.status?.activeFlags ?? []});
+        if (await running(threadId, thread)) {
+          busy.push({id:String(threadId), name:String(thread?.name || thread?.preview || '').slice(0,40), status:String(thread?.status?.type), flags:thread?.status?.activeFlags ?? [], source:thread?.threadSource ?? null});
         }
       }
       if (!list.nextCursor) return busy.length ? {ok:false,code:'tasks_active',tasks:busy.slice(0,3)} : current;

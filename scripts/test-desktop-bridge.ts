@@ -14,6 +14,8 @@ function fixture(oldAdapter?:string) {
     let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,landed=true;
     // Latest turn status of a thread in systemError; null when the thread is not in that state.
     let errored:string|null=null;
+    // How the thread was started: a background generation is ephemeral with its own source.
+    let origin:{ephemeral?:boolean,threadSource?:string|null}={};
     let reloads=0,disposed=0;
     const listeners:((e:{data:any})=>void)[]=[], replies:any[]=[];
     let injections=0;
@@ -30,7 +32,7 @@ function fixture(oldAdapter?:string) {
         switch(method) {
             case 'getAuthStatus': result={authMethod:mode,authToken:token};break;
             case 'thread/loaded/list':result={data:['synthetic-thread'],nextCursor:null};break;
-            case 'thread/read':result={thread:{name:'合成任务',status:{type:active?'active':errored?'systemError':'idle',activeFlags:[]}}};break;
+            case 'thread/read':result={thread:{name:'合成任务',status:{type:active?'active':errored?'systemError':'idle',activeFlags:[]},...origin}};break;
             case 'thread/turns/list':assert.equal(params.limit,1);result={data:[{id:'synthetic-turn',status:errored??'completed',items:[]}],nextCursor:null};break;
             case 'account/login/start':injections++;if(landed){token=params.accessToken;mode='chatgptAuthTokens';}result={type:'chatgptAuthTokens'};break;
             case 'account/read':result={account:{type:'chatgpt'}};break;
@@ -53,7 +55,7 @@ function fixture(oldAdapter?:string) {
     const auth=(user:string,generation=1)=>({accessToken:jwt(user,generation),chatgptAccountId:`workspace-${user}`,chatgptPlanType:'pro'});
     const apply=(user:string)=>call('apply',{previousOwner:'codex:a:workspace-a',owner:`codex:${user}:workspace-${user}`,auth:auth(user)});
     const refresh=(id:number,workspace='workspace-b')=>emit({type:'mcp-request',hostId:'local',request:{id,method:'account/chatgptAuthTokens/refresh',params:{reason:'unauthorized',previousAccountId:workspace}}});
-    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,reloads,disposed,adapter:context.__authManagerSelectiveUIV1}),setActive:(v:boolean)=>{active=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setLanded:(v:boolean)=>{landed=v}};
+    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,reloads,disposed,adapter:context.__authManagerSelectiveUIV1}),setActive:(v:boolean)=>{active=v},setOrigin:(v:{ephemeral?:boolean,threadSource?:string|null})=>{origin=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setLanded:(v:boolean)=>{landed=v}};
 }
 // A reload is scheduled 200 ms after the bridge answers.
 const settled=()=>new Promise(resolve=>setTimeout(resolve,250));
@@ -70,7 +72,7 @@ await test('preflight reads identity and idle status without injecting credentia
     f.setActive(true);
     const refused=await f.call('preflight');
     assert.equal(refused.code,'tasks_active');
-    assert.equal(JSON.stringify(refused.tasks),JSON.stringify([{name:'合成任务',status:'active',flags:[]}]));
+    assert.equal(JSON.stringify(refused.tasks),JSON.stringify([{id:'synthetic-thread',name:'合成任务',status:'active',flags:[],source:null}]));
     assert.equal(f.bridge(),bridge);
     assert.equal(f.listenerCount(),listeners);
     assert.equal(f.state().injections,0);
@@ -83,7 +85,7 @@ await test('systemError blocks preflight and apply only while the latest turn is
     f.setErrored('inProgress');
     const refused=await f.call('preflight');
     assert.equal(refused.code,'tasks_active');
-    assert.equal(JSON.stringify(refused.tasks),JSON.stringify([{name:'合成任务',status:'systemError',flags:[]}]));
+    assert.equal(JSON.stringify(refused.tasks),JSON.stringify([{id:'synthetic-thread',name:'合成任务',status:'systemError',flags:[],source:null}]));
     assert.equal((await f.apply('b')).code,'tasks_active');
     assert.equal(f.state().injections,0);
     f.setErrored('interrupted');
@@ -104,6 +106,23 @@ await test('same-account adoption and token refresh never reload the page',async
 });
 await test('active task blocks injection, including empty active flags',async()=>{
     const f=fixture();f.setActive(true);assert.equal((await f.apply('b')).code,'tasks_active');assert.equal(f.state().injections,0);
+});
+await test("the desktop's own background generations never block a switch; a side chat still does",async()=>{
+    // 2026-10-15: an ambient-suggestions thread refused two switches while the person had nothing running.
+    for(const origin of [{ephemeral:true,threadSource:'ambient_suggestions'},{ephemeral:true,threadSource:'ambient_suggestion_safety'},{ephemeral:true,threadSource:'mcp_extension_host'},{ephemeral:true,threadSource:null},{ephemeral:true}]) {
+        const f=fixture();f.setActive(true);f.setOrigin(origin);
+        assert.equal((await f.call('preflight')).mode,'chatgpt',JSON.stringify(origin));
+        assert.equal((await f.apply('b')).confirmed,true,JSON.stringify(origin));
+    }
+    // A side chat is ephemeral but carries `user`; an unknown source and a saved thread count as tasks.
+    for(const origin of [{ephemeral:true,threadSource:'user'},{ephemeral:true,threadSource:'chatgpt_hidden'},{ephemeral:false,threadSource:'ambient_suggestions'},{threadSource:'automation'}]) {
+        const f=fixture();f.setActive(true);f.setOrigin(origin);
+        const refused=await f.call('preflight');
+        assert.equal(refused.code,'tasks_active',JSON.stringify(origin));
+        assert.equal(refused.tasks[0].source,origin.threadSource);
+        assert.equal((await f.apply('b')).code,'tasks_active',JSON.stringify(origin));
+        assert.equal(f.state().injections,0);
+    }
 });
 await test('a login Codex completes after 2.5 seconds is still confirmed',async()=>{
     // Ten real switches took 0.9–1.95 s from the ack to completion; the old 2 s wait had no margin.

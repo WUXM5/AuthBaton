@@ -10,13 +10,14 @@ function fixture() {
   const calls:string[]=[];
   const threads=new Map(['active-1','active-2','idle','manual-paused','completed'].map((id,i)=>[id,{
     status:i<2?'active':'idle',flags:[] as string[],turn:{id:`turn-${id}`,status:i<2?'inProgress':i===3?'interrupted':'completed'},
+    ephemeral:undefined as boolean|undefined,threadSource:undefined as string|undefined,
   }]));
   let serial=0;
   const rpc=async(method:string,p:any):Promise<any>=>{
     calls.push(`${method}:${p.threadId??''}`);
     if(method==='thread/loaded/list')return {data:[...threads.keys()],nextCursor:null};
     const t=threads.get(p.threadId)!;
-    if(method==='thread/read')return {thread:{status:{type:t.status,activeFlags:t.flags}}};
+    if(method==='thread/read')return {thread:{status:{type:t.status,activeFlags:t.flags},ephemeral:t.ephemeral,threadSource:t.threadSource}};
     if(method==='thread/turns/list')return {data:[{...t.turn}]};
     if(method==='turn/interrupt') {
       assert.equal(p.turnId,t.turn.id);
@@ -65,6 +66,19 @@ await test('a systemError thread counts only while its latest turn is still runn
   g.threads.set('errored',{status:'systemError',flags:[],turn:{id:'turn-errored',status:'inProgress'}});
   await assert.rejects(g.call('prepare'),/tasks_waiting/);
   assert(!g.calls.some(c=>c.startsWith('turn/interrupt')));
+});
+await test("the desktop's background generations are never paused or resumed; a side chat is",async()=>{
+  const f=fixture();
+  f.threads.set('suggestions',{status:'active',flags:[],turn:{id:'turn-suggestions',status:'inProgress'},ephemeral:true,threadSource:'ambient_suggestions'});
+  f.threads.set('generation',{status:'active',flags:[],turn:{id:'turn-generation',status:'inProgress'},ephemeral:true,threadSource:undefined});
+  f.threads.set('side-chat',{status:'active',flags:[],turn:{id:'turn-side-chat',status:'inProgress'},ephemeral:true,threadSource:'user'});
+  const plan=await f.call('prepare');
+  assert.deepEqual([...plan.tasks.map((t:any)=>t.thread_id)].sort(),['active-1','active-2','side-chat']);
+  for(const t of plan.tasks)await f.call('pause',{threadId:t.thread_id});
+  f.owner('B');
+  for(const t of plan.tasks)await f.call('resume',{threadId:t.thread_id});
+  for(const id of ['suggestions','generation'])assert(!f.calls.some(c=>c===`turn/interrupt:${id}`||c===`turn/start:${id}`));
+  assert(f.calls.includes('turn/start:side-chat'));
 });
 await test('pending approval stops before interruption',async()=>{
   const f=fixture();f.threads.get('active-2')!.flags=['waitingOnApproval'];

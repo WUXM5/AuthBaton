@@ -69,8 +69,8 @@ pub fn error_message(code: Option<&str>) -> &'static str {
             "桌面尚未提供可用的 ChatGPT 订阅登录；请在 Codex 中确认登录状态"
         }
         Some("task_probe_failed") => "无法确认桌面任务状态；切换尚未开始，请稍后重试",
-        Some("tasks_active") => "Codex 仍有运行或等待中的任务，请结束后切换",
-        Some("tasks_waiting") => "有任务正在等待审批或输入；自动切换已延后",
+        Some("tasks_active") => "Codex 桌面仍有运行或等待中的任务，请结束后切换",
+        Some("tasks_waiting") => "Codex 桌面有任务正在等待审批或输入；自动切换已延后",
         Some("tasks_changed") => "任务已由其他操作改变；已停止本次自动切换，请核对会话",
         Some("pause_unconfirmed") => "任务暂停尚未确认；没有继续切换，请核对会话",
         Some("resume_unconfirmed") => "任务接续结果尚未确认；不会重复发送继续指令",
@@ -92,13 +92,6 @@ pub fn refusal(value: &Value) -> String {
         .flatten()
         .take(3)
         .map(|task| {
-            let name: String = task["name"]
-                .as_str()
-                .filter(|name| !name.is_empty())
-                .unwrap_or("未命名任务")
-                .chars()
-                .take(24)
-                .collect();
             let flags: Vec<&str> = task["flags"]
                 .as_array()
                 .into_iter()
@@ -112,7 +105,15 @@ pub fn refusal(value: &Value) -> String {
             } else {
                 "运行中"
             };
-            format!("「{name}」{state}")
+            // A thread without a title is described by where it came from; `user` is a conversation.
+            match task["name"].as_str().filter(|name| !name.is_empty()) {
+                Some(name) => format!("「{}」{state}", name.chars().take(24).collect::<String>()),
+                None => match task["source"].as_str().filter(|source| !source.is_empty()) {
+                    Some("user") => format!("没有标题的对话（{state}）"),
+                    Some(source) => format!("没有标题的任务（{source}，{state}）"),
+                    None => format!("没有标题的任务（{state}）"),
+                },
+            }
         })
         .collect();
     if tasks.is_empty() {
@@ -120,6 +121,36 @@ pub fn refusal(value: &Value) -> String {
     } else {
         format!("{base}：{}", tasks.join("、"))
     }
+}
+// The busy threads of a refused preflight for the desktop log: id, source, status and flags, no titles.
+pub fn busy_threads(value: &Value) -> String {
+    let text = |v: &Value| {
+        v.as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-")
+            .to_string()
+    };
+    value["tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|task| {
+            let flags: Vec<&str> = task["flags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let state = [vec![task["status"].as_str().unwrap_or("-")], flags].concat();
+            format!(
+                "{} {} {}",
+                text(&task["id"]),
+                text(&task["source"]),
+                state.join("+")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；")
 }
 // The bridge answered and declined because of task state; the connection itself is fine.
 pub fn declined_for_tasks(value: &Value) -> bool {

@@ -1,9 +1,12 @@
 // Desktop-only task coordination. No auth material, storage, process restart or UI navigation.
 (() => {
-  if (globalThis.__authManagerTasksV1?.revision===3) return true;
+  if (globalThis.__authManagerTasksV1?.revision===4) return true;
   globalThis.__authManagerTasksV1 = ({rpc, status, idle, instance}) => {
     let batch = null, generation = 0, preparing = null;
     const valid = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+    // The desktop's own background generations are never paused or resumed. Same rule as bridge.js.
+    const background = thread => thread?.ephemeral===true && (thread.threadSource==null
+      || ['ambient_suggestions','ambient_suggestion_safety','safety_recourse','mcp_extension_host'].includes(thread.threadSource));
     const read = async id => {
       const {thread} = await rpc('thread/read', {threadId:id,includeTurns:false});
       const page = await rpc('thread/turns/list', {threadId:id,limit:1,sortDirection:'desc',itemsView:'summary'});
@@ -49,7 +52,7 @@
         for(const id of await loaded()) {
           const {thread,turn}=await read(id);
           // systemError lasts until the next turn starts; only a turn still in progress is a task to carry over.
-          if(['idle','notLoaded'].includes(thread.status.type) || (thread.status.type==='systemError' && turn?.status!=='inProgress'))continue;
+          if(background(thread) || ['idle','notLoaded'].includes(thread.status.type) || (thread.status.type==='systemError' && turn?.status!=='inProgress'))continue;
           if(thread.status.type!=='active' || thread.status.activeFlags?.length)throw Error('tasks_waiting');
           if(!valid(turn?.id) || turn.status!=='inProgress')throw Error('task_probe_failed');
           tasks.push({thread_id:id,turn_id:turn.id,resume_key:crypto.randomUUID(),state:'planned',resumed_turn_id:null});
@@ -128,6 +131,6 @@
       } finally {b.working=false;}
     };
   };
-  globalThis.__authManagerTasksV1.revision = 3;
+  globalThis.__authManagerTasksV1.revision = 4;
   return true;
 })();
