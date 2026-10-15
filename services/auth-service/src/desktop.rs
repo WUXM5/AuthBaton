@@ -61,7 +61,7 @@ pub fn error_message(code: Option<&str>) -> &'static str {
         Some("port_owner_mismatch") => "调试端口归属无法确认；请检查端口是否由官方 Codex 桌面独占",
         Some("target_unavailable") => "请打开并聚焦 Codex 主窗口，再重新连接",
         Some("bridge_install_failed") => {
-            "已找到 Codex 主窗口，但桌面桥初始化失败；请更新 AuthManager 适配"
+            "已找到 Codex 主窗口，但桌面桥初始化失败；请更新 BatonPass 适配"
         }
         Some("rpc_timeout") => "调试端口已连接，但 Codex 账号服务响应超时；请稍后重试",
         Some("rpc_failed") => "调试端口已连接，但 Codex 账号服务拒绝了请求",

@@ -273,7 +273,7 @@ impl Accounts {
             .find(|a| a["id"] == id && a["provider"] == "codex")
             .ok_or("云端 Codex 账号不存在")?;
         if a["state"] != "ready" {
-            return Err("云端账号尚未就绪，请在 AuthManager 检查");
+            return Err("云端账号尚未就绪，请在 BatonPass 检查");
         }
         if let Some(lease) = self.cloud.lease(&id) {
             return Ok(

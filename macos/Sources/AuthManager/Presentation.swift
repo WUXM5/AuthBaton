@@ -61,7 +61,7 @@ extension ManagedAccount {
         case "reauth": return Health(tone: .attention, title: "需重新登录", detail: message)
         case "unsaved":
             return provider == "claude" && native
-                ? Health(tone: .attention, title: "续期备份没同步", detail: "CLI 照常可用，AuthManager 会自动重试，不会重复续期。")
+                ? Health(tone: .attention, title: "续期备份没同步", detail: "CLI 照常可用，BatonPass 会自动重试，不会重复续期。")
                 : Health(tone: .attention, title: "续期结果待保存", detail: message)
         case "uncertain": return Health(tone: .neutral, title: "等待重新确认", detail: message)
         case "attention": return Health(tone: .attention, title: "需要处理", detail: message)

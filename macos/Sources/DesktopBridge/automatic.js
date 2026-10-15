@@ -1,6 +1,6 @@
 // Desktop-only task coordination. No auth material, storage, process restart or UI navigation.
 (() => {
-  if (globalThis.__authManagerTasksV1?.revision===5) return true;
+  if (globalThis.__authManagerTasksV1?.revision===6) return true;
   globalThis.__authManagerTasksV1 = ({rpc, status, idle, instance}) => {
     let batch = null, generation = 0, preparing = null;
     const valid = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -124,7 +124,7 @@
         task.state='resume_sent'; // No second turn/start after an unknown response.
         const result=await rpc('turn/start',{
           threadId:task.thread_id,clientUserMessageId:task.resume_key,
-          input:[{type:'text',text:'AuthManager 已按你启用的低额度策略暂停本轮并切换账号。请保留此会话的原目标、约束和权限，先核对中断前工具操作的实际结果，避免重复已完成的操作，然后继续尚未完成的任务。'}],
+          input:[{type:'text',text:'BatonPass 已按你启用的低额度策略暂停本轮并切换账号。请保留此会话的原目标、约束和权限，先核对中断前工具操作的实际结果，避免重复已完成的操作，然后继续尚未完成的任务。'}],
         });
         alive(b);
         if(!valid(result.turn?.id) || result.turn.id===task.turn_id)throw Error('resume_unconfirmed');
@@ -135,6 +135,6 @@
       } finally {b.working=false;}
     };
   };
-  globalThis.__authManagerTasksV1.revision = 5;
+  globalThis.__authManagerTasksV1.revision = 6;
   return true;
 })();

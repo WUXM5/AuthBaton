@@ -97,7 +97,7 @@ private struct Sidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 BrandTile(size: 26)
-                Text("AuthManager").font(.system(size: 12, weight: .semibold)).kerning(-0.14)
+                Text("BatonPass").font(.system(size: 12, weight: .semibold)).kerning(-0.14)
             }
             .padding(.horizontal, 7)
             VStack(spacing: 2) {
@@ -297,7 +297,7 @@ struct ClientsPage: View {
             .font(.system(size: 11))
             .padding(.top, 12)
             Rectangle().fill(Palette.divider).frame(height: 1).padding(.top, 12)
-            Text("退出整个应用时，AuthManager 启动的后台服务也会停止。")
+            Text("退出整个应用时，BatonPass 启动的后台服务也会停止。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 .padding(.top, 10)
         }

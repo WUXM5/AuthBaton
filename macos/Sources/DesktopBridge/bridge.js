@@ -1,7 +1,7 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===9) return true;
+  if (globalThis[key]?.revision===10) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
     if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
@@ -78,7 +78,7 @@
     throw Error('too_many_threads');
   }
   async function errorReply(id) {
-    await send({type:'mcp-response', hostId:'local', response:{id,error:{code:-32000,message:'AuthManager refresh unavailable; retry after maintenance'}}});
+    await send({type:'mcp-response', hostId:'local', response:{id,error:{code:-32000,message:'BatonPass refresh unavailable; retry after maintenance'}}});
   }
   const automatic=globalThis.__authManagerTasksV1?.({rpc,status,idle,instance});
   window.addEventListener('message', (event) => {
@@ -118,7 +118,7 @@
     if (changed) setTimeout(() => location.reload(), 200);
   }
   globalThis[key] = {
-    revision:9,
+    revision:10,
     async call(input) {
       let previousOwner=null, loginSent=false;
       try {

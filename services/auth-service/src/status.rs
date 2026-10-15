@@ -185,14 +185,14 @@ pub fn pi_status(path: &Path, checked_at: u64) -> ProviderStatus {
         .is_some_and(|root| root.join("extensions/authmanager-codex/index.ts").is_file())
     {
         status.state = "configured";
-        status.auth_kind = "AuthManager 本机服务".into();
+        status.auth_kind = "BatonPass 本机服务".into();
         status.summary = "已安装统一账号插件；在 pi 选择 AuthManager Codex provider 使用".into();
         status
             .details
             .push("共享账号管理中的 Codex 账号；默认跟随全局当前，任务进行中固定身份".into());
         status
             .details
-            .push("pi 按需取得 access token；认证检查与续期仍由 AuthManager 协调".into());
+            .push("pi 按需取得 access token；认证检查与续期仍由 BatonPass 协调".into());
         return status;
     }
     let auth = match read_auth(path) {

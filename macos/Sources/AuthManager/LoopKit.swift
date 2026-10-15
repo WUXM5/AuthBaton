@@ -271,7 +271,7 @@ struct BrandMark: View {
             MarkShape(path: MarkShape.crossing).fill(color.opacity(0.5))
         }
         .aspectRatio(1, contentMode: .fit)
-        .accessibilityLabel("AuthManager · 无垠")
+        .accessibilityLabel("BatonPass · 无垠")
     }
 }
 

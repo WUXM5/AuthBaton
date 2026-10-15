@@ -33,7 +33,7 @@ struct AuthManagerApp: App {
     @StateObject private var service = ServiceController.shared
 
     var body: some Scene {
-        Window("AuthManager", id: "main") {
+        Window("BatonPass", id: "main") {
             ManagedWindow(delegate: delegate).environmentObject(service)
         }
         // The sidebar runs up under the traffic lights; pages carry their own titles.

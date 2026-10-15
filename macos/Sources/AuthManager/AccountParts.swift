@@ -150,7 +150,7 @@ struct AccountMenu: View {
             Button("重命名…") { open(.rename(account.id)) }
             Button("执行记录") { open(.history(account.id)) }
             Divider()
-            Button("从 AuthManager 移除…", role: .destructive) { open(.remove(account.id)) }
+            Button("从 BatonPass 移除…", role: .destructive) { open(.remove(account.id)) }
                 .disabled(account.removeBlocker(directory) != nil)
         } label: {
             MoreDots(color: filled ? Palette.ink2 : Palette.ink3)
@@ -209,7 +209,7 @@ struct RecoveryBanner: View {
     @EnvironmentObject private var service: ServiceController
 
     var body: some View {
-        Banner(glyph: .sync, title: "上次切换没确认", text: "上次切换在写入默认登录时中断。结束相关任务后重试，AuthManager 会按实际登录状态收尾。") {
+        Banner(glyph: .sync, title: "上次切换没确认", text: "上次切换在写入默认登录时中断。结束相关任务后重试，BatonPass 会按实际登录状态收尾。") {
             Button("重试上次切换") { Task { await service.accountOperation("accounts.recover") } }
                 .buttonStyle(.pill(.onAttention, height: 20))
         }
@@ -242,7 +242,7 @@ struct AccountStrips: View {
                         }
                     }
                 } else if connection.selected != account.id {
-                    IssueStrip(glyph: .desktop, text: "Codex 桌面还在用自己的登录；交给 AuthManager 后才能热切换。") {
+                    IssueStrip(glyph: .desktop, text: "Codex 桌面还在用自己的登录；交给 BatonPass 后才能热切换。") {
                         if desktop == .all {
                             Button("接管") { open(.switchTo(account.id)) }.buttonStyle(.pill(.primary, height: 22))
                                 .disabled(service.accountBusy || directory.switchDisabled(for: account))

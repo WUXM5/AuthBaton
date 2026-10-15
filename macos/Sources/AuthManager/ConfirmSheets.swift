@@ -142,7 +142,7 @@ struct SwitchSheet: View {
                         Text("以调试模式重启桌面并换上").font(.system(size: 12, weight: .semibold))
                         Pill("推荐", style: .brand, small: true)
                     }
-                    Text("桌面里没有任务在运行时，AuthManager 会退出桌面、用调试模式重新打开，连上后直接换上。有任务在运行就不会重启。")
+                    Text("桌面里没有任务在运行时，BatonPass 会退出桌面、用调试模式重新打开，连上后直接换上。有任务在运行就不会重启。")
                         .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
                     if let attempt, attempt.pending {
                         HStack(spacing: 5) {
@@ -328,9 +328,9 @@ struct RemoveSheet: View {
     let close: () -> Void
 
     var body: some View {
-        SheetScaffold(title: "从 AuthManager 移除「\(account.displayName)」？", lead: "以后要用它，需要重新导入或登录。") {
+        SheetScaffold(title: "从 BatonPass 移除「\(account.displayName)」？", lead: "以后要用它，需要重新导入或登录。") {
             VStack(alignment: .leading, spacing: 9) {
-                CheckItem(kind: .you, text: "删除 AuthManager 保存的记录、凭据和额度缓存，停止它的后台查询和维护。")
+                CheckItem(kind: .you, text: "删除 BatonPass 保存的记录、凭据和额度缓存，停止它的后台查询和维护。")
                 CheckItem(kind: .system, text: "原来的认证文件和官方客户端登录不变，不会注销订阅账号。")
             }
             SheetError()
@@ -357,13 +357,13 @@ struct RecoverSaveSheet: View {
 
     var body: some View {
         SheetScaffold(title: claudeNative ? "恢复「\(account.displayName)」的续期同步？" : "重试保存「\(account.displayName)」的续期结果？",
-                      lead: claudeNative ? "重新读取 Claude CLI 在钥匙串里的最新登录，核对是同一个账号后，重写 AuthManager 自己的备份。"
+                      lead: claudeNative ? "重新读取 Claude CLI 在钥匙串里的最新登录，核对是同一个账号后，重写 BatonPass 自己的备份。"
                                          : "按已保存的续期结果重试写回；不会重复发送续期请求。") {
             VStack(alignment: .leading, spacing: 9) {
                 if claudeNative {
                     CheckItem(kind: .system, text: "这一步不联网；Claude CLI 可以开着。")
                     CheckItem(kind: .system, text: "身份对不上就停下并提示，不覆盖任何登录。")
-                    CheckItem(kind: .info, text: "完成约 1 分钟后，AuthManager 重新和 Claude CLI 协同续期：access 快到期时会联网续期。")
+                    CheckItem(kind: .info, text: "完成约 1 分钟后，BatonPass 重新和 Claude CLI 协同续期：access 快到期时会联网续期。")
                 } else {
                     CheckItem(kind: .system, text: "保存成功后恢复自动维护。")
                     CheckItem(kind: .you, text: "如果它是在用的账号，先退出对应的官方客户端。")

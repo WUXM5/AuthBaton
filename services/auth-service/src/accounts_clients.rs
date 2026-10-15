@@ -80,7 +80,7 @@ impl Accounts {
         }
         let issued = self.pi_last_access.as_ref();
         let account = issued.and_then(|(id, _)| self.db.accounts.iter().find(|a| a.id == *id));
-        result.push(json!({"id":"pi_runtime","name":"pi · 最近取用账号","evidence":if issued.is_some(){"issued"}else{"unknown"},"account_label":account.map(|a|&a.label),"identity":account.and_then(|a|a.metadata.as_ref()).map(|m|&m.display),"checked_at":issued.map(|(_,time)|time),"source":"AuthManager pi 凭据服务","message":"显示最近一次成功提供给 pi 的账号；不是所有 pi 会话的实时身份，也不代表模型请求已成功"}));
+        result.push(json!({"id":"pi_runtime","name":"pi · 最近取用账号","evidence":if issued.is_some(){"issued"}else{"unknown"},"account_label":account.map(|a|&a.label),"identity":account.and_then(|a|a.metadata.as_ref()).map(|m|&m.display),"checked_at":issued.map(|(_,time)|time),"source":"BatonPass pi 凭据服务","message":"显示最近一次成功提供给 pi 的账号；不是所有 pi 会话的实时身份，也不代表模型请求已成功"}));
         Value::Array(result)
     }
 }
