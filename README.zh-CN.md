@@ -57,6 +57,16 @@ flowchart TD
 | `cloud/` | 个人云端 Worker |
 | `scripts/` | 构建脚本、界面预览与交互检查、各类合成测试 |
 
+## 安装
+
+从 [Releases](https://github.com/WUXM5/AuthBaton/releases/latest) 下载 DMG，把 `AuthManager.app` 拖进「应用程序」。需要 Apple 芯片的 Mac，macOS 14 或更高。
+
+App 只有 ad-hoc 签名，没有经过 Apple 公证，从网上下载后 macOS 会拦下它。第一次打开前，先去掉下载隔离标记：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AuthManager.app
+```
+
 ## 构建
 
 需要：
