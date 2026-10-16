@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "auth-service"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "base64",
  "libc",
