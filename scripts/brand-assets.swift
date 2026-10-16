@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 // Only presentation, resampling and macOS container/format generation.
 // The logo geometry is supplied by the reviewed source PNG.
@@ -38,14 +39,23 @@ let tileMark:NSImage = {
     } }
     return image(rep)
 }()
+// The macOS icon grid: an 824 tile with 185.4 continuous corners centred on the 1024 canvas,
+// under the drop shadow macOS draws for other apps' icons.
 func icon(_ size:Int)->NSBitmapImageRep {
     bitmap(size,size) {
         let scale=CGFloat(size)/1024
         let t=NSAffineTransform();t.scale(by:scale);t.concat()
-        let tile=NSBezierPath(roundedRect:NSRect(x:48,y:48,width:928,height:928),xRadius:208,yRadius:208)
+        let frame=NSRect(x:100,y:100,width:824,height:824)
+        let tile=NSBezierPath(cgPath:RoundedRectangle(cornerRadius:185.4,style:.continuous).path(in:frame).cgPath)
+        NSGraphicsContext.saveGraphicsState()
+        // Shadow geometry is in device pixels, outside the scale transform.
+        let shadow=NSShadow();shadow.shadowColor=NSColor(white:0,alpha:0.25)
+        shadow.shadowOffset=NSSize(width:0,height:-8*scale);shadow.shadowBlurRadius=31*scale;shadow.set()
         NSColor(srgbRed:8/255,green:151/255,blue:184/255,alpha:1).setFill();tile.fill()
+        NSGraphicsContext.restoreGraphicsState()
         NSColor(white:0,alpha:0.12).setStroke();tile.lineWidth=1.5;tile.stroke()
-        tileMark.draw(in:NSRect(x:96,y:96,width:832,height:832))
+        // The mark keeps its share of the tile: 832 of 928, inset 48.
+        tileMark.draw(in:frame.insetBy(dx:824*48/928,dy:824*48/928))
     }
 }
 func label(_ text:String,_ x:CGFloat,_ y:CGFloat,_ size:CGFloat=14,_ white:CGFloat=0.68) {
@@ -80,7 +90,6 @@ if arguments[1]=="preview" {
         try save(icon(size*2),"\(iconset)/icon_\(size)x\(size)@2x.png")
     }
     try save(bitmap(512,512){mark.draw(in:NSRect(x:0,y:0,width:512,height:512))},output+"/BrandMark.png")
-    try save(icon(1024),output+"/AppIcon.png")
     let menu=bitmap(36,36){mark.draw(in:NSRect(x:0,y:0,width:36,height:36));NSColor.black.setFill();NSRect(x:0,y:0,width:36,height:36).fill(using:.sourceIn)}
     try save(menu,output+"/MenuMark.png")
 } else {fatalError("unknown mode")}

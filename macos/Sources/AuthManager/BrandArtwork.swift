@@ -38,9 +38,4 @@ enum BrandArtwork {
         badged[badge] = image
         return image
     }
-
-    static let appIcon: NSImage = {
-        let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png")!
-        return NSImage(contentsOf: url)!
-    }()
 }

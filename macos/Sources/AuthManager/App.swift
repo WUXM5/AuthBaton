@@ -6,7 +6,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var reopenWindow: (() -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApplication.shared.applicationIconImage = BrandArtwork.appIcon
         // The service runs with the app, not with the window: closing the window must not cut its start short.
         Task { await ServiceController.shared.start() }
     }
