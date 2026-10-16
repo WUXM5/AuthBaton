@@ -17,12 +17,12 @@ pub const USAGE_AGENT: &str = "claude-cli/2.1.280 (external, cli, client-app/aut
 pub struct Status {
     grants: Option<Grants>,
     weekly: Option<Weekly>,
-    #[serde(skip)]
     next: Option<Claim>,
 }
-/// The grant the official client would claim next.
-#[derive(Clone)]
+/// The grant the official client would claim next. The views learn only that it exists and when it ends.
+#[derive(Clone, Serialize)]
 pub struct Claim {
+    #[serde(skip)]
     pub grant_id: String,
     pub ends_at: Option<String>,
 }

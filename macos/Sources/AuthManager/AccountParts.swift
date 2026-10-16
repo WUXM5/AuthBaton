@@ -184,13 +184,13 @@ struct AccountActions: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if account.provider == "codex", !account.codexCredits.isEmpty, let credit = account.codexCredits.first {
+            if let next = account.nextReset {
                 Button("用 1 张重置卡") {
-                    open(.reset(accountID: account.id, creditID: credit.id, requestID: UUID().uuidString, expiresAt: credit.expiresAt, retry: false))
+                    open(.reset(accountID: account.id, creditID: next.creditID, requestID: UUID().uuidString, expiresAt: next.expiresAt, retry: false))
                 }
                 .buttonStyle(.pill(.secondary))
                 .disabled(directory.resetBlocked(account, busy: service.accountBusy))
-                .help("用最早到期的那张：\(QuotaResetCredit.expiryLabel(credit.expiresAt)) 到期")
+                .help((account.provider == "claude" ? "用官方指定的下一张：" : "用最早到期的那张：") + "\(QuotaResetCredit.expiryLabel(next.expiresAt)) 到期")
             }
             if showSwitch, directory.primaryAction(for: account) == .switchTo {
                 Button(account.native ? "接管" : "换上") { open(.switchTo(account.id)) }

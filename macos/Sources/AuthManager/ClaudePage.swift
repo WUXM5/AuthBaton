@@ -159,7 +159,7 @@ private struct ClaudeMain: View {
         .loopCard()
     }
 
-    // Official reset cards: shown here, spent only by the official client or by a rule.
+    // Official reset cards; the card's button and a rule spend the next one.
     private var resets: some View {
         let status = account.usage?.claudeResets
         return VStack(alignment: .leading, spacing: 10) {
@@ -211,8 +211,6 @@ private struct ClaudeMain: View {
                 Text("上次重置：\(ResetHistoryEntry.outcomeText(reset.outcome)) · \(When.text(when))")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
-            Text("手动使用请到 Claude 官方客户端；也可以在换号与重置里设成见底时自动用。")
-                .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 17).padding(.vertical, 15)
         .frame(maxWidth: .infinity, alignment: .leading)

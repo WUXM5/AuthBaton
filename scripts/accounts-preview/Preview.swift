@@ -107,7 +107,8 @@ enum Fixture {
                                    ["label": "7 天窗口", "used_percent": 0, "scope": "ModelY", "kind": "model", "resets_at_iso": iso(26.4 * 3600)]],
                        "claude_resets": ["grants": ["eligible": true, "message": "官方提供的重置卡", "remaining": 1, "weekly_resets_at": iso(26.4 * 3600),
                                                     "items": [["label": "合成赠送：一次额度重置", "remaining": 1, "total": 1, "starts_at": iso(-7 * 86400), "ends_at": iso(24 * 86400),
-                                                               "limits": ["5 小时额度", "每周额度"], "paused": false, "usable_now": true, "requires_limit": false]]]]]],
+                                                               "limits": ["5 小时额度", "每周额度"], "paused": false, "usable_now": true, "requires_limit": false]]],
+                                         "next": ["ends_at": iso(24 * 86400)]]]],
         ]
         accounts[1]["reset"] = ["request_id": "synthetic-req", "credit_id": "synthetic-used", "expires_at": iso(20 * 86400), "outcome": "reset",
                                 "message": "已用 1 张重置卡；用量和剩余张数将重新查询", "unresolved": false, "started_at": now - 5 * 86400]
@@ -911,6 +912,7 @@ extension NSWindow {
         check.expect(Driver.visible("自动用同一凭据重新确认"), "说明会自动重新确认")
         check.expect(!state.directory!.issues(dismissed: []).contains { $0.account == "synthetic-claude" }, "不计入要处理的事")
         check.expect(Driver.hits("恢复同步").isEmpty, "不给恢复同步按钮")
+        check.expect(Driver.hits("用 1 张重置卡").isEmpty, "续期没确认时不给用重置卡（服务会拒绝）")
         more("Claude 当前账号", choose: nil)
         check.expect(Driver.lastMenu.contains { $0.title.contains("认证检查") && $0.enabled }, "可手动「认证检查」立即重新确认")
         if Driver.lastMenu.isEmpty { print("    菜单：\(Driver.lastMenu)") }
@@ -1099,6 +1101,18 @@ extension NSWindow {
         check.expect(Driver.visible("已用 1 张重置卡"), "记录里写结果")
         check.expect(Driver.visible("旧记录"), "旧记录标明来源未知")
         Driver.press("完成", .exact)
+    }
+    section(23, "Claude 用重置卡：和 Codex 一样确认后才用；请服务用官方的下一张，不带卡号") {
+        Fixture.load("claude2", into: state)
+        select(.claude, "synthetic-claude-b")
+        state.calls.removeAll()
+        if !Driver.press("用 1 张重置卡", .exact) { check.expect(false, "找到 Claude 备用卡片上的「用 1 张重置卡」") }
+        check.expect(Driver.visible("用后还剩"), "确认框写明用后还剩几张")
+        check.expect(state.calls.isEmpty, "打开确认不发请求")
+        Driver.press("用 1 张", .exact)
+        let reset = check.lastCall("accounts.reset_quota") ?? ""
+        check.expect(reset.contains("synthetic-claude-b") && reset.contains("\"next_grant\":true") && reset.contains("\"confirm\":true")
+                     && !reset.contains("credit_id"), "确认后请服务用官方的下一张，请求里没有卡号")
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
