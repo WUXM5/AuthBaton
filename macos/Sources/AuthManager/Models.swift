@@ -48,6 +48,7 @@ struct LoginParams: Encodable, Sendable {
     var port: UInt16? = nil
     var enabled: Bool? = nil
     var credit_id: String? = nil
+    var next_grant: Bool? = nil
     var reset_id: String? = nil
     var cloud_action: String? = nil
     var mode: String? = nil
@@ -368,6 +369,11 @@ struct QuotaStatus: Decodable, Sendable {
 struct ClaudeResetStatus: Decodable, Sendable {
     let grants: ClaudeResetGrants?
     let weekly: ClaudeWeeklyReset?
+    // The grant a reset would claim now; the service keeps its ID.
+    let next: ClaudeNextGrant?
+}
+struct ClaudeNextGrant: Decodable, Sendable {
+    let endsAt: String?
 }
 struct ClaudeResetGrants: Decodable, Sendable {
     let eligible: Bool

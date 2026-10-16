@@ -57,6 +57,7 @@ struct AccountParams {
     port: Option<u16>,
     enabled: Option<bool>,
     credit_id: Option<String>,
+    next_grant: Option<bool>,
     reset_id: Option<String>,
     cloud_action: Option<String>,
     mode: Option<String>,
@@ -221,13 +222,16 @@ fn response(
                         params.hour,
                     )?,
                     "accounts.reset_quota" => {
+                        let id = params.id.as_deref().ok_or("缺少账号标识")?;
                         let reset_id = params.reset_id.as_deref().ok_or("缺少重置操作标识")?;
                         let credit_id = match params.credit_id {
                             Some(credit_id) => credit_id,
+                            // Claude grant IDs never reach the views: a new Claude reset asks for the next grant.
+                            None if params.next_grant == Some(true) => manager.next_grant(id)?,
                             None => manager.retry_credit(reset_id)?,
                         };
                         manager.reset_quota(
-                            params.id.as_deref().ok_or("缺少账号标识")?,
+                            id,
                             &credit_id,
                             reset_id,
                             params.confirm == Some(true),

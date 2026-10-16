@@ -111,6 +111,13 @@ extension ManagedAccount {
     }
     // Resets the strategy can spend: listed Codex credits, or Claude's official grants (unknown counts as none).
     var usableResets: Int { provider == "claude" ? creditCount ?? 0 : codexCredits.count }
+    // The card a new reset spends: Codex's earliest-expiring listed credit, or Claude's official next grant,
+    // which the service names itself. None until the renewal is saved and confirmed: the service refuses then.
+    var nextReset: (creditID: String?, expiresAt: String?)? {
+        if ["unsaved", "uncertain"].contains(state) { return nil }
+        if provider == "claude" { return usage?.claudeResets?.next.map { (nil, $0.endsAt) } }
+        return codexCredits.first.map { ($0.id, $0.expiresAt) }
+    }
 
     // The reset chances as one ticket: how many, and how many run out within a week.
     func chances(dismissed: Set<String>, now: Date = Date()) -> ResetChances? {
@@ -349,7 +356,7 @@ extension AccountDirectory {
     // and the service refuses any local operation on an account handed to the cloud.
     func resetBlocked(_ account: ManagedAccount, busy accountBusy: Bool) -> Bool {
         accountBusy || busy || recoveryNeeded || maintenanceRunning != true || account.usage?.refreshing == true || cloudBound(account.id)
-            || account.usage?.state != "ready" || account.reset?.unresolved == true || account.codexCredits.isEmpty
+            || account.usage?.state != "ready" || account.reset?.unresolved == true || account.nextReset == nil
     }
 
     // Everything that needs a hand, once each: the badge, the menu bar and the accounts page count these.

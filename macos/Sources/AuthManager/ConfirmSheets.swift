@@ -265,7 +265,8 @@ struct ResetSheet: View {
                 working = true
                 Task {
                     await submit(service, "accounts.reset_quota",
-                                 LoginParams(id: account.id, confirm: true, credit_id: creditID, reset_id: requestID), close: close)
+                                 LoginParams(id: account.id, confirm: true, credit_id: creditID,
+                                             next_grant: !retry && account.provider == "claude" ? true : nil, reset_id: requestID), close: close)
                     working = false
                 }
             }
@@ -276,19 +277,20 @@ struct ResetSheet: View {
 
     // The card being spent, drawn as a ticket: which one on the left, how many stay on the right.
     private var ticket: some View {
-        let count = account.codexCredits.count
+        // Listed Codex credits, or Claude's official count; nil when Claude's count did not come back.
+        let count = account.provider == "claude" ? account.creditCount : account.codexCredits.count
         return HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(retry ? "重试的这一次" : "用这一张").font(.system(size: 11)).foregroundStyle(Palette.ink2)
                 Text(expiresAt.map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                if !retry, account.provider == "codex" {
+                if !retry, let count {
                     Text("\(account.displayName) 现在有 \(count) 张").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
             }
             .padding(.leading, 20).padding(.trailing, 15).padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            if !retry, account.provider == "codex" {
+            if !retry, let count {
                 Line().stroke(Palette.soft, style: StrokeStyle(lineWidth: 2, dash: [4, 3])).frame(width: 2).padding(.vertical, 10)
                 VStack(alignment: .leading, spacing: 0) {
                     Text("用后还剩").font(.system(size: 11)).foregroundStyle(Palette.ink2)

@@ -1140,6 +1140,66 @@ fn claude_reset_only_spends_one_grant_per_episode_and_codex_never_switches_to_cl
 }
 
 #[test]
+fn a_manual_claude_reset_spends_the_next_grant_without_the_view_naming_it() {
+    use crate::claude_resets::{Access as ClaudeAccess, Request as ClaudeRequest};
+    static CLAIMS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+    fn claim(_: &ClaudeAccess, request: &ClaudeRequest) -> Result<(u16, Value)> {
+        match request {
+            ClaudeRequest::Status => Ok((200, claude_usage(40))),
+            ClaudeRequest::Claim {
+                grant_id,
+                request_id,
+            } => {
+                CLAIMS
+                    .lock()
+                    .unwrap()
+                    .push((grant_id.clone(), request_id.clone()));
+                Ok((200, json!({"result":"reset"})))
+            }
+        }
+    }
+    CLAIMS.lock().unwrap().clear();
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    let mut c = claude("c", "SYNTHETIC_REFRESH_C");
+    c.credential["expiresAt"] = json!((now() + 3600) * 1000);
+    f.platform.vault_write("c", &c.encoded()).unwrap();
+    m.db.accounts.push(account("c", &c, false));
+    m.save().unwrap();
+    m.claude_reset_transport = Some(claim);
+    // Nothing to name before a fresh reading; Codex credits are always named by the view.
+    assert!(m.next_grant("c").is_err());
+    assert!(m.next_grant("a").is_err());
+    claude_quota(&mut m, &c, claude_high);
+    // The view learns that a card is usable now and when it ends, never which one.
+    let snapshot = m.snapshot();
+    let entry = snapshot["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "c")
+        .unwrap();
+    assert_eq!(
+        entry["usage"]["claude_resets"]["next"],
+        json!({"ends_at": "2099-01-01T00:00:00Z"})
+    );
+    assert!(!snapshot.to_string().contains(GRANT));
+    let grant = m.next_grant("c").unwrap();
+    m.reset_quota("c", &grant, "manual-claude-1", true).unwrap();
+    m.finish_reset();
+    let attempt = m.db.reset_attempts.last().unwrap();
+    assert_eq!(
+        (attempt.credit_id.as_str(), attempt.outcome),
+        (GRANT, crate::resets::Outcome::Reset)
+    );
+    assert!(attempt.executions[0].source == crate::resets::Source::Manual);
+    assert_eq!(
+        *CLAIMS.lock().unwrap(),
+        vec![(GRANT.to_string(), "manual-claude-1".to_string())]
+    );
+}
+
+#[test]
 fn depleted_claude_switches_in_place_beside_running_clients() {
     use crate::claude_locks::RefreshLocks;
     fn no_claim(
