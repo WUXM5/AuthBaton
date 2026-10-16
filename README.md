@@ -59,6 +59,16 @@ flowchart TD
 | `cloud/` | Personal cloud Worker |
 | `scripts/` | Build script, UI preview and interaction checks, synthetic tests |
 
+## Install
+
+Download the DMG from [Releases](https://github.com/WUXM5/AuthBaton/releases/latest) and drag `AuthManager.app` to Applications. It needs macOS 14 or later on Apple silicon.
+
+The app is ad-hoc signed and not notarized by Apple, so macOS blocks it when it comes from the internet. Before you open it the first time, remove the download quarantine:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AuthManager.app
+```
+
 ## Build
 
 Requirements:
