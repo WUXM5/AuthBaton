@@ -4,6 +4,7 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import { BrokerClient, type Access, type Account, type Directory } from "./authmanager-codex/client.ts";
 
 // Exercise the installed pi runtime with isolated metadata and an in-memory
@@ -29,6 +30,7 @@ const { RuntimeCredentials } = await import(`${piRoot}/dist/core/runtime-credent
 const { InMemoryCodingAgentModelsStore } = await import(`${piRoot}/dist/core/models-store.js`);
 const { InMemoryCredentialStore } = await import(`${aiRoot}/auth/credential-store.js`);
 const { refreshModelCatalogs } = await import(`${piRoot}/dist/modes/interactive/model-catalog-refresh.js`);
+const { normalizeContext } = await import(`${aiRoot}/index.js`);
 
 const DEFAULT = "authmanager-codex";
 const A = "00000000-0000-4000-8000-000000000001";
@@ -221,4 +223,32 @@ test("default account stays pinned during a run and follows the user's switch on
 	await f.emit("before_agent_start");
 	assert.equal((await f.runtime.getAuth(DEFAULT)).auth.apiKey, `SYNTHETIC-${C}-2`);
 	assert.deepEqual(f.client.accessCalls, [A, A, A, B, C]);
+});
+
+test("Codex requests offer Codex's own web search after pi's payload hook", async () => {
+	const f = await fixture();
+	const model = f.runtime.getModels(DEFAULT)[0];
+	const claims = { "https://api.openai.com/auth": { chatgpt_account_id: "workspace", chatgpt_user_id: "user" } };
+	const apiKey = `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic`;
+	const bodies: any[] = [];
+	// The synthetic fetch records the request and refuses it, so nothing reaches a network.
+	const fetch = async (_url: unknown, init: { body: Uint8Array | string }): Promise<Response> => {
+		bodies.push(JSON.parse(typeof init.body === "string" ? init.body : zstdDecompressSync(init.body).toString("utf8")));
+		return new Response("synthetic", { status: 400 });
+	};
+	const messages = [{ role: "user", content: "hi", timestamp: 0 }];
+	const read = { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } };
+	for (const tools of [[read], []]) {
+		for (const method of ["stream", "streamSimple"]) {
+			await f.runtime.getProvider(DEFAULT)[method](model, normalizeContext({ systemPrompt: "synthetic", tools, messages }), {
+				apiKey, transport: "sse", fetch, maxRetries: 0, onPayload: (payload: any) => ({ ...payload, hooked: true }),
+			}).result();
+		}
+	}
+	assert.deepEqual(bodies.map((body) => body.tools.map((tool: any) => tool.name ?? tool.type)),
+		[["read", "web_search"], ["read", "web_search"], ["web_search"], ["web_search"]]);
+	for (const body of bodies) {
+		assert.equal(body.hooked, true, "pi's own payload hook still runs");
+		assert.deepEqual(body.tools.at(-1), { type: "web_search", external_web_access: true });
+	}
 });

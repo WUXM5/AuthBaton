@@ -9,6 +9,16 @@ import { DEFAULT_PROVIDER as DEFAULT, ProviderNames } from "./names.ts";
 
 const blocked = new Set(["reauth", "attention", "unsaved", "uncertain", "pending"]);
 
+// pi-ai 1.3.0's Codex adapter declares only function tools, so Codex's own web search
+// (`web_search = "live"`) is added after pi's payload hook. The model cites sources in its
+// text; pi-ai drops the search items, and transcripts without them replay fine.
+function withWebSearch<T extends { onPayload?: (payload: unknown, model: never) => unknown }>(options?: T): T {
+	return { ...options, onPayload: async (payload: unknown, model: never) => {
+		const body = ((await options?.onPayload?.(payload, model)) ?? payload) as { tools?: unknown[] };
+		return { ...body, tools: [...(body.tools ?? []), { type: "web_search", external_web_access: true }] };
+	} } as T;
+}
+
 export default async function register(pi: ExtensionAPI): Promise<void> {
 	await registerAuthManager(pi, new BrokerClient(), new ProviderNames(fileURLToPath(new URL("./provider-names", import.meta.url))));
 }
@@ -56,8 +66,8 @@ export async function registerAuthManager(pi: ExtensionAPI, client: BrokerClient
 			models: codex.getModels().map((model) => ({ ...model, provider: id })),
 			filterModels: listed ? undefined : () => [],
 			api: {
-				stream: (model, context, options) => codex.stream(model, context, accountSession(options)),
-				streamSimple: (model, context, options) => codex.streamSimple(model, context, accountSession(options)),
+				stream: (model, context, options) => codex.stream(model, context, withWebSearch(accountSession(options))),
+				streamSimple: (model, context, options) => codex.streamSimple(model, context, withWebSearch(accountSession(options))),
 			},
 		}));
 		registered.add(id);
