@@ -23,6 +23,9 @@ pub const SPAN: u64 = 19 * 3600 + 600;
 const SHORTEST: u64 = 5 * 3600 - 600 - TIMEOUT.as_secs();
 /// Only a reading this recent decides.
 const FRESH: u64 = 300;
+/// Usage can still show an idle window for about a minute after the request that started it
+/// (seen once), so only a reading taken this long after an attempt shows what it did.
+pub const LAG: u64 = 120;
 /// A window's end is confirmed by a reading taken this long after its reset time.
 const SETTLE: u64 = 60;
 pub const RETRY: u64 = 300;
@@ -83,7 +86,7 @@ impl Plan {
             .then_some(day)
     }
     /// `tried`: when the account's last attempt (automatic or by hand) ended; only a reading
-    /// taken after it shows the window that attempt may have started.
+    /// taken `LAG` after it shows the window that attempt may have started.
     pub fn step(
         &self,
         time: u64,
@@ -97,7 +100,7 @@ impl Plan {
         let Some(reading) = reading.filter(|r| {
             r.checked_at <= time
                 && time - r.checked_at <= FRESH
-                && tried.is_none_or(|t| r.checked_at >= t)
+                && tried.is_none_or(|t| r.checked_at >= t + LAG)
         }) else {
             return Step::Wait;
         };
@@ -197,6 +200,11 @@ impl Runtime {
     }
     pub fn tried(&self, id: &str) -> Option<u64> {
         self.tried.get(id).copied()
+    }
+    /// Moves the attempts back, as if `seconds` had passed since.
+    #[cfg(test)]
+    pub fn age(&mut self, seconds: u64) {
+        self.tried.values_mut().for_each(|t| *t -= seconds);
     }
     /// One warm-up by hand, sent on the next tick the service admits it.
     pub fn request(&mut self, id: &str) -> Result<()> {
@@ -517,6 +525,15 @@ mod tests {
         assert_eq!(
             plan.step(time, Some(time - 5), Some(&idle), 2.0),
             Step::Wait
+        );
+        // Right after an attempt, usage may not show its window yet.
+        assert_eq!(
+            plan.step(time, Some(time - 10 - LAG + 1), Some(&idle), 2.0),
+            Step::Wait
+        );
+        assert_eq!(
+            plan.step(time, Some(time - 10 - LAG), Some(&idle), 2.0),
+            Step::Send(day)
         );
         // A running window, started by the user or anyone, is left alone until a reading taken
         // after its reset time.
