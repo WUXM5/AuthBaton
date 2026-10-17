@@ -334,6 +334,7 @@ fn claude_warmup_starts_each_window_as_the_last_one_ends_with_the_account_token(
     );
     assert!(!projected.to_string().contains("SYNTHETIC_ACCESS"));
     // Once it has reset, the next one is sent.
+    manager.warmup.age(crate::warmup::LAG);
     idle(&mut manager);
     tick(&mut manager);
     settle(&mut manager);
@@ -475,10 +476,15 @@ fn a_warmup_by_hand_is_sent_once_whatever_the_window_and_the_plan() {
         plan.last
             .is_some_and(|l| l.ok && l.message == "手动预热已发送")
     );
-    // It does not count as the plan's send: switched on, the plan still warms the idle window.
+    // It does not count as the plan's send: switched on, the plan still warms the idle window,
+    // once a reading is late enough to show what the warm-up by hand did.
     manager
         .configure_warmup("a", true, Some(current_hour()))
         .unwrap();
+    idle(&mut manager);
+    tick(&mut manager);
+    assert!(!manager.warmup.running("a"));
+    manager.warmup.age(crate::warmup::LAG);
     idle(&mut manager);
     tick(&mut manager);
     assert!(manager.warmup.running("a"));
