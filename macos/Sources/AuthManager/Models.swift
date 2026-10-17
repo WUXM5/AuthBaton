@@ -353,6 +353,7 @@ struct ClaudeWarmup: Decodable, Sendable {
     let hour: Int
     let running: Bool
     let last: Record?
+    let next: Double?
 }
 
 struct QuotaStatus: Decodable, Sendable {

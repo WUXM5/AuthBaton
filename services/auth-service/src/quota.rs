@@ -676,6 +676,48 @@ impl Runtime {
     pub fn stop(&mut self, time: u64) {
         self.finish(time);
     }
+    /// The last successful reading of a Claude account, as warm-up reads it.
+    pub fn warmup_reading(&self, id: &str) -> Option<crate::warmup::Reading> {
+        let entry = self.entries.get(id)?;
+        let core = |label: &str| {
+            entry
+                .windows
+                .iter()
+                .find(|w| w.label == label && w.scope.is_none() && w.kind.is_none())
+        };
+        Some(crate::warmup::Reading {
+            checked_at: entry.checked_at?,
+            resets_at: core("5 小时窗口").and_then(|w| w.resets_at),
+            weekly: core("7 天窗口").map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0)),
+        })
+    }
+    /// When the last query of this account started, successful or not.
+    pub fn attempted(&self, id: &str) -> Option<u64> {
+        self.entries.get(id)?.attempted_at
+    }
+    /// A successful Claude reading taken at `time`, without a query: the five-hour window resets
+    /// at `resets_at` and `weekly_used` percent of the seven-day window is used.
+    #[cfg(test)]
+    pub fn record_claude(&mut self, id: &str, resets_at: Option<u64>, weekly_used: f64, time: u64) {
+        let window = |label: &str, used_percent, resets_at| Window {
+            label: label.into(),
+            used_percent,
+            resets_at,
+            ..Default::default()
+        };
+        let outcome = Outcome {
+            state: "ready",
+            message: "额度已检查",
+            windows: vec![
+                window("5 小时窗口", 0.0, resets_at),
+                window("7 天窗口", weekly_used, None),
+            ],
+            delay: INTERVAL,
+            reset_credits: None,
+            claude_resets: None,
+        };
+        self.complete(id, outcome, time);
+    }
     #[cfg(test)]
     pub fn line(&self, id: &str) -> Option<f64> {
         self.entries.get(id)?.line
@@ -733,6 +775,36 @@ mod tests {
                 .any(|w| w.scope.as_deref() == Some("NewModel") && w.used_percent == 0.0)
         );
         assert!(claude_windows(&json!({"seven_day":null})).is_err());
+    }
+    #[test]
+    fn warmup_reads_the_five_hour_reset_time_and_the_seven_day_remainder() {
+        let mut runtime = Runtime::default();
+        let reading = |runtime: &mut Runtime, body: Value| {
+            let outcome = Outcome {
+                state: "ready",
+                message: "额度已检查",
+                windows: claude_windows(&body).unwrap(),
+                delay: INTERVAL,
+                reset_credits: None,
+                claude_resets: None,
+            };
+            runtime.complete("a", outcome, 100);
+            runtime.warmup_reading("a").unwrap()
+        };
+        let idle = reading(
+            &mut runtime,
+            json!({"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":97,"resets_at":"2026-10-20T00:00:00Z"},"seven_day_opus":{"utilization":10}}),
+        );
+        assert_eq!(
+            (idle.checked_at, idle.resets_at, idle.weekly),
+            (100, None, Some(3.0))
+        );
+        let running = reading(
+            &mut runtime,
+            json!({"five_hour":{"utilization":4,"resets_at":"2026-10-17T05:00:00.123+00:00"},"seven_day_sonnet":{"utilization":120}}),
+        );
+        assert_eq!(running.resets_at, iso_time("2026-10-17T05:00:00Z"));
+        assert!(running.resets_at.is_some() && running.weekly.is_none());
     }
     #[test]
     fn independent_claude_query_only_uses_get_access_and_hides_auth_errors() {

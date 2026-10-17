@@ -98,7 +98,7 @@ enum Fixture {
              "last_local": now - 6.4 * 86400, "last_online": now - 6.4 * 86400, "last_refresh": now - 6.6 * 86400,
              "expires_at": now - 6.3 * 86400, "refresh_expires_at": now + 6.7 * 86400, "next_check": now - 6.4 * 86400, "quota": [],
              "renewal_mode": "claude_coordinated",
-             "warmup": ["enabled": true, "hour": 6, "running": false, "last": ["at": now - 3.2 * 3600, "ok": true, "message": "已发送，5 小时窗口开始计时"]],
+             "warmup": ["enabled": true, "hour": 6, "running": false, "last": ["at": now - 3.2 * 3600, "ok": true, "message": "已发送，5 小时窗口开始计时"], "next": now + 1.8 * 3600],
              "login_notice": ["state": "normal", "expires_at": now + 6.7 * 86400, "message": "当前不在重新登录提醒窗口内", "source": "本机登录记录"],
              "usage": ["state": "ready", "message": "额度已检查", "checked_at": now - 200, "attempted_at": now - 201, "next_update": now + 100, "refreshing": false,
                        "windows": [["label": "5 小时窗口", "used_percent": 14, "resets_at_iso": iso(3.7 * 3600)],
@@ -917,15 +917,22 @@ extension NSWindow {
         check.expect(Driver.lastMenu.contains { $0.title.contains("认证检查") && $0.enabled }, "可手动「认证检查」立即重新确认")
         if Driver.lastMenu.isEmpty { print("    菜单：\(Driver.lastMenu)") }
     }
-    section(13, "Claude 5 小时窗口预热：开关沿用关闭前的时间，已开的显示时间和上次结果") {
+    section(13, "Claude 5 小时窗口预热：开关沿用关闭前的时间，已开的显示起点、上次结果和下次时间；立即预热点一次发一条") {
         select(.claude)
-        check.visible("06:00", "已开启的账号显示预热时间")
+        check.visible("06:00", "已开启的账号显示每天的起点")
         check.visible("5小时窗口开始计时", "显示上次预热结果")
+        check.visible("下次约", "显示下次预热时间")
+        state.calls.removeAll()
+        Driver.press("立即预热")
+        let now = check.lastCall("accounts.warmup_now") ?? ""
+        check.expect(now.contains("\"synthetic-claude\""), "「立即预热」调用 accounts.warmup_now(id)")
+        if now.isEmpty { print("    调用：\(state.calls)") }
         Fixture.load("claude2", into: state)
         select(.claude, "synthetic-claude-b")
         check.expect(!Driver.visible("09:00", wait: 0.3), "关闭时不显示预热时间")
+        check.expect(!Driver.hits("立即预热").isEmpty, "关闭自动预热时仍可立即预热")
         state.calls.removeAll()
-        if let label = Driver.hits("到点发一条短消息").first,
+        if let label = Driver.hits("发一条短消息").first,
            let toggle = Driver.views(NSSwitch.self).min(by: {
                abs($0.convert($0.bounds, to: nil).midY - label.rect.midY) < abs($1.convert($1.bounds, to: nil).midY - label.rect.midY)
            }) {
