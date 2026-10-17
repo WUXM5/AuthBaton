@@ -127,8 +127,23 @@ fn async_native_observation_retires_the_old_default_when_identity_changed() {
     let other = claude("other", "SYNTHETIC_OTHER");
     native.initialize(&fixture.platform, &other).unwrap();
     manager.native_override = Some(native.clone());
+    fixture
+        .platform
+        .vault_write("a", &expected.encoded())
+        .unwrap();
     manager.db.accounts.push(account("a", &expected, true));
+    // A local check cannot tell this from an identity file a desktop session rewrote.
     manager.local_check("a").unwrap();
+    manager.finish_job();
+    assert!(manager.db.accounts[0].native);
+    assert_eq!(manager.db.accounts[0].message, IDENTITY_UNCONFIRMED);
+    manager.profile_transport = Some(|_, _, _, _| {
+        Ok((
+            200,
+            json!({"account":{"uuid":"other"},"organization":{"uuid":"synthetic-org"}}),
+        ))
+    });
+    manager.check("a", true).unwrap();
     manager.finish_job();
     assert_eq!(manager.db.accounts[0].state, "attention");
     assert!(!manager.db.accounts[0].native);

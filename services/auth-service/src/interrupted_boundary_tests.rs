@@ -600,3 +600,161 @@ fn switching_back_to_a_codex_default_writes_the_renewal_its_official_client_made
         renewed.credential
     );
 }
+
+/// The default Claude login is `c`'s `stored` credential, but a Claude desktop Code session,
+/// signed in as `a`, has written its own account into the shared identity file.
+fn desktop_rewrote_identity(fixture: &Fixture, stored: &Bundle) -> (Accounts, NativeStore) {
+    let mut manager = fixture.manager();
+    let native = fixture.native();
+    manager.native_override = Some(native.clone());
+    manager.profile_transport = Some(profile_by_token);
+    let a = claude("a", "SYNTHETIC_A_REFRESH");
+    let b = claude("b", "SYNTHETIC_B_REFRESH");
+    let c = claude("c", "SYNTHETIC_C_REFRESH");
+    write_json(
+        &native.directory.join(".credentials.json"),
+        &json!({"claudeAiOauth":stored.credential}),
+    )
+    .unwrap();
+    write_json(
+        &native.config,
+        &json!({"oauthAccount":a.identity,"projects":{"keep":true}}),
+    )
+    .unwrap();
+    for (id, bundle) in [("a", &a), ("b", &b), ("c", &c)] {
+        fixture.platform.vault_write(id, &bundle.encoded()).unwrap();
+    }
+    manager.db.accounts = vec![
+        account("a", &a, false),
+        account("b", &b, false),
+        account("c", &c, true),
+    ];
+    manager.save().unwrap();
+    (manager, native)
+}
+
+#[test]
+fn check_keeps_the_current_claude_account_when_a_desktop_session_rewrote_its_identity() {
+    let c = claude("c", "SYNTHETIC_C_REFRESH");
+    for stored in [c.clone(), renewed(&c)] {
+        let fixture = Fixture::new();
+        let (mut manager, native) = desktop_rewrote_identity(&fixture, &stored);
+        // Held so the check stops before the real profile and token requests.
+        let locks = crate::claude_locks::RefreshLocks::acquire(&native.directory).unwrap();
+        manager.check("c", false).unwrap();
+        finish_account_job(&mut manager);
+        drop(locks);
+        let current = &manager.db.accounts[2];
+        assert!(current.native, "{}", current.message);
+        assert_ne!(current.state, "attention", "{}", current.message);
+        assert_eq!(
+            current.metadata.as_ref().map(|m| &m.owner),
+            Some(&c.metadata().unwrap().owner)
+        );
+        let config = read_json(&native.config).unwrap().unwrap();
+        assert_eq!(config["oauthAccount"]["accountUuid"], "c");
+        assert!(config["oauthAccount"]["profileFetchedAt"].as_u64() >= Some(now() * 1000 - 60_000));
+        assert_eq!(config["projects"]["keep"], true);
+        assert_eq!(
+            native.read(&fixture.platform).unwrap().credential,
+            stored.credential
+        );
+        let a = claude("a", "SYNTHETIC_A_REFRESH");
+        assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
+        // Coordinated renewal reads the same store again and now finds its own account.
+        let (synced, _) = crate::claude::retry(
+            &native,
+            &fixture.platform,
+            "c",
+            &native.read(&fixture.platform).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(synced.metadata().unwrap().owner, "claude:c:synthetic-org");
+    }
+}
+
+#[test]
+fn check_still_reports_a_login_that_really_belongs_to_another_account() {
+    let fixture = Fixture::new();
+    let a = claude("a", "SYNTHETIC_A_REFRESH");
+    let (mut manager, native) = desktop_rewrote_identity(&fixture, &renewed(&a));
+    let config = read_json(&native.config).unwrap();
+    let locks = crate::claude_locks::RefreshLocks::acquire(&native.directory).unwrap();
+    manager.check("c", false).unwrap();
+    finish_account_job(&mut manager);
+    drop(locks);
+    let current = &manager.db.accounts[2];
+    assert!(!current.native);
+    assert_eq!(current.state, "attention");
+    assert_eq!(current.message, IDENTITY_CHANGED);
+    assert_eq!(read_json(&native.config).unwrap(), config);
+    assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
+}
+
+#[test]
+fn local_check_of_a_rewritten_identity_reads_only() {
+    let c = claude("c", "SYNTHETIC_C_REFRESH");
+    for (stored, confirmed) in [(c.clone(), true), (renewed(&c), false)] {
+        let fixture = Fixture::new();
+        let (mut manager, native) = desktop_rewrote_identity(&fixture, &stored);
+        manager.profile_transport = Some(|_, _, _, _| panic!("a local check makes no request"));
+        let config = read_json(&native.config).unwrap();
+        manager.local_check("c").unwrap();
+        finish_account_job(&mut manager);
+        let current = &manager.db.accounts[2];
+        assert!(current.native);
+        assert_eq!(current.state == "saved", confirmed, "{}", current.message);
+        if !confirmed {
+            assert_eq!(current.message, IDENTITY_UNCONFIRMED);
+        }
+        assert_eq!(read_json(&native.config).unwrap(), config);
+    }
+}
+
+#[test]
+fn switch_never_saves_the_current_login_under_the_account_the_identity_file_names() {
+    let a = claude("a", "SYNTHETIC_A_REFRESH");
+    let b = claude("b", "SYNTHETIC_B_REFRESH");
+    let c = claude("c", "SYNTHETIC_C_REFRESH");
+
+    // Renewed since its last copy, so nothing on this Mac says whose it is.
+    let fixture = Fixture::new();
+    let (mut manager, native) = desktop_rewrote_identity(&fixture, &renewed(&c));
+    manager.db.accounts[2].next_check = now() + 1800;
+    assert_eq!(manager.activate("b", true), Err(IDENTITY_UNCONFIRMED));
+    assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
+    assert_eq!(
+        native.read(&fixture.platform).unwrap().credential,
+        renewed(&c).credential
+    );
+    assert!(manager.db.accounts[2].native && manager.db.accounts[2].next_check <= now());
+
+    // The saved copy of the same credential places it.
+    let fixture = Fixture::new();
+    let (mut manager, native) = desktop_rewrote_identity(&fixture, &c);
+    manager.activate("b", true).unwrap();
+    assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
+    assert_eq!(fixture.platform.vault_read("c").unwrap(), c.encoded());
+    assert!(native.read(&fixture.platform).unwrap() == b);
+    assert!(manager.db.accounts[1].native && !manager.db.accounts[2].native);
+}
+
+#[test]
+fn adopting_the_current_login_places_it_by_its_credential() {
+    let a = claude("a", "SYNTHETIC_A_REFRESH");
+    let c = claude("c", "SYNTHETIC_C_REFRESH");
+    let fixture = Fixture::new();
+    let (mut manager, _) = desktop_rewrote_identity(&fixture, &renewed(&c));
+    // As left by a check that took the rewritten identity file for a switch to `a`.
+    manager.db.accounts[2].native = false;
+    manager.db.accounts[2].state = "attention".into();
+    manager.import("claude", "").unwrap();
+    assert_eq!(fixture.platform.vault_read("a").unwrap(), a.encoded());
+    let saved = Bundle::decode(fixture.platform.vault_read("c").unwrap()).unwrap();
+    assert_eq!(saved.credential, renewed(&c).credential);
+    assert_eq!(saved.identity, c.identity);
+    let current = &manager.db.accounts[2];
+    assert!(current.native && current.state == "saved" && current.label == "c");
+    assert!(!manager.db.accounts[0].native);
+}

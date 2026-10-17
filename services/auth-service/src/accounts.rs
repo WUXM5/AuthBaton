@@ -367,7 +367,65 @@ impl Accounts {
             .native
             .then(|| self.native(&account.provider))
             .transpose()?;
-        read_account_bundle(&self.platform, account, native.as_ref())
+        read_account_bundle(&self.platform, account, native.as_ref(), None)
+    }
+    /// The profile request that tells whose a Claude credential is; tests answer it themselves.
+    fn profile_lookup(&self) -> crate::maintenance::Transport {
+        #[cfg(test)]
+        return self
+            .profile_transport
+            .unwrap_or(|_, _, _, _| Err("test transport not configured"));
+        #[cfg(not(test))]
+        crate::maintenance::http
+    }
+    /// Whose account the default Claude login is. The identity file beside its credential is
+    /// shared, and a Claude desktop Code session writes its own account there, so the file is
+    /// believed only for the current account or one not registered here. For another registered
+    /// account, a saved copy of the same credential, or else `lookup`, must say whose it is.
+    fn place_claude_login(
+        &self,
+        login: Bundle,
+        lookup: Option<crate::maintenance::Transport>,
+    ) -> Result<Bundle> {
+        let owner = login.metadata()?.owner;
+        let registered = |owner: &str| {
+            self.db.accounts.iter().find(|a| {
+                a.provider == "claude" && a.metadata.as_ref().is_some_and(|m| m.owner == owner)
+            })
+        };
+        if registered(&owner).is_none_or(|a| a.native) {
+            return Ok(login);
+        }
+        let saved = |a: &Account| {
+            self.platform
+                .vault_read(&a.id)
+                .and_then(Bundle::decode)
+                .ok()
+        };
+        if let Some(copy) = self
+            .db
+            .accounts
+            .iter()
+            .filter(|a| a.provider == "claude")
+            .filter_map(saved)
+            .find(|b| b.credential == login.credential)
+        {
+            return Ok(Bundle {
+                identity: copy.identity,
+                ..login
+            });
+        }
+        let found = crate::maintenance::claude_owner(lookup.ok_or(IDENTITY_UNCONFIRMED)?, &login)?;
+        if found == owner {
+            return Ok(login);
+        }
+        let copy = registered(&found)
+            .and_then(saved)
+            .ok_or("Claude 默认登录属于未登记的账号，身份记录却写着另一个账号；请在官方客户端重新登录后再纳管")?;
+        Ok(Bundle {
+            identity: copy.identity,
+            ..login
+        })
     }
     pub fn snapshot(&self) -> Value {
         // Persisted identity keys never cross the UI boundary.
@@ -377,7 +435,10 @@ impl Accounts {
     }
     pub fn import(&mut self, provider: &str, label: &str) -> Result<()> {
         self.ensure_idle()?;
-        let bundle = self.native(provider)?.read(&self.platform)?;
+        let mut bundle = self.native(provider)?.read(&self.platform)?;
+        if provider == "claude" {
+            bundle = self.place_claude_login(bundle, Some(self.profile_lookup()))?;
+        }
         self.adopt_native(bundle, label)?;
         self.save()
     }
@@ -869,6 +930,7 @@ impl Accounts {
             .then(|| self.native(&account.provider))
             .transpose()?;
         let external = account.provider == "codex" && self.desktop_owns(id);
+        let lookup = online.then(|| self.profile_lookup());
         let client_running = self.client_running;
         let codex = self.codex.clone();
         let platform = self.platform.clone();
@@ -889,7 +951,7 @@ impl Accounts {
             cancel,
             handle: std::thread::spawn(move || {
                 let prepare = || -> Result<JobResult> {
-                    let bundle = read_account_bundle(&platform, &account, native.as_ref())?;
+                    let bundle = read_account_bundle(&platform, &account, native.as_ref(), lookup)?;
                     if worker_cancel.load(Ordering::Acquire) {
                         return Err("检查已停止；未继续认证或续期");
                     }
@@ -975,8 +1037,25 @@ impl Accounts {
         let old = native.login(&self.platform)?;
         let next = Bundle::decode(self.platform.vault_read(&target.id)?)?;
         if let Some(old) = &old {
+            let placed = if old.provider == "claude" {
+                self.place_claude_login(old.clone(), None)
+            } else {
+                Ok(old.clone())
+            };
+            let placed = match placed {
+                Ok(placed) => placed,
+                Err(message) => {
+                    // The current account's next authentication check asks the profile API.
+                    for a in &mut self.db.accounts {
+                        if a.provider == "claude" && a.native {
+                            a.next_check = now();
+                        }
+                    }
+                    return Err(message);
+                }
+            };
             // Keeps the source's latest material, including a refresh an official client just saved.
-            self.adopt_native(old.clone(), "原生账号")?;
+            self.adopt_native(placed, "原生账号")?;
         }
         let previous = self
             .db
@@ -1116,12 +1195,7 @@ impl Accounts {
         }
         let native = self.native(&operation.provider)?;
         let platform = self.platform.clone();
-        #[cfg(test)]
-        let transport = self
-            .profile_transport
-            .unwrap_or(|_, _, _, _| Err("test transport not configured"));
-        #[cfg(not(test))]
-        let transport = crate::maintenance::http;
+        let transport = self.profile_lookup();
         // Placing a Claude login an official client renewed meanwhile may take a profile request.
         self.job = Some(Job {
             id: operation.target.clone(),
@@ -1328,7 +1402,7 @@ impl Accounts {
             Ok(JobResult::ReadError(message)) => {
                 let a = &mut self.db.accounts[index];
                 // Preparation did not produce a grant; keep identity and unresolved recovery state.
-                if message == "原生登录身份已变化，请重新纳管当前登录" {
+                if message == IDENTITY_CHANGED {
                     a.native = false;
                 }
                 if !matches!(
@@ -1546,10 +1620,14 @@ mod pi_accounts;
 mod reset_accounts;
 #[path = "warmup_accounts.rs"]
 mod warmup_accounts;
+const IDENTITY_CHANGED: &str = "原生登录身份已变化，请重新纳管当前登录";
+const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面版会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
+/// `lookup` is the profile request an authentication check may make; a local check reads only.
 fn read_account_bundle(
     platform: &Platform,
     account: &Account,
     native: Option<&NativeStore>,
+    lookup: Option<crate::maintenance::Transport>,
 ) -> Result<Bundle> {
     let bundle = if let Some(native) = native {
         native.login(platform)?.ok_or(SIGNED_OUT)?
@@ -1557,14 +1635,52 @@ fn read_account_bundle(
         Bundle::decode(platform.vault_read(&account.id)?)?
     };
     let metadata = bundle.metadata()?;
-    if account
+    let Some(expected) = account
         .metadata
         .as_ref()
-        .is_some_and(|m| m.owner != metadata.owner)
-    {
-        return Err("原生登录身份已变化，请重新纳管当前登录");
+        .filter(|m| m.owner != metadata.owner)
+    else {
+        return Ok(bundle);
+    };
+    match native {
+        Some(native) if account.provider == "claude" => settle_claude_identity(
+            platform,
+            &account.id,
+            &expected.owner,
+            native,
+            bundle,
+            lookup,
+        ),
+        _ => Err(IDENTITY_CHANGED),
     }
-    Ok(bundle)
+}
+/// The shared config names another account beside the current account's Claude credential. A
+/// Claude desktop Code session writes its own account there once the cached profile is a day
+/// old, so only the credential says whose login it is.
+fn settle_claude_identity(
+    platform: &Platform,
+    id: &str,
+    owner: &str,
+    native: &NativeStore,
+    login: Bundle,
+    lookup: Option<crate::maintenance::Transport>,
+) -> Result<Bundle> {
+    let saved = Bundle::decode(platform.vault_read(id)?)?;
+    let mut identity = saved.identity;
+    match lookup.map(|transport| crate::maintenance::claude_owner(transport, &login)) {
+        Some(Ok(found)) if found != owner => return Err(IDENTITY_CHANGED),
+        // Stamped as the official client stamps its own profile request, so a desktop session
+        // does not write its own account here again for a day.
+        Some(Ok(_)) => identity["profileFetchedAt"] = json!(now() * 1000),
+        _ if saved.credential != login.credential => return Err(IDENTITY_UNCONFIRMED),
+        None => return Ok(Bundle { identity, ..login }),
+        // The saved copy of this very credential already says whose it is.
+        Some(Err(_)) => {}
+    }
+    let lock = crate::claude_locks::Lease::config(&native.config)?;
+    let restored = native.restore_claude_identity(platform, &login.credential, &identity)?;
+    lock.check()?;
+    Ok(restored)
 }
 /// A target whose saved login is known to be stale or rejected would replace a working default
 /// login and hide the problem.
