@@ -1,6 +1,7 @@
-//! Claude five-hour window warm-up. The window starts at an account's first request (observed
-//! once: counted from that time rounded down to 10 minutes, not to the hour), so one tiny
-//! official CLI turn a few hours before work makes the window reset early in the working day.
+//! Claude five-hour window warm-up. The window starts at an account's first request (observed:
+//! counted from that time rounded down to 10 minutes, not to the hour), so one tiny official CLI
+//! turn starts it early. From the daily start hour, each time a window ends another turn starts
+//! the next one, while it can still end before the next day's start: four windows a day.
 //! Nothing here stores or logs credentials.
 use crate::platform::Result;
 use serde::{Deserialize, Serialize};
@@ -13,22 +14,36 @@ use std::process::Command;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// A slot missed while the Mac slept is still sent this long after its hour; later it no longer
-/// moves the reset ahead of a working session.
-pub const CATCH_UP: u64 = 5 * 3600;
+/// Warm-ups are sent within this long after the day's hour. A window counts from its request
+/// rounded down to 10 minutes, so the last one starts by 19 hours and has ended by the next
+/// day's start.
+pub const SPAN: u64 = 19 * 3600 + 600;
+/// A window this plan started runs at least this long after its attempt ended: the window counts
+/// from the request rounded down to 10 minutes, and the attempt ends at most `TIMEOUT` after it.
+const SHORTEST: u64 = 5 * 3600 - 600 - TIMEOUT.as_secs();
+/// Only a reading this recent decides.
+const FRESH: u64 = 300;
+/// A window's end is confirmed by a reading taken this long after its reset time.
+const SETTLE: u64 = 60;
 pub const RETRY: u64 = 300;
 pub const ATTEMPTS: u8 = 3;
+/// After `ATTEMPTS` failures the empty window is left alone for one window's length.
+const SKIP: u64 = 5 * 3600;
 const CHECK: u64 = 30;
 const TIMEOUT: Duration = Duration::from_secs(120);
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Plan {
-    /// Local hour, 0–23.
+    /// Local hour, 0–23, at which each day's warm-ups start.
     pub hour: u8,
-    /// Start of the last slot that was sent or given up on.
+    /// Start of the last day an automatic warm-up was sent in. Builds before 0.20 send once a
+    /// day and skip a day recorded here.
     #[serde(default)]
     pub slot: Option<u64>,
+    /// When the last automatic warm-up ended; it started a window.
+    #[serde(default)]
+    pub sent: Option<u64>,
     #[serde(default)]
     pub last: Option<Record>,
 }
@@ -38,11 +53,77 @@ pub struct Record {
     pub ok: bool,
     pub message: String,
 }
+/// What the last successful usage reading says.
+pub struct Reading {
+    pub checked_at: u64,
+    /// The five-hour window's reset time; Claude gives none while the window is idle.
+    pub resets_at: Option<u64>,
+    /// Remaining percent of the seven-day window.
+    pub weekly: Option<f64>,
+}
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    /// Outside the day's span, or a window is running; the next empty window starts afresh.
+    Rest,
+    /// No reading recent enough, or none taken since the last attempt.
+    Wait,
+    /// The running window has reset; a reading taken after this time decides.
+    Query(u64),
+    /// No window is running, but the seven-day quota is at or below the account's line.
+    Hold,
+    /// No window is running: send, for the day that starts at this time.
+    Send(u64),
+}
 impl Plan {
-    /// The slot to send now, if any.
-    pub fn due(&self, time: u64) -> Option<u64> {
-        let slot = slot(self.hour, time)?;
-        (time < slot + CATCH_UP && self.slot != Some(slot)).then_some(slot)
+    /// Start of the day whose span `time` is in, unless a window this plan started is running.
+    pub fn day(&self, time: u64) -> Option<u64> {
+        let day = slot(self.hour, time).filter(|d| time < d + SPAN)?;
+        self.sent
+            .is_none_or(|sent| time >= sent + SHORTEST)
+            .then_some(day)
+    }
+    /// `tried`: when the account's last attempt (automatic or by hand) ended; only a reading
+    /// taken after it shows the window that attempt may have started.
+    pub fn step(
+        &self,
+        time: u64,
+        tried: Option<u64>,
+        reading: Option<&Reading>,
+        line: f64,
+    ) -> Step {
+        let Some(day) = self.day(time) else {
+            return Step::Rest;
+        };
+        let Some(reading) = reading.filter(|r| {
+            r.checked_at <= time
+                && time - r.checked_at <= FRESH
+                && tried.is_none_or(|t| r.checked_at >= t)
+        }) else {
+            return Step::Wait;
+        };
+        match reading.resets_at {
+            // A reset time already past when read means the window had ended.
+            Some(end) if end > reading.checked_at => {
+                if time >= end + SETTLE {
+                    Step::Query(end + SETTLE)
+                } else {
+                    Step::Rest
+                }
+            }
+            _ if reading.weekly.is_some_and(|w| w <= line) => Step::Hold,
+            _ => Step::Send(day),
+        }
+    }
+    /// When the next warm-up is expected: as the running window resets if a new one may start
+    /// then, otherwise at the next day's start. None while one is due now.
+    pub fn next(&self, time: u64, resets_at: Option<u64>) -> Option<u64> {
+        let after = resets_at.filter(|end| *end > time).unwrap_or(time);
+        let day = slot(self.hour, after)?;
+        if after < day + SPAN {
+            (after > time).then_some(after)
+        } else {
+            slot(self.hour, after + 86400)
+        }
     }
 }
 
@@ -62,7 +143,7 @@ pub fn slot(hour: u8, time: u64) -> Option<u64> {
 }
 
 /// Why an attempt failed. Only one that may have reached Claude uses up one of the attempts; the
-/// others are retried every few minutes until the catch-up period ends.
+/// others are retried every few minutes while the window stays empty.
 #[derive(Debug, PartialEq)]
 pub enum Failure {
     NotSent(&'static str),
@@ -72,10 +153,16 @@ pub type Sent = std::result::Result<(), Failure>;
 pub type Launch = fn(&Path, &Path, &str) -> Sent;
 #[derive(Default)]
 pub struct Runtime {
-    job: Option<(String, u64, JoinHandle<Sent>)>,
-    /// Failed attempts in an account's current slot and the earliest next try; memory only.
-    failures: HashMap<String, (u64, u8, u64)>,
-    /// Slots change at most hourly, so plans are looked at every `CHECK` seconds, not every tick.
+    /// The attempt running: its account, the day an automatic one belongs to (None by hand).
+    job: Option<(String, Option<u64>, JoinHandle<Sent>)>,
+    /// Accounts asked to warm up by hand, in order; memory only.
+    manual: Vec<String>,
+    /// An account's failed automatic attempts on the current empty window and the earliest
+    /// next try; memory only.
+    failures: HashMap<String, (u8, u64)>,
+    /// When each account's last attempt ended; memory only, like the readings it is compared to.
+    tried: HashMap<String, u64>,
+    /// Plans are looked at every `CHECK` seconds, not every tick.
     next_check: u64,
     #[cfg(test)]
     pub launch: Option<Launch>,
@@ -95,31 +182,61 @@ impl Runtime {
     }
     pub fn forget(&mut self, id: &str) {
         self.failures.remove(id);
+        self.tried.remove(id);
+        self.manual.retain(|m| m != id);
+    }
+    /// The window failures counted against has ended or started; the next empty one starts afresh.
+    pub fn clear_failures(&mut self, id: &str) {
+        self.failures.remove(id);
     }
     pub fn running(&self, id: &str) -> bool {
         self.job.as_ref().is_some_and(|job| job.0 == id)
     }
+    pub fn queued(&self, id: &str) -> bool {
+        self.manual.iter().any(|m| m == id)
+    }
+    pub fn tried(&self, id: &str) -> Option<u64> {
+        self.tried.get(id).copied()
+    }
+    /// One warm-up by hand, sent on the next tick the service admits it.
+    pub fn request(&mut self, id: &str) -> Result<()> {
+        if self.running(id) {
+            return Err("这个账号正在预热");
+        }
+        if !self.queued(id) {
+            self.manual.push(id.into());
+        }
+        self.recheck();
+        Ok(())
+    }
+    /// The account whose warm-up by hand goes next, if nothing is running.
+    pub fn next_manual(&self) -> Option<&str> {
+        self.manual
+            .first()
+            .filter(|_| self.job.is_none())
+            .map(String::as_str)
+    }
     /// Blocks until a running attempt ends, so its result can be recorded before the service
-    /// exits instead of the slot being sent again after a restart.
+    /// exits instead of the window being warmed again after a restart.
     pub fn wait(&self) {
         while self.job.as_ref().is_some_and(|job| !job.2.is_finished()) {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    pub fn ready(&self, id: &str, slot: u64, time: u64) -> bool {
-        self.job.is_none()
-            && self
-                .failures
-                .get(id)
-                .is_none_or(|f| f.0 != slot || time >= f.2)
+    pub fn ready(&self, id: &str, time: u64) -> bool {
+        self.job.is_none() && self.failures.get(id).is_none_or(|f| time >= f.1)
     }
+    /// `day`: the day an automatic attempt belongs to; None for one by hand.
     pub fn start(
         &mut self,
         id: &str,
-        slot: u64,
+        day: Option<u64>,
         prepared: Result<(PathBuf, String)>,
         dir: PathBuf,
     ) {
+        if day.is_none() {
+            self.manual.retain(|m| m != id);
+        }
         #[cfg(test)]
         let launch = self
             .launch
@@ -128,53 +245,53 @@ impl Runtime {
         let launch: Launch = run;
         self.job = Some((
             id.into(),
-            slot,
+            day,
             std::thread::spawn(move || {
                 let (binary, token) = prepared.map_err(Failure::NotSent)?;
                 launch(&binary, &dir, &token)
             }),
         ));
     }
-    /// A finished attempt: the account, the slot it settles (None while retries remain) and the
-    /// result to show.
+    /// A finished attempt: the account, the day an automatic one belongs to and the result to
+    /// show.
     pub fn poll(&mut self, time: u64) -> Option<(String, Option<u64>, Record)> {
         if !self.job.as_ref().is_some_and(|job| job.2.is_finished()) {
             return None;
         }
-        let (id, slot, job) = self.job.take()?;
+        let (id, day, job) = self.job.take()?;
         let result = job.join().unwrap_or(Err(Failure::Failed("预热进程中断")));
-        let used = match self.failures.get(&id) {
-            Some(f) if f.0 == slot => f.1,
-            _ => 0,
-        };
-        let (settled, ok, message) = match result {
-            Ok(()) => {
+        self.tried.insert(id.clone(), time);
+        let used = self.failures.get(&id).map_or(0, |f| f.0);
+        let (ok, message) = match (day, result) {
+            (None, Ok(())) => (true, "手动预热已发送".to_string()),
+            (None, Err(Failure::NotSent(error) | Failure::Failed(error))) => {
+                (false, format!("手动预热未完成：{error}"))
+            }
+            (Some(_), Ok(())) => {
                 self.failures.remove(&id);
-                (Some(slot), true, "已发送，5 小时窗口开始计时".to_string())
+                (true, "已发送，5 小时窗口开始计时".to_string())
             }
-            Err(Failure::NotSent(error)) => {
-                self.failures.insert(id.clone(), (slot, used, time + RETRY));
-                (None, false, format!("{error}；补发时间内每 5 分钟重试"))
+            (Some(_), Err(Failure::NotSent(error))) => {
+                self.failures.insert(id.clone(), (used, time + RETRY));
+                (false, format!("{error}；每 5 分钟重试"))
             }
-            Err(Failure::Failed(error)) => {
+            (Some(_), Err(Failure::Failed(error))) => {
                 let count = used + 1;
                 if count >= ATTEMPTS {
-                    self.failures.remove(&id);
+                    self.failures.insert(id.clone(), (0, time + SKIP));
                     (
-                        Some(slot),
                         false,
-                        format!("{error}；已试 {ATTEMPTS} 次，等下次预热"),
+                        format!("{error}；已试 {ATTEMPTS} 次，跳过这个 5 小时"),
                     )
                 } else {
-                    self.failures
-                        .insert(id.clone(), (slot, count, time + RETRY));
-                    (None, false, format!("{error}；5 分钟后重试"))
+                    self.failures.insert(id.clone(), (count, time + RETRY));
+                    (false, format!("{error}；5 分钟后重试"))
                 }
             }
         };
         Some((
             id,
-            settled,
+            day,
             Record {
                 at: time,
                 ok,
@@ -301,81 +418,275 @@ mod tests {
         unsafe { libc::localtime_r(&t, &mut tm) };
         (tm.tm_hour, tm.tm_min, tm.tm_sec)
     }
+    fn plan(hour: u8) -> Plan {
+        Plan {
+            hour,
+            slot: None,
+            sent: None,
+            last: None,
+        }
+    }
+    fn reading(checked_at: u64, resets_at: Option<u64>, weekly: f64) -> Reading {
+        Reading {
+            checked_at,
+            resets_at,
+            weekly: Some(weekly),
+        }
+    }
     #[test]
-    fn slot_is_the_latest_local_hour_mark_and_due_once_within_catch_up() {
+    fn slot_is_the_latest_local_hour_mark() {
         let time = 1_791_875_000;
         for hour in 0..24 {
             let start = slot(hour, time).unwrap();
             assert!(start <= time && time - start < 25 * 3600);
             assert_eq!(local(start), (i32::from(hour), 0, 0));
         }
-        let hour = local(time).0 as u8;
-        let start = slot(hour, time).unwrap();
-        let mut plan = Plan {
-            hour,
-            slot: None,
-            last: None,
-        };
-        assert_eq!(plan.due(time), Some(start));
-        assert_eq!(plan.due(start + CATCH_UP), None);
-        plan.slot = Some(start);
-        assert_eq!(plan.due(time), None);
-        // Tomorrow's mark is a new slot.
-        assert!(plan.due(start + 86400 + 60).is_some_and(|s| s > start));
     }
     #[test]
-    fn failures_retry_after_a_pause_and_give_up_on_the_slot() {
+    fn a_day_chains_four_windows_and_the_next_day_starts_on_time() {
+        let day = slot(7, 1_791_875_000).unwrap();
+        let mut plan = plan(7);
+        // A window starts at its first request rounded down to 10 minutes and lasts 5 hours; the
+        // usage reading taken every half minute shows its reset time while it runs.
+        let mut end: Option<u64> = None;
+        let mut sends = vec![];
+        let mut time = day + 15;
+        while time < day + 2 * 86400 {
+            let resets_at = end.filter(|e| *e > time);
+            if let Step::Send(of) =
+                plan.step(time, plan.sent, Some(&reading(time, resets_at, 50.0)), 2.0)
+            {
+                assert_eq!(of, slot(7, time).unwrap());
+                sends.push(time);
+                plan.sent = Some(time);
+                end = Some(time / 600 * 600 + 5 * 3600);
+            }
+            time += 30;
+        }
+        let next = slot(7, day + 86400 + 7200).unwrap();
+        assert_eq!(sends.len(), 8);
+        assert_eq!(sends[4], next + 15);
+        assert!(sends[3] / 600 * 600 + 5 * 3600 <= next);
+        assert!(sends.windows(2).all(|w| w[1] - w[0] >= 5 * 3600));
+        // Within a day each window starts as the one before it ends.
+        for i in [1, 2, 3, 5, 6, 7] {
+            assert_eq!(sends[i] / 600 * 600, sends[i - 1] / 600 * 600 + 5 * 3600);
+        }
+    }
+    #[test]
+    fn only_a_recent_reading_of_an_idle_window_above_the_line_sends() {
+        let day = slot(7, 1_791_875_000).unwrap();
+        let mut plan = plan(7);
+        let time = day + 3600;
+        let idle = reading(time - 10, None, 50.0);
+        assert_eq!(plan.step(time, None, Some(&idle), 2.0), Step::Send(day));
+        // Before the day's start, and after its span, nothing is sent.
+        assert_eq!(
+            plan.step(day - 60, None, Some(&reading(day - 70, None, 50.0)), 2.0),
+            Step::Rest
+        );
+        assert_eq!(
+            plan.step(
+                day + SPAN - 1,
+                None,
+                Some(&reading(day + SPAN - 5, None, 50.0)),
+                2.0
+            ),
+            Step::Send(day)
+        );
+        assert_eq!(
+            plan.step(
+                day + SPAN,
+                None,
+                Some(&reading(day + SPAN - 5, None, 50.0)),
+                2.0
+            ),
+            Step::Rest
+        );
+        // No reading, an old one, or one from before the last attempt decides nothing.
+        assert_eq!(plan.step(time, None, None, 2.0), Step::Wait);
+        assert_eq!(
+            plan.step(
+                time,
+                None,
+                Some(&reading(time - FRESH - 1, None, 50.0)),
+                2.0
+            ),
+            Step::Wait
+        );
+        assert_eq!(
+            plan.step(time, Some(time - 5), Some(&idle), 2.0),
+            Step::Wait
+        );
+        // A running window, started by the user or anyone, is left alone until a reading taken
+        // after its reset time.
+        let running = reading(time - 10, Some(time + 1800), 50.0);
+        assert_eq!(plan.step(time, None, Some(&running), 2.0), Step::Rest);
+        let late = time + 1800 + SETTLE;
+        let before = reading(late - 100, Some(time + 1800), 50.0);
+        assert_eq!(plan.step(late - 1, None, Some(&before), 2.0), Step::Rest);
+        assert_eq!(plan.step(late, None, Some(&before), 2.0), Step::Query(late));
+        assert_eq!(
+            plan.step(late + 5, None, Some(&reading(late + 2, None, 50.0)), 2.0),
+            Step::Send(day)
+        );
+        // A reset time already past when read is an ended window.
+        assert_eq!(
+            plan.step(
+                late + 5,
+                None,
+                Some(&reading(late + 2, Some(late), 50.0)),
+                2.0
+            ),
+            Step::Send(day)
+        );
+        // The seven-day quota at or below the line holds it back; no line still holds at 0.
+        assert_eq!(
+            plan.step(time, None, Some(&reading(time - 10, None, 2.0)), 2.0),
+            Step::Hold
+        );
+        assert_eq!(
+            plan.step(time, None, Some(&reading(time - 10, None, 2.5)), 2.0),
+            Step::Send(day)
+        );
+        assert_eq!(
+            plan.step(time, None, Some(&reading(time - 10, None, 0.0)), 0.0),
+            Step::Hold
+        );
+        // A window this plan started is not warmed again, even by a reading that misses it.
+        plan.sent = Some(time);
+        assert_eq!(
+            plan.step(
+                time + 600,
+                None,
+                Some(&reading(time + 590, None, 50.0)),
+                2.0
+            ),
+            Step::Rest
+        );
+        assert_eq!(
+            plan.step(
+                time + SHORTEST,
+                None,
+                Some(&reading(time + SHORTEST - 1, None, 50.0)),
+                2.0
+            ),
+            Step::Send(day)
+        );
+    }
+    #[test]
+    fn the_next_warmup_is_the_running_window_end_or_the_next_day_start() {
+        let day = slot(7, 1_791_875_000).unwrap();
+        let plan = plan(7);
+        let tomorrow = slot(7, day + 86400 + 7200).unwrap();
+        assert_eq!(
+            plan.next(day + 3600, Some(day + 5 * 3600)),
+            Some(day + 5 * 3600)
+        );
+        // Due now, or blocked: nothing to promise.
+        assert_eq!(plan.next(day + 3600, None), None);
+        assert_eq!(plan.next(day + 3600, Some(day + 1800)), None);
+        // A window ending after the span, and a time after it, wait for tomorrow.
+        assert_eq!(
+            plan.next(day + 16 * 3600, Some(day + 21 * 3600)),
+            Some(tomorrow)
+        );
+        assert_eq!(plan.next(day + 20 * 3600, None), Some(tomorrow));
+        assert_eq!(plan.next(day - 3600, None), Some(day));
+    }
+    #[test]
+    fn failures_retry_after_a_pause_and_skip_the_window() {
         let mut runtime = Runtime {
             launch: Some(|_, _, _| Err(Failure::Failed("synthetic failure"))),
             ..Default::default()
         };
-        let wait = |r: &mut Runtime, t| loop {
-            if let Some(done) = r.poll(t) {
-                break done;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
         let ok = || Ok((PathBuf::from("claude"), "SYNTHETIC".to_string()));
+        let mut time = 1000;
         for attempt in 1..=ATTEMPTS {
-            let time = 1000 + u64::from(attempt) * 2 * RETRY;
             if attempt == 2 {
                 // Something that never reached Claude is retried without using an attempt.
                 runtime.launch = Some(|_, _, _| Err(Failure::NotSent("synthetic offline")));
-                runtime.start("a", 7, ok(), PathBuf::new());
-                let (_, settled, record) = wait(&mut runtime, time - RETRY);
-                assert_eq!(settled, None);
+                runtime.start("a", Some(7), ok(), PathBuf::new());
+                let (_, day, record) = finish(&mut runtime, time);
+                assert_eq!(day, Some(7));
                 assert!(record.message.contains("每 5 分钟重试"));
+                time += RETRY;
                 runtime.launch = Some(|_, _, _| Err(Failure::Failed("synthetic failure")));
             }
-            assert!(runtime.ready("a", 7, time));
-            runtime.start("a", 7, ok(), PathBuf::new());
-            assert!(runtime.running("a") && !runtime.ready("b", 7, time));
-            let (id, settled, record) = wait(&mut runtime, time);
+            assert!(runtime.ready("a", time));
+            runtime.start("a", Some(7), ok(), PathBuf::new());
+            assert!(runtime.running("a") && !runtime.ready("b", time));
+            let (id, _, record) = finish(&mut runtime, time);
             assert_eq!(id, "a");
             assert!(!record.ok);
+            assert_eq!(runtime.tried("a"), Some(time));
             if attempt < ATTEMPTS {
-                assert_eq!(settled, None);
-                assert!(!runtime.ready("a", 7, time + RETRY - 1));
-                assert!(runtime.ready("a", 8, time));
+                assert!(record.message.ends_with("5 分钟后重试"));
+                assert!(!runtime.ready("a", time + RETRY - 1));
+                assert!(runtime.ready("b", time));
             } else {
-                assert_eq!(settled, Some(7));
-                assert!(record.message.contains("等下次预热"));
+                assert!(record.message.contains("跳过这个 5 小时"));
+                assert!(!runtime.ready("a", time + SKIP - 1));
+                assert!(runtime.ready("a", time + SKIP));
             }
+            time += RETRY;
         }
+        // A window that starts or ends in between starts the count afresh.
+        runtime.clear_failures("a");
+        assert!(runtime.ready("a", time));
         runtime.launch = Some(|_, _, token| {
             assert_eq!(token, "SYNTHETIC");
             Ok(())
         });
-        runtime.start("a", 8, ok(), PathBuf::new());
-        let (_, settled, record) = wait(&mut runtime, 5000);
-        assert_eq!(settled, Some(8));
+        runtime.start("a", Some(8), ok(), PathBuf::new());
+        let (_, day, record) = finish(&mut runtime, time);
+        assert_eq!(day, Some(8));
         assert!(record.ok);
         // Preparation errors reach the same retry path without launching anything.
         runtime.launch = Some(|_, _, _| panic!("must not launch"));
-        runtime.start("a", 9, Err("Access 已到期"), PathBuf::new());
-        let (_, settled, record) = wait(&mut runtime, 6000);
-        assert_eq!(settled, None);
+        runtime.start("a", Some(9), Err("Access 已到期"), PathBuf::new());
+        let (_, _, record) = finish(&mut runtime, time);
         assert!(record.message.starts_with("Access 已到期"));
+    }
+    #[test]
+    fn a_warmup_by_hand_is_sent_once_in_turn_and_never_retried() {
+        let mut runtime = Runtime {
+            launch: Some(|_, _, _| Err(Failure::Failed("synthetic failure"))),
+            ..Default::default()
+        };
+        let ok = || Ok((PathBuf::from("claude"), "SYNTHETIC".to_string()));
+        runtime.start("b", Some(7), ok(), PathBuf::new());
+        // Asked for while another account sends: waits its turn, once however often asked.
+        runtime.request("a").unwrap();
+        runtime.request("a").unwrap();
+        assert!(runtime.queued("a") && runtime.next_manual().is_none());
+        finish(&mut runtime, 1000);
+        assert_eq!(runtime.next_manual(), Some("a"));
+        runtime.start("a", None, ok(), PathBuf::new());
+        assert!(runtime.running("a") && !runtime.queued("a"));
+        assert_eq!(runtime.request("a"), Err("这个账号正在预热"));
+        let (id, day, record) = finish(&mut runtime, 1100);
+        assert_eq!((id.as_str(), day), ("a", None));
+        assert_eq!(record.message, "手动预热未完成：synthetic failure");
+        assert_eq!(runtime.tried("a"), Some(1100));
+        // A failure by hand neither counts against automatic attempts nor schedules a retry.
+        assert!(runtime.ready("a", 1100) && runtime.next_manual().is_none());
+        runtime.launch = Some(|_, _, _| Ok(()));
+        runtime.request("a").unwrap();
+        runtime.start("a", None, ok(), PathBuf::new());
+        let (_, _, record) = finish(&mut runtime, 1200);
+        assert!(record.ok && record.message == "手动预热已发送");
+        runtime.request("a").unwrap();
+        runtime.forget("a");
+        assert!(!runtime.queued("a") && runtime.tried("a").is_none());
+    }
+    fn finish(runtime: &mut Runtime, time: u64) -> (String, Option<u64>, Record) {
+        loop {
+            if let Some(done) = runtime.poll(time) {
+                break done;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     #[test]
     fn cli_gets_the_token_on_fd_3_with_a_cleared_isolated_environment() {

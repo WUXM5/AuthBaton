@@ -175,12 +175,12 @@ private struct HeroCard: View {
                             if let warmup = current.warmup, warmup.enabled {
                                 HStack(spacing: 5) {
                                     Icon(.sun, size: 11, color: Palette.ink2)
-                                    Text(String(format: "每天 %02d:00 预热", warmup.hour))
+                                    Text(String(format: "每天 %02d:00 起预热", warmup.hour))
                                 }
                                 .font(.system(size: 11)).foregroundStyle(Palette.ink2)
                                 .padding(.horizontal, 9).frame(height: 20)
                                 .background(Palette.chip, in: Capsule())
-                                .help("到点发一条短消息，让 5 小时窗口提前开始计时" + (warmup.last.map { "；\(When.text($0.at)) \($0.message)" } ?? ""))
+                                .help("每个 5 小时窗口结束后发一条短消息，接上下一个窗口" + (warmup.last.map { "；\(When.text($0.at)) \($0.message)" } ?? ""))
                             }
                         }
                         .padding(.top, 19)

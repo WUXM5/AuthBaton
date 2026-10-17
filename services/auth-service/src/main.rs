@@ -221,6 +221,9 @@ fn response(
                         params.enabled.ok_or("缺少预热开关")?,
                         params.hour,
                     )?,
+                    "accounts.warmup_now" => {
+                        manager.warmup_now(params.id.as_deref().ok_or("缺少账号标识")?)?
+                    }
                     "accounts.reset_quota" => {
                         let id = params.id.as_deref().ok_or("缺少账号标识")?;
                         let reset_id = params.reset_id.as_deref().ok_or("缺少重置操作标识")?;

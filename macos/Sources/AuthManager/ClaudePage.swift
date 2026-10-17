@@ -248,21 +248,24 @@ private struct ClaudeSide: View {
 
     private var warmup: some View {
         let plan = account.warmup
+        let sending = plan?.running == true
         let save: (Bool, Int) -> Void = { enabled, hour in
             Task { await service.accountOperation("accounts.warmup", params: LoginParams(id: account.id, enabled: enabled, hour: hour)) }
         }
+        // Rounded to the minute: a window resets a second before its 10-minute mark.
+        let next = plan.flatMap { $0.enabled ? $0.next : nil }.map { Date(timeIntervalSince1970: ($0 / 60).rounded() * 60) }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 Icon(.sun, size: 15, color: Palette.ink2)
                 Text("5 小时窗口预热").font(.system(size: 13, weight: .semibold))
-                    .help("到点用最小的模型发一条短消息，让 5 小时窗口提前开始计时。例：10 点开工就设 6 点。电脑睡眠错过时，在设定时间后 5 小时内醒来会补发，再晚就等第二天。")
+                    .help("从每天设定的时间起，5 小时窗口没有重置时间时，用最小的模型发一条短消息，让窗口开始计时；窗口一结束就接着发，一天最多 4 个窗口，最后一个在第二天设定时间前结束。7 天额度到了见底线就不发。例：10 点开工就设 6 点。")
                 Spacer(minLength: 7)
                 Toggle("5 小时窗口预热", isOn: Binding(get: { plan?.enabled == true }, set: { save($0, plan?.hour ?? 6) }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
             if let plan, plan.enabled {
                 HStack(spacing: 9) {
-                    Text("每天几点").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                    Text("每天从几点开始").font(.system(size: 12)).foregroundStyle(Palette.ink2)
                     Spacer()
                     Menu {
                         Picker("预热时间", selection: Binding(get: { plan.hour }, set: { save(true, $0) })) {
@@ -281,25 +284,37 @@ private struct ClaudeSide: View {
                     .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 }
                 .padding(.top, 10)
-                Group {
-                    if plan.running {
-                        HStack(spacing: 5) {
-                            ProgressView().controlSize(.mini)
-                            Text("正在发送…")
-                        }
-                    } else if let last = plan.last {
+            } else {
+                Text("到点发一条短消息，窗口结束后接着发。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    .padding(.top, 5)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                if sending {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text("正在发送…")
+                    }
+                } else {
+                    if let last = plan?.last {
                         Text("\(When.text(last.at)) · \(last.message)")
                             .foregroundStyle(last.ok ? Palette.ink3 : Palette.attentionText)
                             .help(When.exact(last.at))
                     }
+                    if let next {
+                        Text("下次约 \(When.text(next))").help(When.exact(next))
+                    }
                 }
-                .font(.system(size: 11)).foregroundStyle(Palette.ink3)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 7)
-            } else {
-                Text("到点发一条短消息，让 5 小时窗口提前开始计时。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
-                    .padding(.top, 5)
             }
+            .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 7)
+            Button(sending ? "预热中" : "立即预热") {
+                Task { await service.accountOperation("accounts.warmup_now", params: LoginParams(id: account.id)) }
+            }
+            .buttonStyle(.pill(.secondary))
+            .help("现在发一条，不看窗口状态，失败不重试")
+            .disabled(sending)
+            .padding(.top, 12)
         }
         .disabled(service.accountBusy)
         .padding(.horizontal, 17).padding(.vertical, 15)
