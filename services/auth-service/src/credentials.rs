@@ -755,6 +755,31 @@ impl NativeStore {
         }
         Ok(Some(actual))
     }
+    /// Puts `identity` back beside a Claude credential the shared config no longer describes:
+    /// a Claude desktop Code session writes its own account there. The caller has established
+    /// whose the credential is and holds the config lock; a credential that changed meanwhile is
+    /// left for the next check.
+    pub fn restore_claude_identity(
+        &self,
+        platform: &Platform,
+        credential: &Value,
+        identity: &Value,
+    ) -> Result<Bundle> {
+        if self.read_bundle(platform)?.credential != *credential {
+            return Err("默认登录在核对期间发生变化；下次检查再核对");
+        }
+        let config = read_json(&self.config)?.ok_or("Claude 身份配置不存在")?;
+        write_json(&self.config, &merge_claude_config(config, identity)?)?;
+        let target = Bundle {
+            provider: self.provider.clone(),
+            credential: credential.clone(),
+            identity: identity.clone(),
+        };
+        if self.read(platform)? != target {
+            return Err("身份记录写回后校验失败");
+        }
+        Ok(target)
+    }
     pub fn remove_staging(&self, platform: &Platform) -> Result<()> {
         if self.provider == "claude" {
             platform.native_delete_key(&self.service, &self.account)?;
