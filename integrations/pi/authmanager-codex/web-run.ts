@@ -225,7 +225,8 @@ export function registerWebRun(pi: ExtensionAPI, baseUrl: string, provides: (pro
 			const body = await response.json() as { output: string; results?: Result[] };
 			return {
 				content: [{ type: "text", text: body.output }],
-				details: { results: (body.results ?? []).map(({ title, url }) => ({ title, url })) },
+				// A page that cannot be opened is listed as one result without a URL ("Internal Error").
+				details: { results: (body.results ?? []).flatMap(({ title, url }) => url ? [{ title, url }] : []) },
 			};
 		},
 		renderCall(args, theme) {
@@ -237,6 +238,11 @@ export function registerWebRun(pi: ExtensionAPI, baseUrl: string, provides: (pro
 			if (isPartial) return new Text(theme.fg("dim", "Searching..."), 0, 0);
 			if (context.isError) return new Text(theme.fg("error", result.content.map((block) => block.type === "text" ? block.text : "").join("\n")), 0, 0);
 			const results = (result.details as { results: Result[] }).results;
+			if (results.length === 0) {
+				// Weather, time and the like, and pages that cannot be opened, come back as text only.
+				const text = result.content.map((block) => block.type === "text" ? block.text : "").join("\n").replace(/[^]*/g, "").trim();
+				return new Text(theme.fg("dim", expanded ? text : text.split("\n")[0]), 0, 0);
+			}
 			if (!expanded) return new Text(theme.fg("dim", `${results.length} result${results.length === 1 ? "" : "s"}`), 0, 0);
 			return new Text(results.map((item) => `${item.title ?? ""} ${theme.fg("dim", item.url ?? "")}`).join("\n"), 0, 0);
 		},

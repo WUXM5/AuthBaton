@@ -250,7 +250,7 @@ test("web_run posts the commands to Codex's standalone search with the model's o
 	const jwt = (id: string): string => `e30.${Buffer.from(JSON.stringify({ ...claims, sub: id })).toString("base64url")}.synthetic`;
 	f.client.access = async (id: string) => { f.client.accessCalls.push(id); return { state: "ready", account_id: id, label: id, access_token: jwt(id), expires_at: 0 }; };
 	const requests: { url: string; init: any }[] = [];
-	let reply = (): Response => Response.json({ encrypted_output: "x", output: "Result text citeturn0search0", results: [{ type: "text_result", ref_id: "turn0search0", title: "Title", url: "https://example.test/a", snippet: "s" }] });
+	let reply = (): Response => Response.json({ encrypted_output: "x", output: "Result text citeturn0search0", results: [{ type: "text_result", ref_id: "turn0search0", title: "Title", url: "https://example.test/a", snippet: "s" }, { type: "text_result", ref_id: "turn0view0", title: "Internal Error" }] });
 	t.mock.method(globalThis, "fetch", async (url: string, init: any) => { requests.push({ url, init }); return reply(); });
 	const text = (role: string, value: string, extra: object[] = []): object => ({ type: "message", message: { role, content: role === "user" ? value : [{ type: "text", text: value }, ...extra] } });
 	const branch = [text("user", "q0"), text("assistant", "a0"), text("user", "q1"), { type: "custom" }, text("assistant", "a1", [{ type: "toolCall" }]), text("user", "q2")];
@@ -288,4 +288,8 @@ test("web_run draws its commands and a short result like pi's own tools", async 
 	assert.equal(draw(tool.renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), "2 results");
 	assert.equal(draw(tool.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false })), "One https://example.test/1\nTwo https://example.test/2");
 	assert.equal(draw(tool.renderResult({ content: [{ type: "text", text: "web_run failed: HTTP 429" }] }, { expanded: false, isPartial: false }, theme, { isError: true })), "web_run failed: HTTP 429");
+	// Weather, time and failed opens list no result with a URL; their text is shown without citation marks.
+	const weather = { content: [{ type: "text", text: "\ue200cite\ue202turn0forecast0\ue201 Weather for Shanghai:\nCurrent Conditions: Cloudy" }], details: { results: [] } };
+	assert.equal(draw(tool.renderResult(weather, { expanded: false, isPartial: false }, theme, { isError: false })), "Weather for Shanghai:");
+	assert.equal(draw(tool.renderResult(weather, { expanded: true, isPartial: false }, theme, { isError: false })), "Weather for Shanghai:\nCurrent Conditions: Cloudy");
 });
