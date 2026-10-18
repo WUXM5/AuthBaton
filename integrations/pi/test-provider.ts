@@ -4,7 +4,6 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { zstdDecompressSync } from "node:zlib";
 import { BrokerClient, type Access, type Account, type Directory } from "./authmanager-codex/client.ts";
 
 // Exercise the installed pi runtime with isolated metadata and an in-memory
@@ -13,7 +12,7 @@ const piRoot = join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).tr
 const aiRoot = `${piRoot}/node_modules/@earendil-works/pi-ai/dist`;
 const root = await mkdtemp(join(tmpdir(), "authmanager-pi-provider-test-"));
 after(async () => { await rm(root, { recursive: true, force: true }); });
-for (const file of ["index.ts", "client.ts", "session.ts", "names.ts"]) {
+for (const file of ["index.ts", "client.ts", "session.ts", "names.ts", "web-run.ts"]) {
 	await cp(new URL(`./authmanager-codex/${file}`, import.meta.url), join(root, file));
 }
 await writeFile(join(root, "bindings.json"), "{}\n");
@@ -21,6 +20,8 @@ const { createJiti } = await import(`${piRoot}/node_modules/jiti/lib/jiti.mjs`);
 const jiti = createJiti(import.meta.url, { fsCache: false, alias: {
 	"@earendil-works/pi-ai/providers/all": `${aiRoot}/providers/all.js`,
 	"@earendil-works/pi-ai": `${aiRoot}/index.js`,
+	"@earendil-works/pi-tui": `${piRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`,
+	typebox: `${piRoot}/node_modules/typebox/build/index.mjs`,
 } });
 const { registerAuthManager } = await jiti.import(join(root, "index.ts")) as any;
 const { ProviderNames } = await jiti.import(join(root, "names.ts")) as any;
@@ -30,7 +31,6 @@ const { RuntimeCredentials } = await import(`${piRoot}/dist/core/runtime-credent
 const { InMemoryCodingAgentModelsStore } = await import(`${piRoot}/dist/core/models-store.js`);
 const { InMemoryCredentialStore } = await import(`${aiRoot}/auth/credential-store.js`);
 const { refreshModelCatalogs } = await import(`${piRoot}/dist/modes/interactive/model-catalog-refresh.js`);
-const { normalizeContext } = await import(`${aiRoot}/index.js`);
 
 const DEFAULT = "authmanager-codex";
 const A = "00000000-0000-4000-8000-000000000001";
@@ -79,7 +79,10 @@ async function fixture(client = new SyntheticBroker(), namesDirectory = join(roo
 	// auth checks, auth.json, models.json, or remote catalog can be consulted.
 	const runtime = new ModelRuntime(new RuntimeCredentials(new InMemoryCredentialStore()),
 		await ModelConfig.load(undefined), undefined, new InMemoryCodingAgentModelsStore(), [], false);
-	const events = new Map<string, Handler>();
+	const events = new Map<string, Handler[]>();
+	const tools = new Map<string, any>();
+	let active: string[] = ["read"];
+	const activeChanges: string[][] = [];
 	const commands = new Map<string, { handler: Handler }>();
 	const notices: { message: string; type: string }[] = [];
 	const context = { ui: { setStatus(): void {}, notify(message: string, type: string): void { notices.push({ message, type }); } } };
@@ -92,15 +95,19 @@ async function fixture(client = new SyntheticBroker(), namesDirectory = join(roo
 	await registerAuthManager({
 		registerProvider: (provider: any): void => runtime.registerNativeProvider(provider),
 		unregisterProvider: (id: string): void => runtime.unregisterProvider(id),
-		on: (event: string, handler: Handler): void => { events.set(event, handler); },
+		on: (event: string, handler: Handler): void => { events.set(event, [...(events.get(event) ?? []), handler]); },
+		registerTool: (tool: any): void => { tools.set(tool.name, tool); },
+		getActiveTools: (): string[] => [...active],
+		setActiveTools: (names: string[]): void => { active = [...names]; activeChanges.push(active); },
 		registerCommand: (name: string, command: { handler: Handler }): void => { commands.set(name, command); },
 	}, client, new ProviderNames(namesDirectory));
 	await refresh();
 	return {
-		client, runtime, notices, namesDirectory, refresh,
+		client, runtime, notices, namesDirectory, refresh, tools, activeChanges,
+		active: (): string[] => active,
 		modelCount: runtime.getModels(DEFAULT).length,
 		available: (id: string): number => runtime.getAvailableSnapshot().filter((model: any) => model.provider === id).length,
-		emit: async (event: string): Promise<void> => { await events.get(event)!({}, context); },
+		emit: async (event: string, payload = {}, extra = {}): Promise<void> => { for (const handler of events.get(event)!) await handler(payload, { ...context, ...extra }); },
 		update: async (): Promise<void> => { await commands.get("authmanager")!.handler("", context); await refresh(); },
 	};
 }
@@ -225,30 +232,60 @@ test("default account stays pinned during a run and follows the user's switch on
 	assert.deepEqual(f.client.accessCalls, [A, A, A, B, C]);
 });
 
-test("Codex requests offer Codex's own web search after pi's payload hook", async () => {
+test("web_run is active only while an AuthManager model is selected", async () => {
 	const f = await fixture();
-	const model = f.runtime.getModels(DEFAULT)[0];
+	assert.equal(f.tools.get("web_run").defaultActive, false);
+	await f.emit("session_start", {}, { model: { provider: DEFAULT } });
+	assert.deepEqual(f.active(), ["read", "web_run"]);
+	await f.emit("model_select", { model: { provider: readable.get(B) } });
+	await f.emit("model_select", { model: { provider: "openai-codex" } });
+	assert.deepEqual(f.active(), ["read"]);
+	await f.emit("session_start", {}, { model: undefined });
+	assert.deepEqual(f.activeChanges, [["read", "web_run"], ["read"]], "unchanged selections leave pi's tools alone");
+});
+
+test("web_run posts the commands to Codex's standalone search with the model's own account", async (t) => {
+	const f = await fixture();
 	const claims = { "https://api.openai.com/auth": { chatgpt_account_id: "workspace", chatgpt_user_id: "user" } };
-	const apiKey = `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic`;
-	const bodies: any[] = [];
-	// The synthetic fetch records the request and refuses it, so nothing reaches a network.
-	const fetch = async (_url: unknown, init: { body: Uint8Array | string }): Promise<Response> => {
-		bodies.push(JSON.parse(typeof init.body === "string" ? init.body : zstdDecompressSync(init.body).toString("utf8")));
-		return new Response("synthetic", { status: 400 });
-	};
-	const messages = [{ role: "user", content: "hi", timestamp: 0 }];
-	const read = { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } };
-	for (const tools of [[read], []]) {
-		for (const method of ["stream", "streamSimple"]) {
-			await f.runtime.getProvider(DEFAULT)[method](model, normalizeContext({ systemPrompt: "synthetic", tools, messages }), {
-				apiKey, transport: "sse", fetch, maxRetries: 0, onPayload: (payload: any) => ({ ...payload, hooked: true }),
-			}).result();
-		}
-	}
-	assert.deepEqual(bodies.map((body) => body.tools.map((tool: any) => tool.name ?? tool.type)),
-		[["read", "web_search"], ["read", "web_search"], ["web_search"], ["web_search"]]);
-	for (const body of bodies) {
-		assert.equal(body.hooked, true, "pi's own payload hook still runs");
-		assert.deepEqual(body.tools.at(-1), { type: "web_search", external_web_access: true });
-	}
+	const jwt = (id: string): string => `e30.${Buffer.from(JSON.stringify({ ...claims, sub: id })).toString("base64url")}.synthetic`;
+	f.client.access = async (id: string) => { f.client.accessCalls.push(id); return { state: "ready", account_id: id, label: id, access_token: jwt(id), expires_at: 0 }; };
+	const requests: { url: string; init: any }[] = [];
+	let reply = (): Response => Response.json({ encrypted_output: "x", output: "Result text citeturn0search0", results: [{ type: "text_result", ref_id: "turn0search0", title: "Title", url: "https://example.test/a", snippet: "s" }] });
+	t.mock.method(globalThis, "fetch", async (url: string, init: any) => { requests.push({ url, init }); return reply(); });
+	const text = (role: string, value: string, extra: object[] = []): object => ({ type: "message", message: { role, content: role === "user" ? value : [{ type: "text", text: value }, ...extra] } });
+	const branch = [text("user", "q0"), text("assistant", "a0"), text("user", "q1"), { type: "custom" }, text("assistant", "a1", [{ type: "toolCall" }]), text("user", "q2")];
+	const ctx = (provider: string) => ({ model: { provider, id: "gpt-6.1-sol" }, sessionManager: { getSessionId: () => "session-1", getBranch: () => branch } });
+	const params = { search_query: [{ q: "DeepSeek news" }], open: [{ ref_id: "turn0search0" }] };
+	const result = await f.tools.get("web_run").execute("call-1", params, undefined, undefined, ctx(readable.get(B)!));
+	assert.deepEqual(result, { content: [{ type: "text", text: "Result text citeturn0search0" }], details: { results: [{ title: "Title", url: "https://example.test/a" }] } });
+	assert.equal(requests[0].url, "https://chatgpt.com/backend-api/codex/alpha/search");
+	assert.deepEqual(requests[0].init.headers, { authorization: `Bearer ${jwt(B)}`, "chatgpt-account-id": "workspace", originator: "pi", "content-type": "application/json" });
+	assert.deepEqual(JSON.parse(requests[0].init.body), {
+		id: "session-1", model: "gpt-6.1-sol", commands: params, max_output_tokens: 10000,
+		settings: { allowed_callers: ["direct"], external_web_access: true },
+		input: [
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "q1" }] },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "a1" }] },
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "q2" }] },
+		],
+	});
+	await f.tools.get("web_run").execute("call-2", params, undefined, undefined, ctx(DEFAULT));
+	assert.deepEqual(f.client.accessCalls, [B, A], "the default provider searches with AuthManager's current account");
+	await assert.rejects(f.tools.get("web_run").execute("call-3", params, undefined, undefined, ctx("openai-codex")), /only works with AuthManager/);
+	reply = () => new Response("rate limited", { status: 429 });
+	await assert.rejects(f.tools.get("web_run").execute("call-4", params, undefined, undefined, ctx(DEFAULT)), /HTTP 429 rate limited/);
+	assert.equal(requests.length, 3);
+});
+
+test("web_run draws its commands and a short result like pi's own tools", async () => {
+	const f = await fixture();
+	const tool = f.tools.get("web_run");
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	const draw = (component: any): string => component.render(120).map((line: string) => line.trimEnd()).join("\n").trim();
+	assert.equal(draw(tool.renderCall({ search_query: [{ q: "a" }, { q: "b" }], open: [{ ref_id: "turn0search0" }], response_length: "short" }, theme, {})),
+		"web_run a · b · open turn0search0");
+	const result = { content: [{ type: "text", text: "..." }], details: { results: [{ title: "One", url: "https://example.test/1" }, { title: "Two", url: "https://example.test/2" }] } };
+	assert.equal(draw(tool.renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), "2 results");
+	assert.equal(draw(tool.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false })), "One https://example.test/1\nTwo https://example.test/2");
+	assert.equal(draw(tool.renderResult({ content: [{ type: "text", text: "web_run failed: HTTP 429" }] }, { expanded: false, isPartial: false }, theme, { isError: true })), "web_run failed: HTTP 429");
 });

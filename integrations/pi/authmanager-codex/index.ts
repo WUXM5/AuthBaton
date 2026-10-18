@@ -6,18 +6,9 @@ import { fileURLToPath } from "node:url";
 import { BrokerClient, RunBinding, type Directory } from "./client.ts";
 import { accountSession } from "./session.ts";
 import { DEFAULT_PROVIDER as DEFAULT, ProviderNames } from "./names.ts";
+import { registerWebRun } from "./web-run.ts";
 
 const blocked = new Set(["reauth", "attention", "unsaved", "uncertain", "pending"]);
-
-// pi-ai 1.3.0's Codex adapter declares only function tools, so Codex's own web search
-// (`web_search = "live"`) is added after pi's payload hook. The model cites sources in its
-// text; pi-ai drops the search items, and transcripts without them replay fine.
-function withWebSearch<T extends { onPayload?: (payload: unknown, model: never) => unknown }>(options?: T): T {
-	return { ...options, onPayload: async (payload: unknown, model: never) => {
-		const body = ((await options?.onPayload?.(payload, model)) ?? payload) as { tools?: unknown[] };
-		return { ...body, tools: [...(body.tools ?? []), { type: "web_search", external_web_access: true }] };
-	} } as T;
-}
 
 export default async function register(pi: ExtensionAPI): Promise<void> {
 	await registerAuthManager(pi, new BrokerClient(), new ProviderNames(fileURLToPath(new URL("./provider-names", import.meta.url))));
@@ -27,7 +18,8 @@ export async function registerAuthManager(pi: ExtensionAPI, client: BrokerClient
 	const codex = builtinProviders().find((provider) => provider.id === "openai-codex");
 	if (!codex) throw new Error("AuthManager 需要 pi 内置的 Codex provider");
 	const binding = new RunBinding(client);
-	const registered = new Set<string>();
+	// Provider id → its AuthManager account (none: the current one).
+	const registered = new Map<string, string | undefined>();
 	// pi checks every provider together, and repeatedly. One broker connection per check
 	// overflowed the socket's accept queue (ECONNREFUSED → "No API key found"), so checks
 	// that overlap share the directory request already in flight.
@@ -66,17 +58,17 @@ export async function registerAuthManager(pi: ExtensionAPI, client: BrokerClient
 			models: codex.getModels().map((model) => ({ ...model, provider: id })),
 			filterModels: listed ? undefined : () => [],
 			api: {
-				stream: (model, context, options) => codex.stream(model, context, withWebSearch(accountSession(options))),
-				streamSimple: (model, context, options) => codex.streamSimple(model, context, withWebSearch(accountSession(options))),
+				stream: (model, context, options) => codex.stream(model, context, accountSession(options)),
+				streamSimple: (model, context, options) => codex.streamSimple(model, context, accountSession(options)),
 			},
 		}));
-		registered.add(id);
+		registered.set(id, accountId);
 	};
 	const update = async (): Promise<Directory> => {
 		const directory = await client.accounts();
 		const displayIDs = names.resolve(directory.accounts, legacy);
 		const wanted = new Set([DEFAULT, ...Object.keys(legacy), ...displayIDs.values(), ...directory.accounts.map((a) => `${DEFAULT}-${a.id}`)]);
-		for (const id of registered) if (!wanted.has(id)) { pi.unregisterProvider(id); registered.delete(id); }
+		for (const id of registered.keys()) if (!wanted.has(id)) { pi.unregisterProvider(id); registered.delete(id); }
 		for (const account of directory.accounts) {
 			add(displayIDs.get(account.id)!, account.label, account.id);
 			add(`${DEFAULT}-${account.id}`, account.label, account.id, false);
@@ -87,6 +79,8 @@ export async function registerAuthManager(pi: ExtensionAPI, client: BrokerClient
 	for (const [id, accountId] of Object.entries(legacy)) add(id, `Codex · ${id.endsWith("luma") ? "Luma" : "Personal"}（AuthManager）`, accountId);
 	// Offline startup must leave unrelated providers usable. Access requests fail explicitly.
 	try { await update(); } catch { /* /authmanager reconnects without OAuth login. */ }
+	registerWebRun(pi, codex.baseUrl, (provider) => registered.has(provider),
+		async (provider, signal) => (await binding.access(registered.get(provider), signal)).access_token);
 	pi.on("before_agent_start", () => { binding.begin(); });
 	pi.on("agent_settled", () => { binding.end(); });
 	pi.on("session_shutdown", () => { binding.end(); });
