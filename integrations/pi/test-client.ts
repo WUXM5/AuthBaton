@@ -99,6 +99,8 @@ test("real pi auth resolution works without stored OAuth and never registers a r
 	const jiti = createJiti(import.meta.url, { fsCache: false, alias: {
 		"@earendil-works/pi-ai/providers/all": `${piRoot}/node_modules/@earendil-works/pi-ai/dist/providers/all.js`,
 		"@earendil-works/pi-ai": `${piRoot}/node_modules/@earendil-works/pi-ai/dist/index.js`,
+		"@earendil-works/pi-tui": `${piRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`,
+		typebox: `${piRoot}/node_modules/typebox/build/index.mjs`,
 	} });
 	const { registerAuthManager } = await jiti.import(new URL("./authmanager-codex/index.ts", import.meta.url).href) as any;
 	const { createModels } = await import(`${piRoot}/node_modules/@earendil-works/pi-ai/dist/models.js`);
@@ -109,7 +111,7 @@ test("real pi auth resolution works without stored OAuth and never registers a r
 		accessCalls++; return { result: token("a") };
 	});
 	try {
-		await registerAuthManager({ registerProvider: (p: any) => models.setProvider(p), unregisterProvider: (id: string) => models.deleteProvider(id), on: (name: string, callback: any) => events.set(name, callback), registerCommand: () => {} }, f.client);
+		await registerAuthManager({ registerProvider: (p: any) => models.setProvider(p), unregisterProvider: (id: string) => models.deleteProvider(id), on: (name: string, callback: any) => events.set(name, callback), registerCommand: () => {}, registerTool: () => {} }, f.client);
 		assert.equal(models.getProvider("authmanager-codex").auth.oauth, undefined);
 		assert.ok((await models.getAvailable("authmanager-codex")).length > 0);
 		assert.equal(accessCalls, 0, "model discovery must not fetch credentials or renew");

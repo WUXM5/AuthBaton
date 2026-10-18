@@ -20,7 +20,7 @@ The interface is in Chinese.
 - **Switching and resets**: each account has a low line and an order (reset first, switch first, reset only, switch only). When an account reaches its line, AuthBaton acts automatically and keeps a record. Off by default.
 - **Codex desktop (experimental)**: connects to the official desktop app through a local debugging port and switches accounts without quitting it. Running sessions can be paused and continued after the switch.
 - **Claude**: switches accounts without quitting the client; running sessions pick up the change within about 30 seconds. Optional 5-hour window warm-up: each day at a set hour, one Haiku message is sent through the official CLI. Off by default.
-- **Integrations**: the pi extension takes access tokens per account. The Claude Code plugin reports quota, and a turn cut off by the quota limit resumes automatically after the switch.
+- **Integrations**: the pi extension takes access tokens per account and gives Codex models Codex's own web search (`web_run`). The Claude Code plugin reports quota, and a turn cut off by the quota limit resumes automatically after the switch.
 - **Personal cloud (optional)**: a Worker deployed to your own Cloudflare account renews tokens centrally, so several devices share the same accounts. See [`cloud/`](cloud/README.md).
 
 ## Security boundaries

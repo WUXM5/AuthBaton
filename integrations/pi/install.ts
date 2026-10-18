@@ -55,12 +55,12 @@ try {
 		await mkdir(backup, { recursive: true, mode: 0o700 });
 		await writeFile(join(backup, "auth.json"), original, { mode: 0o600, flag: "wx" });
 		await mkdir(extension, { recursive: true, mode: 0o700 });
-		for (const file of ["index.ts", "client.ts", "session.ts", "names.ts", "bindings.json"]) {
+		for (const file of ["index.ts", "client.ts", "session.ts", "names.ts", "web-run.ts", "bindings.json"]) {
 			try { await copyFile(join(extension, file), join(backup, file)); }
 			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		}
 		// Prepare the replacement before retiring the old extension or credential entries.
-		for (const file of ["index.ts", "client.ts", "session.ts", "names.ts"]) await copyFile(join(source, file), join(extension, file));
+		for (const file of ["index.ts", "client.ts", "session.ts", "names.ts", "web-run.ts"]) await copyFile(join(source, file), join(extension, file));
 		await writeFile(join(extension, "bindings.json"), `${JSON.stringify(bindings, null, 2)}\n`, { mode: 0o600 });
 		for (const key of legacyKeys) delete auth[key];
 		const temporary = `${authPath}.authmanager-${process.pid}.tmp`;
