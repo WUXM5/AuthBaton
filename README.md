@@ -23,6 +23,9 @@ The interface is in Chinese.
 - **Integrations**: the pi extension takes access tokens per account and gives Codex models Codex's own web search (`web_run`). The Claude Code plugin reports quota, and a turn cut off by the quota limit resumes automatically after the switch.
 - **Personal cloud (optional)**: a Worker deployed to your own Cloudflare account renews tokens centrally, so several devices share the same accounts. See [`cloud/`](cloud/README.md).
 
+> [!TIP]
+> Claude accounts in the same Team organization share the prompt cache. After a switch, the next request still reads the conversation's cache, so the new account does not write the whole context to the cache again. In our test (Claude Code 2.1.303, Haiku 5.5 and Opus 5.5, five switches back and forth in one conversation), the first request after every switch read the entire earlier prefix from the cache (99.9%). Accounts in different organizations were not tested.
+
 ## Security boundaries
 
 - Credentials exist only in AuthBaton's Keychain Vault, the storage the official clients need, and private pipes between processes. They are never written to SQLite, the UI's IPC or logs.

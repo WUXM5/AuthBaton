@@ -21,6 +21,9 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - **集成**：pi 扩展按账号取用 access token，并给 Codex 模型提供 Codex 自己的联网搜索（`web_run`）；Claude Code 配套插件上报额度，被额度打断的一轮在换号后自动续跑。
 - **个人云端（可选）**：部署到你自己 Cloudflare 账户的 Worker 集中续期，多台设备共用同一批账号，见 [`cloud/`](cloud/README.zh-CN.md)。
 
+> [!TIP]
+> 同一 Team 组织的 Claude 账号共享 prompt cache：换号后，下一个请求仍能读到这段对话的缓存，新账号不用把整段上下文重新写进缓存。实测（Claude Code 2.1.303，Haiku 5.5 和 Opus 5.5，同一会话来回切换 5 次），每次换号后的第一个请求都从缓存读到了之前的整个前缀（99.9%）。不同组织的账号之间没有测试。
+
 ## 安全边界
 
 - 凭据只出现在 AuthBaton 的 Keychain Vault、官方客户端需要的存储位置和进程间私有管道里，不写入 SQLite、界面 IPC 或日志。
