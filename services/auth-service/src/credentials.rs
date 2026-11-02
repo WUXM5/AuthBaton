@@ -828,32 +828,52 @@ fn reject_mixed(payload: &Value) -> Result<()> {
         Ok(())
     }
 }
+/// Credential keys that belong to the signed-in account: the ones Claude Code 2.1.316 removes
+/// when it signs in again. Every other key (`mcpOAuth`, `coworkRemoteDevice`, …) belongs to
+/// this Mac and stays. Recheck against the official CLI when it changes how it signs in.
+const CLAUDE_ACCOUNT_KEYS: [&str; 7] = [
+    "claudeAiOauth",
+    "organizationUuid",
+    "trustedDeviceToken",
+    "trustedDeviceEnrolledAfterRefusalAtMs",
+    "enterpriseGateway",
+    "designOauth",
+    "cloudSessionsOauth",
+];
+/// Account caches in the Claude config that Claude Code 2.1.316 clears when the account
+/// changes, besides `oauthAccount` itself.
+const CLAUDE_ACCOUNT_CACHE_KEYS: [&str; 18] = [
+    "managedSettingsNoticeSeenOrg",
+    "additionalModelOptionsCache",
+    "additionalModelOptionsAnsweredAt",
+    "additionalModelCostsCache",
+    "modelAccessCache",
+    "orgModelDefaultCache",
+    "cachedArtifactRoster",
+    "artifactRosterDenied",
+    "lastSeenOrgDefaultUpdatedAt",
+    "clientDataCache",
+    "clientDataCacheSlots",
+    "autoCompactWindowsCache",
+    "cachedUsageUtilization",
+    "metricsStatusCache",
+    "metricsStatusCacheByPrincipal",
+    "githubWebConnectionStatusCache",
+    "unusedLimitResetStatusCache",
+    "startupPrefetchedAt",
+];
 pub fn merge_claude_credentials(mut base: Value, target: &Value) -> Result<Value> {
     reject_mixed(&base)?;
     let map = base.as_object_mut().ok_or("Claude 凭据格式无效")?;
+    for key in CLAUDE_ACCOUNT_KEYS {
+        map.remove(key);
+    }
     map.insert("claudeAiOauth".into(), target.clone());
-    map.remove("organizationUuid");
-    map.remove("trustedDeviceToken");
     Ok(base)
 }
 pub fn merge_claude_config(mut base: Value, identity: &Value) -> Result<Value> {
     let map = base.as_object_mut().ok_or("Claude 配置格式无效")?;
-    for key in [
-        "additionalModelOptionsCache",
-        "additionalModelOptionsAnsweredAt",
-        "additionalModelCostsCache",
-        "modelAccessCache",
-        "orgModelDefaultCache",
-        "cachedArtifactRoster",
-        "artifactRosterDenied",
-        "lastSeenOrgDefaultUpdatedAt",
-        "clientDataCache",
-        "clientDataCacheSlots",
-        "autoCompactWindowsCache",
-        "cachedUsageUtilization",
-        "githubWebConnectionStatusCache",
-        "startupPrefetchedAt",
-    ] {
+    for key in CLAUDE_ACCOUNT_CACHE_KEYS {
         map.remove(key);
     }
     map.insert("oauthAccount".into(), identity.clone());
@@ -908,6 +928,41 @@ mod tests {
         assert_eq!(after["coworkRemoteDevice"]["keep"], true);
         assert!(after.get("trustedDeviceToken").is_none());
         assert!(merge_claude_credentials(json!({"enterpriseGateway":{}}), &json!({})).is_err());
+    }
+    #[test]
+    fn switching_claude_drops_every_key_of_the_previous_account() {
+        // The previous account's cloud-sessions sign-in is checked against the organization
+        // only, so a teammate in the same Team would otherwise use it.
+        let after = merge_claude_credentials(
+            json!({
+                "claudeAiOauth": {"refreshToken": "old"},
+                "organizationUuid": "org",
+                "trustedDeviceToken": "old",
+                "trustedDeviceEnrolledAfterRefusalAtMs": 1,
+                "cloudSessionsOauth": {"organizationUuid": "org", "refreshToken": "old"},
+                "mcpOAuth": {"keep": true},
+                "coworkRemoteDevice": {"keep": true},
+            }),
+            &json!({"refreshToken": "new"}),
+        )
+        .unwrap();
+        assert_eq!(
+            after,
+            json!({
+                "claudeAiOauth": {"refreshToken": "new"},
+                "mcpOAuth": {"keep": true},
+                "coworkRemoteDevice": {"keep": true},
+            })
+        );
+        let mut config = json!({"oauthAccount": {"accountUuid": "old"}, "projects": {}});
+        for key in CLAUDE_ACCOUNT_CACHE_KEYS {
+            config[key] = json!("old");
+        }
+        let after = merge_claude_config(config, &json!({"accountUuid": "new"})).unwrap();
+        assert_eq!(
+            after,
+            json!({"oauthAccount": {"accountUuid": "new"}, "projects": {}})
+        );
     }
     #[test]
     fn claude_desktop_processes_are_not_clients_of_the_global_login() {

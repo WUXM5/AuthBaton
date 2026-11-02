@@ -75,6 +75,8 @@ struct LoginAttempt: Decodable, Sendable {
     let message: String
     let verificationUrl: String?
     let userCode: String?
+    // Claude: the sign-in link that returns to this Mac; the service keeps the CLI from opening it.
+    var browserUrl: String? = nil
     var isActive: Bool { ["starting", "waiting", "cancelling"].contains(phase) }
     var phaseLabel: String {
         switch phase {

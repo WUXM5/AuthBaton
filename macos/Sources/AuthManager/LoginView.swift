@@ -12,6 +12,8 @@ struct LoginView: View {
     @State private var importing = false
     @State private var accountLabel = ""
     @State private var authorizationCode = ""
+    @State private var copiedLink: String?
+    @State private var manualOpen = false
 
     init(provider: String, account: ManagedAccount? = nil, cloudAccountID: String? = nil) {
         self.account = account
@@ -128,6 +130,76 @@ struct LoginView: View {
 
     // MARK: 登录中
 
+    // The CLI does not open a browser: the person opens the link back to this Mac, or copies it
+    // into another browser or browser profile. The manual page and its code are the fallback.
+    @ViewBuilder
+    private func claudeLinks(_ attempt: LoginAttempt) -> some View {
+        if let link = attempt.browserUrl, let url = URL(string: link) {
+            let copied = copiedLink == link
+            VStack(spacing: 10) {
+                HStack(spacing: 9) {
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        HStack(spacing: 7) {
+                            Text("打开浏览器")
+                            Icon(.external, size: 11, color: .white)
+                        }
+                    }
+                    .buttonStyle(.pill(.primary, height: 32))
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(link, forType: .string)
+                        copiedLink = link
+                    } label: {
+                        HStack(spacing: 6) {
+                            Icon(copied ? .check : .copy, size: 12, color: copied ? Palette.solid : Palette.ink2)
+                            Text(copied ? "已复制" : "复制链接").foregroundStyle(copied ? Palette.deep : Palette.ink)
+                        }
+                    }
+                    .buttonStyle(.pill(.secondary, height: 32))
+                }
+                Text("复制后可以在别的浏览器或浏览器身份里登录")
+                    .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(17)
+            .loopPanel(radius: 14)
+            .padding(.top, 15)
+        }
+        Button { manualOpen.toggle() } label: {
+            HStack(spacing: 4) {
+                Text("浏览器回不到这里？用手动授权")
+                Icon(.chevronDown, size: 9, color: Palette.solid, weight: 2.4)
+                    .rotationEffect(.degrees(manualOpen ? 180 : 0))
+            }
+        }
+        .buttonStyle(.pill(.link))
+        .padding(.top, 12)
+        if manualOpen {
+            VStack(alignment: .leading, spacing: 9) {
+                if let link = attempt.verificationUrl, let url = URL(string: link) {
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        HStack(spacing: 6) {
+                            Text("打开手动授权页面")
+                            Icon(.external, size: 10, color: Palette.ink2)
+                        }
+                    }
+                    .buttonStyle(.pill(.secondary, height: 27))
+                }
+                HStack(spacing: 7) {
+                    LoopField(placeholder: "手动授权代码（只用这一次）", text: $authorizationCode, secure: true)
+                    Button("提交") {
+                        let code = authorizationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                        authorizationCode = ""
+                        Task { await service.submitLoginCode(code) }
+                    }
+                    .buttonStyle(.pill(.secondary, height: 27))
+                    .disabled(authorizationCode.isEmpty || service.loginBusy)
+                }
+            }
+            .padding(.top, 9)
+        }
+    }
+
     private func progress(_ attempt: LoginAttempt) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
@@ -151,10 +223,10 @@ struct LoginView: View {
                 .loopPanel(radius: 14)
                 .padding(.top, 15)
             }
-            if let link = attempt.verificationUrl, let url = URL(string: link) {
+            if provider == "codex", let link = attempt.verificationUrl, let url = URL(string: link) {
                 Button { NSWorkspace.shared.open(url) } label: {
                     HStack(spacing: 7) {
-                        Text(provider == "codex" ? "打开官方授权页面" : "浏览器没打开？用手动授权")
+                        Text("打开官方授权页面")
                         Icon(.external, size: 12, color: .white)
                     }
                 }
@@ -163,21 +235,7 @@ struct LoginView: View {
                 .padding(.top, 14)
             }
             if provider == "claude" && attempt.isActive {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("浏览器一般会自动完成回调。用了手动授权页面的话，把页面上完整的 code#state 填到下面。")
-                        .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 7) {
-                        LoopField(placeholder: "手动授权代码（只用这一次）", text: $authorizationCode, secure: true)
-                        Button("提交") {
-                            let code = authorizationCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                            authorizationCode = ""
-                            Task { await service.submitLoginCode(code) }
-                        }
-                        .buttonStyle(.pill(.secondary, height: 27))
-                        .disabled(authorizationCode.isEmpty || service.loginBusy)
-                    }
-                }
-                .padding(.top, 14)
+                claudeLinks(attempt)
             }
             if let error = service.loginError { Banner(text: error).padding(.top, 12) }
             HStack(spacing: 9) {

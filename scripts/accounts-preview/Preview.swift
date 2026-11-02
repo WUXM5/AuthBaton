@@ -1121,10 +1121,47 @@ extension NSWindow {
         check.expect(reset.contains("synthetic-claude-b") && reset.contains("\"next_grant\":true") && reset.contains("\"confirm\":true")
                      && !reset.contains("credit_id"), "确认后请服务用官方的下一张，请求里没有卡号")
     }
+    section(24, "Claude 登录：不自动开浏览器，链接可以打开或复制，手动授权收在后备里") {
+        Fixture.load("default", into: state)
+        ClaudeLogin.waiting(state)
+        select(.claude)
+        Driver.press("添加 Claude 账号")
+        check.expect(Driver.visible("打开浏览器") && Driver.visible("复制链接"), "授权中给出「打开浏览器」和「复制链接」")
+        check.expect(!Driver.visible("提交", wait: 0.3), "手动授权默认收起")
+        // The real pasteboard: keep whatever the person had on it and put it back afterwards.
+        let board = NSPasteboard.general
+        let saved = (board.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types { if let data = item.data(forType: type) { copy.setData(data, forType: type) } }
+            return copy
+        }
+        Driver.press("复制链接")
+        check.expect(board.string(forType: .string) == ClaudeLogin.link, "「复制链接」复制的是回到本机的登录链接")
+        check.visible("已复制", "复制后按钮变成「已复制」")
+        board.clearContents()
+        if !saved.isEmpty { board.writeObjects(saved) }
+        Driver.press("用手动授权")
+        check.expect(Driver.visible("打开手动授权页面") && Driver.visible("提交"), "展开后有手动授权页面和代码输入")
+        Driver.press("在后台等待", .exact)
+        state.login = nil
+        state.loginTarget = nil
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
     return check.failures.count
+}
+
+@MainActor enum ClaudeLogin {
+    static let link = "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback&state=synthetic"
+    // Adding a Claude account, waiting for the browser.
+    static func waiting(_ state: ServiceController) {
+        state.login = LoginAttempt(attemptId: "synthetic-claude-login", provider: "claude", phase: "waiting",
+                                   message: "在浏览器里登录这个 Claude 账号，登录完会自动回到这里。",
+                                   verificationUrl: "https://claude.com/cai/oauth/authorize?code=true&state=synthetic-manual",
+                                   userCode: nil, browserUrl: link)
+        state.loginTarget = LoginTarget(accountID: nil, cloudAccountID: nil)
+    }
 }
 
 @main struct Preview {
@@ -1241,6 +1278,12 @@ extension NSWindow {
                 let size = render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
+            ClaudeLogin.waiting(state)
+            let loginSize = render(LoginView(provider: "claude").background(Palette.card), size: nil, appearance: appearance,
+                                   to: output.appendingPathComponent("\(appearance)-sheet-login-claude.png"))
+            print("\(appearance)/sheet-login-claude: \(loginSize.width) × \(loginSize.height)")
+            state.login = nil
+            state.loginTarget = nil
             Fixture.load("connected", into: state)
             let switchSize = render(SwitchSheet(account: state.directory!.accounts.first { $0.id == "synthetic-nova" }!, close: {}).background(Palette.card),
                                     size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-switch-desktop.png"))

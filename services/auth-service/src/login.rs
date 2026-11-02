@@ -16,6 +16,9 @@ pub struct LoginState {
     pub message: String,
     pub verification_url: Option<String>,
     pub user_code: Option<String>,
+    /// Claude only: the sign-in link that returns to this Mac. AuthBaton keeps the official CLI
+    /// from opening it, so the person chooses the browser and browser profile.
+    pub browser_url: Option<String>,
 }
 
 impl LoginState {
@@ -37,6 +40,8 @@ struct Attempt {
     login_id: Option<String>,
     deadline: Instant,
     cancelling: bool,
+    /// Claude only: the opener given to the CLI as `BROWSER` and the file it writes the link to.
+    browser: Option<(PathBuf, PathBuf)>,
 }
 
 impl Drop for Attempt {
@@ -50,6 +55,10 @@ impl Drop for Attempt {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some((opener, link)) = &self.browser {
+            let _ = std::fs::remove_file(opener);
+            let _ = std::fs::remove_file(link);
+        }
     }
 }
 
@@ -83,6 +92,7 @@ impl LoginManager {
         }
         let mut command = Command::new(binary);
         crate::network::configure(&mut command)?;
+        let mut browser = None;
         match provider {
             "codex" => {
                 command
@@ -110,6 +120,9 @@ impl LoginManager {
                 ] {
                     command.env_remove(key);
                 }
+                let (opener, link) = browser_opener(codex_home)?;
+                command.env("BROWSER", &opener).env(BROWSER_URL_ENV, &link);
+                browser = Some((opener, link));
             }
             _ => return Err("此入口不支持登录"),
         }
@@ -147,6 +160,7 @@ impl LoginManager {
             message: "正在启动官方登录…".into(),
             verification_url: None,
             user_code: None,
+            browser_url: None,
         });
         let mut attempt = Attempt {
             child,
@@ -155,6 +169,7 @@ impl LoginManager {
             login_id: None,
             deadline: Instant::now() + Duration::from_secs(60),
             cancelling: false,
+            browser,
         };
         if provider == "codex" {
             if attempt.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"authmanager","version":env!("CARGO_PKG_VERSION")}}})).is_err() {
@@ -165,7 +180,7 @@ impl LoginManager {
             attempt.deadline = Instant::now() + Duration::from_secs(900);
             let state = self.state.as_mut().unwrap();
             state.phase = "waiting".into();
-            state.message = "官方 Claude CLI 正在打开浏览器；请完成订阅账号授权。".into();
+            state.message = "在浏览器里登录这个 Claude 账号，登录完会自动回到这里。".into();
         }
         self.running = Some(attempt);
         Ok(())
@@ -178,6 +193,7 @@ impl LoginManager {
             state.message = message.into();
             state.verification_url = None;
             state.user_code = None;
+            state.browser_url = None;
         }
     }
 
@@ -271,6 +287,12 @@ impl LoginManager {
         let Some(attempt) = &mut self.running else {
             return;
         };
+        if let Some((_, link)) = &attempt.browser
+            && self.state.as_ref().unwrap().browser_url.is_none()
+            && let Some(url) = take_browser_url(link)
+        {
+            self.state.as_mut().unwrap().browser_url = Some(url);
+        }
         if Instant::now() >= attempt.deadline {
             self.finish(
                 "stopped",
@@ -365,11 +387,71 @@ impl LoginManager {
     }
 }
 
+const BROWSER_URL_ENV: &str = "AUTHMANAGER_BROWSER_URL";
+
+/// Writes the program the official CLI runs as `BROWSER`: it only records the link it is
+/// asked to open, beside itself in the attempt's private directory.
+fn browser_opener(directory: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let opener = directory.join(".authmanager-browser");
+    let link = directory.join(".authmanager-browser-url");
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&opener);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&opener)
+        .and_then(|mut file| {
+            file.write_all(
+                // Renamed into place, so the service never reads a half-written link.
+                format!(
+                    "#!/bin/sh\numask 077\nprintf '%s\\n' \"$1\" > \"${BROWSER_URL_ENV}.part\" && mv -f \"${BROWSER_URL_ENV}.part\" \"${BROWSER_URL_ENV}\"\n"
+                )
+                .as_bytes(),
+            )
+        })
+        .map_err(|_| "无法准备登录链接")?;
+    Ok((opener, link))
+}
+
+/// The sign-in link the opener recorded, once, and only if it is the official one that
+/// returns to this Mac.
+fn take_browser_url(link: &Path) -> Option<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(link)
+        .ok()?
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let _ = std::fs::remove_file(link);
+    claude_browser_url(std::str::from_utf8(&bytes).ok()?)
+}
+
+/// Where the official CLI sends a claude.ai sign-in: 2.1.316 uses the second form.
+const CLAUDE_AUTHORIZE: [&str; 2] = [
+    "https://claude.ai/oauth/authorize?",
+    "https://claude.com/cai/oauth/authorize?",
+];
+
+fn claude_browser_url(text: &str) -> Option<String> {
+    let url = text.trim_end_matches('\n');
+    (CLAUDE_AUTHORIZE
+        .iter()
+        .any(|prefix| url.starts_with(prefix))
+        && url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A")
+        && url.len() <= 8192
+        && url.bytes().all(|c| c.is_ascii_graphic()))
+    .then(|| url.to_owned())
+}
+
 fn claude_url(line: &str) -> Option<String> {
     // CLI output is private to this adapter. Only the manual authorization URL crosses IPC.
     line.split_whitespace()
         .find(|part| {
-            part.starts_with("https://claude.ai/oauth/authorize?")
+            CLAUDE_AUTHORIZE
+                .iter()
+                .any(|prefix| part.starts_with(prefix))
                 && part.len() <= 8192
                 && part.bytes().all(|c| c.is_ascii_graphic() && c != b'\x1b')
         })
@@ -548,10 +630,79 @@ exit 0
         );
     }
 
+    const BROWSER_LINK: &str = "https://claude.com/cai/oauth/authorize?code=true&client_id=synthetic&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback&state=synthetic";
+
+    #[test]
+    fn claude_browser_link_is_handed_over_instead_of_opened() {
+        let fixture = Fixture::new(&format!(
+            r#"
+printf '%s\n' 'Opening browser to sign in' "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=synthetic"
+"$BROWSER" '{BROWSER_LINK}' || exit 1
+sleep 10
+"#
+        ));
+        let mut manager = LoginManager::new();
+        manager
+            .start("claude", &fixture.binary(), &fixture.0)
+            .unwrap();
+        wait_until(&mut manager, |s| {
+            s.browser_url.is_some() && s.verification_url.is_some()
+        });
+        let state = manager.state.as_ref().unwrap();
+        assert_eq!(state.browser_url.as_deref(), Some(BROWSER_LINK));
+        assert!(
+            state
+                .verification_url
+                .as_ref()
+                .unwrap()
+                .contains("platform.claude.com")
+        );
+        assert!(!fixture.0.join(".authmanager-browser-url").exists());
+        let id = state.attempt_id.clone();
+        manager.cancel(&id).unwrap();
+        assert!(manager.state.as_ref().unwrap().browser_url.is_none());
+        assert!(!fixture.0.join(".authmanager-browser").exists());
+    }
+
+    #[test]
+    fn only_the_official_link_back_to_this_mac_is_handed_over() {
+        let fixture = Fixture::new(
+            r#"
+"$BROWSER" 'https://claude.ai.evil/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1' || exit 1
+sleep 10
+"#,
+        );
+        let mut manager = LoginManager::new();
+        manager
+            .start("claude", &fixture.binary(), &fixture.0)
+            .unwrap();
+        let link = fixture.0.join(".authmanager-browser-url");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !link.exists() {
+            assert!(Instant::now() < deadline, "opener did not record the link");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        manager.poll();
+        assert!(!link.exists());
+        assert!(manager.state.as_ref().unwrap().browser_url.is_none());
+        for rejected in [
+            "https://claude.ai/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.claude.com",
+            "https://claude.ai/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1 x",
+        ] {
+            assert!(claude_browser_url(rejected).is_none(), "{rejected}");
+        }
+        assert_eq!(
+            claude_browser_url(&format!("{BROWSER_LINK}\n")).as_deref(),
+            Some(BROWSER_LINK)
+        );
+    }
+
     #[test]
     fn untrusted_urls_never_cross_ipc() {
         assert!(claude_url("https://claude.ai.evil/oauth/authorize?x=1").is_none());
         assert!(claude_url("https://claude.ai@evil/oauth/authorize?x=1").is_none());
+        assert!(claude_url("https://claude.com.evil/cai/oauth/authorize?x=1").is_none());
+        assert!(claude_url("https://claude.com/oauth/authorize?x=1").is_none());
         let bad = HANDSHAKE.replace(
             "https://auth.openai.com/codex/device",
             "https://evil.example/login",

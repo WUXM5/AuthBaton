@@ -35,6 +35,20 @@ The interface is in Chinese.
 - Apart from the warm-up you turn on for a Claude account, AuthBaton sends no model requests and never uses one as an authentication check.
 - The runtime directory `~/Library/Application Support/AuthManager/` has mode 0700; sockets and the database are 0600. The desktop operation log `desktop-log.jsonl` (0600, rotated once it passes 512 KB) records only the time, the operation on the Codex desktop app, the account ID and a fixed reason. It contains no credentials. These measures protect against mistakes and credential leaks; they cannot defend against malicious programs running as the same macOS user.
 
+## Anthropic's terms
+
+Claude Code's [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) page sets rules for signing in with a Claude subscription. The table maps each rule to what AuthBaton does, checked against the page on 2026-11-02. Where AuthBaton departs from a rule, the table says so.
+
+| Anthropic's rule | What AuthBaton does |
+|---|---|
+| Sign-in to a Claude account must complete through Anthropic's own flow. Third parties may not offer Claude.ai login in their own apps. | Follows it. Adding or re-signing an account runs the official `claude auth login --claudeai` in an isolated directory, and you sign in on Anthropic's pages. AuthBaton only shows the link, so you can open it or copy it into the browser you want. It has no sign-in of its own. |
+| Developers may not collect, store or intermediate Claude.ai credentials or session tokens. | **Departs.** Accounts other than the current one keep their tokens in AuthBaton's Keychain Vault, and AuthBaton renews them itself with Claude Code's OAuth client. With personal cloud on, the Worker in your own Cloudflare account holds and renews them. The tokens stay on your Mac or in your own Cloudflare account. |
+| Subscription credentials may not be used to route requests on behalf of users. | Follows it. AuthBaton has no server, sends no model requests for anyone else and does not share accounts. Conversations go from the unmodified Claude Code to Anthropic. The only model request AuthBaton starts is the optional warm-up, which runs through the official CLI. The pi extension gets Codex tokens only, never Claude ones. |
+| OAuth is meant for subscribers' ordinary use of Claude Code and Anthropic's native apps. Signing in to the unmodified Claude Code with your own subscription is allowed. | **Partly.** Claude Code is not modified. AuthBaton itself also calls Anthropic's account endpoints with the tokens: renewal, quota and profile queries, and the reset cards you choose to use. None of these is a model request. |
+| Advertised usage limits for Pro, Max and Ultra plans assume ordinary, individual usage. | **Your call.** Every account is meant to be your own. Automatic switching when an account runs low is off by default; turning it on moves your work to another of your subscriptions. |
+
+Switching writes the chosen account into Claude Code's own storage while holding Claude Code's locks. Anthropic's documentation covers using several accounts through a separate `CLAUDE_CONFIG_DIR` for each, not switching the default sign-in. Anthropic may enforce these rules without notice, and AuthBaton cannot promise that an account will not be restricted.
+
 ## Architecture
 
 ```mermaid

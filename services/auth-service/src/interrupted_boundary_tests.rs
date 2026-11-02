@@ -289,6 +289,7 @@ fn ended_login(manager: &mut Accounts, id: &str, phase: &str) -> LoginManager {
         message: String::new(),
         verification_url: None,
         user_code: None,
+        browser_url: None,
     });
     manager.finish_login(&mut login);
     login
