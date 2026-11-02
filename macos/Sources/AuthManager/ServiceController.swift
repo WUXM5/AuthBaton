@@ -272,6 +272,14 @@ final class ServiceController: ObservableObject {
         await checkQuota()
     }
 
+    // Claude desktop sessions and sign-ins; account is the handle the service published.
+    func claudeDesktop(_ action: String, account: String? = nil, label: String? = nil, enabled: Bool? = nil, number: Int? = nil,
+                       snapshot: String? = nil, confirm: Bool? = nil) async {
+        await accountOperation("accounts.claude_desktop", params: LoginParams(
+            label: label, confirm: confirm, enabled: enabled, desktop_action: action, account: account, number: number,
+            snapshot: snapshot))
+    }
+
     func cloudAction(_ action: String, id: String? = nil, mode: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil, automatic: Bool? = nil) async {
         await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, automatic: automatic, cloud_action: action, mode: mode, endpoint: endpoint))
     }
@@ -305,7 +313,9 @@ final class ServiceController: ObservableObject {
         directoryTask?.cancel()
         directoryTask = Task {
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                // A Claude desktop switch reports each step; follow it closely while it runs.
+                let interval: Duration = directory?.claudeDesktop?.busy == true ? .milliseconds(500) : .seconds(2)
+                do { try await Task.sleep(for: interval) } catch { return }
                 await reloadAccounts()
             }
         }

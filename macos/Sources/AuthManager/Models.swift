@@ -58,6 +58,11 @@ struct LoginParams: Encodable, Sendable {
     var before: String? = nil
     var limit: Int? = nil
     var hour: Int? = nil
+    // accounts.claude_desktop: what to do, which Claude desktop account (its handle), and for that.
+    var desktop_action: String? = nil
+    var account: String? = nil
+    var number: Int? = nil
+    var snapshot: String? = nil
 }
 
 struct LoginResult: Decodable, Sendable { let attempt: LoginAttempt? }
@@ -135,6 +140,7 @@ struct AccountDirectory: Decodable, Sendable {
     let desktop: DesktopConnection?
     var cloud: CloudStatus? = nil
     var strategy: CodexStrategyStatus? = nil
+    var claudeDesktop: ClaudeDesktopStatus? = nil
 }
 
 struct CodexStrategyInput: Encodable, Sendable {

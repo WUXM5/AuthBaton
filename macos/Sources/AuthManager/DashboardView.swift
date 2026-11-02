@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Page: Hashable {
-    case accounts, codex, claude, automation, desktop, clients, cloud
+    case accounts, codex, claude, automation, desktop, claudeDesktop, clients, cloud
 }
 
 // Shared so the menu bar panel can open the window on a specific page or account.
@@ -76,6 +76,7 @@ struct DashboardView: View {
         case .claude: cloudMode ? AnyView(AccountsView()) : AnyView(ClaudePage())
         case .automation: AutomationPage()
         case .desktop: DesktopPage()
+        case .claudeDesktop: ClaudeDesktopPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
         }
@@ -129,6 +130,15 @@ private struct Sidebar: View {
                     }
                 }
                 .accessibilityLabel(directory?.desktopBlocked == true ? "Codex 桌面，没连上" : "Codex 桌面")
+                let claudeDesktop = directory?.claudeDesktop
+                item(.claudeDesktop, "Claude 桌面", glyph: .desktop) {
+                    if claudeDesktop?.attention != nil {
+                        Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
+                    } else if claudeDesktop?.installed == true && claudeDesktop?.background == false {
+                        trailingText("关")
+                    }
+                }
+                .accessibilityLabel(claudeDesktop?.attention.map { "Claude 桌面，\($0)" } ?? "Claude 桌面")
                 item(.clients, "客户端与服务", glyph: .clients) {
                     if !service.isConnected && !service.isConnecting {
                         Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)

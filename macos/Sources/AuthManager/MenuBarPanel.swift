@@ -22,6 +22,7 @@ struct MenuBarPanel: View {
                 ForEach(["codex", "claude"], id: \.self) { provider in
                     switchList(provider, directory: directory)
                 }
+                if let desktop = directory.claudeDesktop, desktop.installed { claudeDesktop(desktop) }
             } else if let cloud = directory?.cloud, !local {
                 cloudSummary(cloud)
             } else if service.isConnected {
@@ -286,6 +287,62 @@ struct MenuBarPanel: View {
             working = false
             guard service.accountError == nil else { return }
             if desktop { attemptSince = started } else { expanded = nil }
+        }
+    }
+
+    // Claude desktop: who it is signed in as, whether every account's sessions match, and 下一个.
+    private func claudeDesktop(_ desktop: ClaudeDesktopStatus) -> some View {
+        let current = desktop.current
+        let next = desktop.picks?.next.flatMap { handle in desktop.accounts.first { $0.handle == handle } }
+        let confirming = expanded == "claude_desktop"
+        let state: String = desktop.busy ? (desktop.operation?.kind == "add" ? "正在添加账号…" : "正在换号…")
+            : desktop.restartNeeded ? "要重启一次 Claude" : desktop.pending > 0 ? "\(desktop.pending) 处待同步"
+            : desktop.background ? "会话一致" : "后台同步关着"
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Claude 桌面").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
+                .padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 3.5)
+            HStack(spacing: 9) {
+                Seal(current?.display ?? "?", style: current == nil ? .out : .inUse, size: 19)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(current.map { "在用 \($0.title)" } ?? "没认出在用的账号")
+                        .font(.system(size: 12)).lineLimit(1)
+                    Text(state).font(.system(size: 10)).lineLimit(1)
+                        .foregroundStyle(desktop.restartNeeded || desktop.attention != nil ? Palette.attentionText : Palette.ink3)
+                }
+                Spacer(minLength: 3.5)
+                if let next, desktop.switchSupported {
+                    Button("下一个") { expanded = confirming ? nil : "claude_desktop" }
+                        .buttonStyle(.pill(.secondary, height: 20))
+                        .disabled(desktop.busy || service.accountBusy)
+                        .help("换到 \(next.title)")
+                }
+            }
+            .padding(.horizontal, 7).frame(minHeight: 32)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                AppNavigation.shared.show(.claudeDesktop)
+                openWindow()
+            }
+            if confirming, let next {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("换上 \(next.title)？Claude 桌面会退出再打开；还有任务在跑的话，Claude 会先问你。")
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 5) {
+                        Spacer()
+                        Button("取消") { expanded = nil }.buttonStyle(.pill(.secondary, height: 20))
+                        Button("换上") {
+                            Task {
+                                await service.claudeDesktop("switch", account: next.handle, confirm: true)
+                                if service.accountError == nil { expanded = nil }
+                            }
+                        }
+                        .buttonStyle(.pill(.primary, height: 20)).disabled(desktop.busy || service.accountBusy)
+                    }
+                }
+                .padding(10)
+                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.horizontal, 3.5).padding(.bottom, 3.5)
+            }
         }
     }
 

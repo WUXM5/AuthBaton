@@ -1,6 +1,6 @@
 [package]
 name = "auth-service"
-version = "0.20.1"
+version = "0.21.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -13,3 +13,4 @@ serde_json = "=1.0.149"
 sha2 = "=0.10.9"
 
 libc = "=0.2.180"
+claude-desktop = { path = "../claude-desktop" }

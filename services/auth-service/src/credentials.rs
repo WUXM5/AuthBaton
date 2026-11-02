@@ -35,7 +35,7 @@ pub fn claims(token: &str) -> Result<Value> {
         .map_err(|_| "账号 token 格式无效")?;
     serde_json::from_slice(&bytes).map_err(|_| "账号 token 字段无效")
 }
-fn masked(email: &str) -> String {
+pub(crate) fn masked(email: &str) -> String {
     match email.split_once('@') {
         Some((name, domain)) => format!("{}***@{}", name.chars().next().unwrap_or('*'), domain),
         None => "未提供邮箱".into(),
