@@ -1,0 +1,3 @@
+# Same as cc-same upstream, so its files can still be merged file by file.
+max_width = 120
+use_small_heuristics = "Max"

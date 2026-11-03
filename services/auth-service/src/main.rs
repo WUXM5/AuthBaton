@@ -1,6 +1,7 @@
 mod accounts;
 mod automation;
 mod claude;
+mod claude_desktop;
 mod claude_locks;
 mod claude_mod;
 mod claude_resets;
@@ -67,6 +68,10 @@ struct AccountParams {
     before: Option<String>,
     limit: Option<usize>,
     hour: Option<u8>,
+    desktop_action: Option<String>,
+    account: Option<String>,
+    number: Option<u32>,
+    snapshot: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -283,6 +288,20 @@ fn response(
                         params.automatic,
                     )?,
                     "accounts.recover" => manager.recover()?,
+                    "accounts.claude_desktop" => {
+                        manager.claude_desktop(claude_desktop::Command {
+                            action: params
+                                .desktop_action
+                                .as_deref()
+                                .ok_or("缺少 Claude 桌面操作")?,
+                            account: params.account.as_deref(),
+                            label: params.label.as_deref(),
+                            enabled: params.enabled,
+                            number: params.number,
+                            snapshot: params.snapshot.as_deref(),
+                            confirm: params.confirm == Some(true),
+                        })?
+                    }
                     "accounts.retry_save" => {
                         manager.retry_save(params.id.as_deref().ok_or("缺少账号标识")?)?
                     }

@@ -43,6 +43,12 @@ import Vision
     func cloudAction(_ action: String, id: String? = nil, mode: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil, automatic: Bool? = nil) async {
         await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, automatic: automatic, cloud_action: action, mode: mode, endpoint: endpoint))
     }
+    func claudeDesktop(_ action: String, account: String? = nil, label: String? = nil, enabled: Bool? = nil, number: Int? = nil,
+                       snapshot: String? = nil, confirm: Bool? = nil) async {
+        await accountOperation("accounts.claude_desktop", params: LoginParams(
+            label: label, confirm: confirm, enabled: enabled, desktop_action: action, account: account, number: number,
+            snapshot: snapshot))
+    }
     func clearAccountError() { accountError = nil; accountErrorID = nil }
     func refresh() async {}
     func restart() async { calls.append("restart {}") }
@@ -73,6 +79,39 @@ enum Fixture {
     static func iso(_ offset: Double) -> String { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: now + offset)) }
     static func credit(_ id: String, _ days: Double) -> [String: Any] {
         ["id": id, "reset_type": "codex_rate_limits", "status": "available", "expires_at": iso(days * 86400)]
+    }
+    // Claude desktop with three signed-in accounts whose session lists match, one older folder.
+    static func claudeDesktop(_ now: Double) -> [String: Any] {
+        func usage(_ remaining: Int, _ age: Double) -> [String: Any] { ["remaining": remaining, "at": now - age, "stale": false] }
+        func account(_ handle: String, _ number: Int?, _ display: String, _ email: String?, alias: String?, inUse: Bool, participates: Bool = true,
+                     five: [String: Any]?, weekly: [String: Any]?, linked: String? = nil, known: Bool = true, sessions: Int = 25) -> [String: Any] {
+            var row: [String: Any] = ["handle": handle, "display": display, "in_use": inUse, "login_saved": known, "participates": participates,
+                                      "sessions": sessions, "behind": 0, "known": known]
+            if let number { row["number"] = number }
+            if let email { row["email"] = email }
+            if let alias { row["alias"] = alias }
+            if let five { row["five_hour"] = five }
+            if let weekly { row["weekly"] = weekly }
+            if let linked { row["linked_account"] = linked }
+            return row
+        }
+        return [
+            "installed": true, "running": true, "version": "4.4212.0", "switch_supported": true, "background": true, "syncing": false,
+            "headline": "3 个账号的会话都一样 · 在用 #2 work", "sessions": 25, "pending": 0, "restart_needed": false,
+            "last_sync": ["at": now - 140, "ok": true, "message": "没有要改的"],
+            "accounts": [
+                account("h-nova", 1, "nova@example.invalid", "nova@example.invalid", alias: nil, inUse: false,
+                        five: usage(88, 600), weekly: usage(54, 600), linked: "synthetic-claude"),
+                account("h-orbit", 2, "work", "orbit@example.invalid", alias: "work", inUse: true, five: usage(38, 120), weekly: usage(71, 120)),
+                account("h-lab", 3, "lab", "lab@example.invalid", alias: "lab", inUse: false, participates: false, five: nil, weekly: usage(12, 5 * 3600)),
+                account("h-old", nil, "c***@example.invalid", "c***@example.invalid", alias: nil, inUse: false, five: nil, weekly: nil, known: false, sessions: 6),
+            ],
+            "picks": ["next": "h-nova", "next_available": "h-nova", "best": "h-nova"],
+            "snapshots": [["id": "20261102-210000-watch", "at": now - 2400, "kind": "hourly", "folders": 3],
+                          ["id": "20261101-090000-baseline", "at": now - 36 * 3600, "kind": "baseline", "folders": 2]],
+            "retention": ["at_risk": false, "kept": true, "can_undo": true, "can_keep": true],
+            "symlinks": 0,
+        ]
     }
     static func codex(_ id: String, _ label: String, _ email: String, plan: String, native: Bool, state: String, used: Double, resetDays: Double, credits: [[String: Any]]?, extra: Bool = false) -> [String: Any] {
         var windows: [[String: Any]] = [["label": "7 天窗口", "used_percent": used, "resets_at": now + resetDays * 86400, "expires": false]]
@@ -124,8 +163,29 @@ enum Fixture {
                          "busy": false, "message": "正在独立监测 4 个账号；重置无需桌面连接", "phase": NSNull(), "run": NSNull(), "last_at": NSNull(),
                          "account_states": [["id": "synthetic-orbit", "message": "额度充足，高于见底线 3%"],
                                             ["id": "synthetic-p", "message": "额度充足，高于见底线 2%"]]],
+            "claude_desktop": claudeDesktop(now),
         ]
         switch scenario {
+        case "desktopbehind":
+            var desktop = claudeDesktop(now)
+            var list = desktop["accounts"] as! [[String: Any]]
+            list[2]["behind"] = 4
+            desktop["accounts"] = list
+            desktop["pending"] = 4
+            desktop["restart_needed"] = true
+            desktop["attention"] = "要重启一次 Claude"
+            desktop["headline"] = "#3 lab 差 4 个会话；重启一次 Claude 就能看到"
+            desktop["retention"] = ["at_risk": true, "days": 12, "kept": false, "can_undo": false, "can_keep": true]
+            desktop["symlinks"] = 1
+            data["claude_desktop"] = desktop
+        case "desktopswitching":
+            var desktop = claudeDesktop(now)
+            desktop["operation"] = ["kind": "switch", "target": "#2 work", "step": "asking", "running": true]
+            data["claude_desktop"] = desktop
+        case "desktopmissing":
+            data["claude_desktop"] = ["installed": false, "running": false, "switch_supported": false, "background": true, "syncing": false,
+                                      "headline": "这台 Mac 上没找到 Claude 桌面", "sessions": 0, "pending": 0, "restart_needed": false,
+                                      "accounts": [], "snapshots": [], "symlinks": 0]
         case "connected":
             data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
         case "connectedbusy":
@@ -373,7 +433,9 @@ extension NSWindow {
         // SF draws a capital I and a small l alike, and OCR mixes them up ("Iab team"); fold both sides.
         var result = text.replacingOccurrences(of: "I", with: "l").lowercased().replacingOccurrences(of: " ", with: "")
         for (from, to) in [("～", "~"), ("：", ":"), ("，", ","), ("（", "("), ("）", ")"), ("…", "..."), ("「", ""), ("」", ""),
-                           ("·", "."), ("・", "."), ("•", "."), ("；", ";"), ("？", "?"), ("！", "!")] {
+                           ("·", "."), ("・", "."), ("•", "."), ("；", ";"), ("？", "?"), ("！", "!"),
+                           // OCR sometimes reads 换 as its traditional form.
+                           ("換", "换")] {
             result = result.replacingOccurrences(of: from, with: to)
         }
         return result
@@ -1146,6 +1208,73 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
     }
+    section(25, "Claude 桌面：后台同步开关、换上要确认并按 handle 发送，不能换的账号不给换上") {
+        Fixture.load("default", into: state)
+        select(.claudeDesktop)
+        // OCR drops 的 from small text, so the headline is matched without it.
+        check.expect(Driver.visible("会话都一样") && Driver.visible("个会话") && Driver.visible("全部一致"), "页头一句话状态，会话卡写会话数和全部一致")
+        check.expect(Driver.visible("只有会话、还没保存登录") && Driver.visible("c***@example.invalid"), "只有会话目录的账号单独一组")
+        check.expect(Driver.hits("换上", .exact).count == 2, "备用且保存了登录的两个账号有「换上」，在用的没有")
+        state.calls.removeAll()
+        if let toggle = Driver.views(NSSwitch.self).first {
+            Driver.click(toggle)
+            let call = check.lastCall("accounts.claude_desktop") ?? ""
+            check.expect(call.contains("\"desktop_action\":\"background\"") && call.contains("\"enabled\":false"), "关掉后台同步发送 background enabled:false")
+        } else {
+            check.expect(false, "会话卡有后台同步开关")
+        }
+        Driver.pressBeside("nova@example", "换上")
+        check.visible("换上 #1 nova@example", "换上先弹确认，标题带编号")
+        check.expect(Driver.visible("退出登录", wait: 0.3) == false, "换号确认不混入添加账号的提醒")
+        Driver.press("换上", .exact)
+        let call = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(call.contains("\"desktop_action\":\"switch\"") && call.contains("\"account\":\"h-nova\"") && call.contains("\"confirm\":true"),
+                     "确认后发送 switch，账号用 handle、带 confirm")
+        check.visible("让 Claude 退出", "确认后同一个框接着显示步骤")
+        Driver.press("好", .exact)
+        check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"dismiss\"") == true, "结束后点「好」清掉这次操作")
+        Driver.press("下一个账号", .exact)
+        check.visible("换上 #1 nova@example", "「下一个账号」按编号挑到 #1，同样先确认")
+        Driver.press("取消", .exact)
+        Driver.press("添加账号", .suffix)
+        check.visible("退出登录", "添加账号提醒不要退出登录")
+        Driver.press("取消", .exact)
+    }
+    section(26, "Claude 桌面：换号进行中可以不等，落后、要重启、保留期和软链都写明并给出处理") {
+        Fixture.load("desktopswitching", into: state)
+        select(.claudeDesktop)
+        check.visible("正在换上 #2 work", "换号进行中页面顶部写明")
+        Driver.press("查看", .exact)
+        check.expect(Driver.visible("Claude 在问要不要退出") && Driver.visible("不等了"), "Claude 在问时说明去 Claude 里回答，可以不等")
+        state.calls.removeAll()
+        Driver.press("不等了", .exact)
+        check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"stop\"") == true, "「不等了」发送 stop")
+        Driver.press("在后台继续", .exact)
+        Fixture.load("desktopbehind", into: state)
+        select(.claudeDesktop)
+        check.expect(Driver.visible("要重启一次 Claude 才看得到新会话") && Driver.visible("差 4"), "落后的账号写差几个，要重启时写明")
+        check.expect(Driver.visible("12 天后") && Driver.visible("改回真文件夹"), "保留期和软链提醒都在")
+        state.calls.removeAll()
+        Driver.press("一直保留", .exact)
+        check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"retention_keep\"") == true, "「一直保留」发送 retention_keep")
+        Driver.press("改回真文件夹", .exact)
+        let fix = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(fix.contains("\"desktop_action\":\"fix_symlinks\"") && fix.contains("\"confirm\":true"), "「改回真文件夹」发送 fix_symlinks")
+        Fixture.load("desktopmissing", into: state)
+        select(.claudeDesktop)
+        check.visible("这台 Mac 上没找到 Claude 桌面。", "没装 Claude 桌面时写明")
+        main.orderOut(nil)
+        Fixture.load("default", into: state)
+        let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 720))
+        check.expect(Driver.visible("在用 #2 work") && Driver.visible("会话一致"), "菜单栏写桌面在用的账号和同步状态")
+        Driver.press("下一个", .exact)
+        check.visible("换上 #1 nova@example", "菜单栏「下一个」先在行内确认")
+        state.calls.removeAll()
+        Driver.press("换上", .exact)
+        check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"account\":\"h-nova\"") == true, "菜单栏确认后按 handle 换上")
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -1167,7 +1296,7 @@ extension NSWindow {
 @main struct Preview {
     static func page(_ name: String) -> Page {
         ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation, "desktop": .desktop,
-         "clients": .clients, "cloud": .cloud][name]!
+         "claudedesktop": .claudeDesktop, "clients": .clients, "cloud": .cloud][name]!
     }
     @MainActor static func main() {
         let args = CommandLine.arguments
@@ -1228,7 +1357,7 @@ extension NSWindow {
             let output = URL(fileURLWithPath: args[4], isDirectory: true)
             try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let claude = state.directory!.accounts.first { $0.provider == "claude" }?.id
-            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude", .claude, claude), ("automation", .automation, nil), ("desktop", .desktop, nil)] {
+            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude", .claude, claude), ("automation", .automation, nil), ("desktop", .desktop, nil), ("claude-desktop", .claudeDesktop, nil)] {
                 AppNavigation.shared.show(page, select: selection)
                 _ = render(DashboardView(), size: NSSize(width: 1020, height: 660), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
             }
@@ -1252,6 +1381,8 @@ extension NSWindow {
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),
+                ("claude-desktop", "default", .claudeDesktop, nil), ("claude-desktop-behind", "desktopbehind", .claudeDesktop, nil),
+                ("claude-desktop-switching", "desktopswitching", .claudeDesktop, nil), ("claude-desktop-missing", "desktopmissing", .claudeDesktop, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
             ]
             for (name, scenario, page, selection) in pages {
