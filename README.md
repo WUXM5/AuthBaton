@@ -134,3 +134,5 @@ Tests that need a real environment are skipped by default:
 AuthBaton is released under the [MIT License](LICENSE.md).
 
 The Claude desktop session sync and account switching in `services/claude-desktop/` are derived from [cc-same](https://github.com/songkeys/cc-same) 0.1.12 by Songkeys, released under the MIT License; its notice is in [`services/claude-desktop/LICENSE-cc-same.txt`](services/claude-desktop/LICENSE-cc-same.txt).
+
+The description and command schema of the `web_run` tool in `integrations/pi/authmanager-codex/web-run.ts` are adapted from [OpenAI Codex](https://github.com/openai/codex) rust-v0.163.0, Copyright 2025 OpenAI, licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0); the file's header says what changed.

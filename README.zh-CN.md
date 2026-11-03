@@ -129,3 +129,5 @@ bash scripts/accounts-preview/render.sh interact        # 编译生产界面接�
 AuthBaton 按 [MIT License](LICENSE.md) 发布。
 
 `services/claude-desktop/` 里的 Claude 桌面会话同步与换号派生自 Songkeys 的 [cc-same](https://github.com/songkeys/cc-same) 0.1.12，按 MIT License 发布，许可声明见 [`services/claude-desktop/LICENSE-cc-same.txt`](services/claude-desktop/LICENSE-cc-same.txt)。
+
+`integrations/pi/authmanager-codex/web-run.ts` 里 `web_run` 工具的说明和参数结构改编自 [OpenAI Codex](https://github.com/openai/codex) rust-v0.163.0（Copyright 2025 OpenAI），按 [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0) 发布；改了哪些写在文件头。
