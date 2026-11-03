@@ -33,6 +33,20 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。桌面操作记录 `desktop-log.jsonl`（0600，超过 512 KB 轮换一次）只记时间、对 Codex 桌面做的操作、账号 ID 和固定原因，不含凭据。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。
 
+## 对照 Anthropic 条款
+
+Claude Code 的[法律与合规页](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)对用 Claude 订阅登录定了几条规矩。下表逐条写出 AuthBaton 的做法（按 2026-11-02 的页面核对），不符合的地方照实标出。
+
+| Anthropic 的规定 | AuthBaton 的做法 |
+|---|---|
+| 登录 Claude 账号必须走 Anthropic 自己的流程；第三方不能在自己的应用里提供 Claude.ai 登录。 | 符合。添加账号、重新登录都是在隔离目录里运行官方的 `claude auth login --claudeai`，在 Anthropic 的页面上登录。AuthBaton 只把登录链接交给你，你可以直接打开，也可以复制到想用的浏览器里；它没有自己的登录。 |
+| 开发者不能收集、存储或中转 Claude.ai 凭据或会话令牌。 | **不符合。** 当前账号以外的账号，令牌存在 AuthBaton 的 Keychain Vault 里，由 AuthBaton 用 Claude Code 的 OAuth 客户端自己续期；开启个人云端后，由你自己 Cloudflare 账户里的 Worker 保存和续期。令牌只在你的 Mac 和你自己的 Cloudflare 账户里。 |
+| 不能用订阅凭据替用户转发请求。 | 符合。AuthBaton 没有服务器，不替任何人发模型请求，也不共享账号；对话由未经修改的 Claude Code 直接发给 Anthropic。AuthBaton 唯一发起的模型请求是可选的预热，也经官方 CLI 发出。pi 扩展只拿 Codex 的令牌，拿不到 Claude 的。 |
+| OAuth 用于订阅用户正常使用 Claude Code 和 Anthropic 自己的应用；用自己的订阅登录未经修改的 Claude Code 不受限制。 | **部分符合。** Claude Code 没有被修改。但 AuthBaton 自己也会拿令牌调用 Anthropic 的账号接口：续期、查额度和账号资料、使用你选定的重置卡。这些都不是模型请求。 |
+| Pro、Max、Ultra 套餐公布的用量上限以个人正常使用为前提。 | **由你决定。** 所有账号都应当是你自己的。见底自动换号默认关闭；开启后，工作会换到你的另一个订阅上继续。 |
+
+换号是在持有 Claude Code 自己的锁时，把选中的账号写进 Claude Code 自己的存储。Anthropic 的文档写了「每个账号一个 `CLAUDE_CONFIG_DIR`」的多账号用法，没有写切换默认登录这种做法。Anthropic 可以不经通知执行这些规定，AuthBaton 不能保证账号不受限制。
+
 ## 架构
 
 ```mermaid

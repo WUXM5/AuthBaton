@@ -875,6 +875,7 @@ fn cancelled_login_with_different_identity_never_overwrites_original() {
         message: String::new(),
         verification_url: None,
         user_code: None,
+        browser_url: None,
     });
     manager.finish_login(&mut login);
     assert_eq!(fixture.platform.vault_read("a").unwrap(), old.encoded());

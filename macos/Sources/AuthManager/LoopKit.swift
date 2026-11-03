@@ -143,7 +143,7 @@ enum SVGPath {
 // The design's 20 × 20 line icons. Strokes scale with the drawn size, like the SVG originals.
 enum Glyph: Sendable {
     case accounts, relay, desktop, clients, cloud, refresh, plus, sun, shield, sync, info, clock, alert
-    case check, chevronDown, chevronRight, external, server, mac, window, codex, claude
+    case check, chevronDown, chevronRight, external, copy, server, mac, window, codex, claude
 
     fileprivate var data: [String] {
         switch self {
@@ -164,6 +164,7 @@ enum Glyph: Sendable {
         case .chevronDown: ["M6 8l4 4 4-4"]
         case .chevronRight: ["M8 5.5l4.5 4.5L8 14.5"]
         case .external: ["M8 4H4.5A1.5 1.5 0 0 0 3 5.5v10A1.5 1.5 0 0 0 4.5 17h10a1.5 1.5 0 0 0 1.5-1.5V12M11 3h6v6M17 3l-8 8"]
+        case .copy: [rect(7, 7, 10, 10, 2), "M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"]
         case .server: [rect(3, 3, 14, 5.5, 1.8), rect(3, 11.5, 14, 5.5, 1.8), "M6 5.75h.1M6 14.25h.1"]
         case .mac: [rect(3, 4, 14, 9.5, 1.8), "M1.5 16h17"]
         case .window: [rect(2.5, 3.5, 15, 13, 3), "M7.5 3.5v13"]
