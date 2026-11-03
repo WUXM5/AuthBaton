@@ -16,6 +16,9 @@ cp "$SWIFT_BIN/desktop-bridge" "$APP/Contents/MacOS/desktop-bridge"
 cp -R "$SWIFT_BIN/AuthManager_DesktopBridge.bundle" "$APP/Contents/Resources/"
 cp -R "$SWIFT_BIN/AuthManager_AuthManager.bundle" "$APP/Contents/Resources/"
 cp "$PROJECT_ROOT/assets/brand/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# Licenses travel with the binaries: AuthBaton's own, and cc-same's for services/claude-desktop.
+cp "$PROJECT_ROOT/LICENSE.md" "$APP/Contents/Resources/LICENSE.md"
+cp "$PROJECT_ROOT/services/claude-desktop/LICENSE-cc-same.txt" "$APP/Contents/Resources/LICENSE-cc-same.txt"
 cp "$SWIFT_BIN/AuthManager" "$APP/Contents/MacOS/AuthManager"
 # AUTHMANAGER_BUNDLE_ID keeps the bundle ID of an existing install.
 cat > "$APP/Contents/Info.plist" <<PLIST
