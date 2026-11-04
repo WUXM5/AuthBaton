@@ -13,6 +13,7 @@ mod desktop;
 mod login;
 mod maintenance;
 mod network;
+mod network_switch;
 mod pi_broker;
 mod platform;
 mod quota;
@@ -72,6 +73,10 @@ struct AccountParams {
     account: Option<String>,
     number: Option<u32>,
     snapshot: Option<String>,
+    network_action: Option<String>,
+    phone: Option<String>,
+    ssid: Option<String>,
+    password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -302,6 +307,12 @@ fn response(
                             confirm: params.confirm == Some(true),
                         })?
                     }
+                    "accounts.network" => manager.network(network_switch::Command {
+                        action: params.network_action.as_deref().ok_or("缺少网络操作")?,
+                        phone: params.phone.as_deref(),
+                        ssid: params.ssid.as_deref(),
+                        password: params.password.as_deref(),
+                    })?,
                     "accounts.retry_save" => {
                         manager.retry_save(params.id.as_deref().ok_or("缺少账号标识")?)?
                     }
@@ -472,7 +483,7 @@ fn run() -> Result<(), &'static str> {
             )?);
             let mut shutdown = false;
             let pi = pi_broker::Listener::bind(root)?;
-            let claude_mod = claude_mod::Listener::bind(root)?;
+            let mut claude_mod = claude_mod::Listener::bind(root)?;
             while !shutdown && !parent_closed.load(Ordering::Acquire) {
                 login.poll();
                 if let Some(manager) = accounts.as_mut() {

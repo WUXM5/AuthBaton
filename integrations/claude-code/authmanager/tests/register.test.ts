@@ -5,6 +5,8 @@ import type {
   SessionRateLimit,
   SessionUsage,
   TurnCompleteInput,
+  TurnStepInput,
+  TurnStepResult,
 } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
@@ -242,5 +244,103 @@ describe('authmanager', () => {
     await $.session.measure(measure(100))
     await $.turn.complete({ ...failed, agentId: 'sub' })
     expect(seen.posts.every(p => !p.body.limited)).toBe(true)
+  })
+})
+
+// Safe network switching: AuthManager answers each `begin` with whether to hold the request.
+function network(on: On, holds: (boolean | Error)[]) {
+  const seen = {
+    events: [] as { socket?: string; body: { session: string; project: string; event: string; request: string } }[],
+    status: [] as (string | undefined)[],
+    sent: 0,
+  }
+  mock.env(on, { CLAUDE_CODE_ENTRYPOINT: 'cli', HOME: '/Users/someone' })
+  const clock = mock.clock(on, { now: T0 })
+  on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: '/Users/someone/work/notes' }))
+  on('http.fetch', ($, e) => {
+    const init = e.init as HttpInit
+    const body = JSON.parse(init.body as string)
+    seen.events.push({ socket: init.socketPath, body })
+    expect(e.url).toBe('http://authmanager/v1/network')
+    const hold = body.event === 'begin' ? holds.shift() ?? false : false
+    if (hold instanceof Error) {
+      throw hold
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ hold }) } }
+  })
+  on('ui.status', ($, e) => {
+    seen.status.push(e.text)
+    return { value: undefined }
+  })
+  // The model request itself, beneath the mod.
+  on('turn.step', async function* ($, e) {
+    seen.sent += 1
+    yield { kind: 'text', index: 0, text: 'hi' }
+    yield { kind: 'text', index: 0, text: ' there' }
+    return reply(e)
+  })
+  return { seen, clock }
+}
+const step: TurnStepInput = { turnId: 't1', index: 2, model: 'opus', messageCount: 3 }
+const reply = (e: TurnStepInput): TurnStepResult => ({
+  turnId: e.turnId,
+  index: e.index,
+  answer: 'hi',
+  toolUses: [],
+  stopReason: 'end_turn',
+  usage: null,
+})
+async function send($: Parameters<Parameters<typeof test>[1]>[0], input: TurnStepInput = step) {
+  const stream = $.turn.step(input)
+  let item = await stream.next()
+  while (!item.done) {
+    item = await stream.next()
+  }
+  return item.value
+}
+
+describe('network switching', () => {
+  test('each request is reported before it is sent and after it ends', async ($, on) => {
+    const { seen } = network(on, [false])
+    const result = await send($)
+    expect(result.answer).toBe('hi')
+    expect(seen.sent).toBe(1)
+    expect(seen.events.map(e => e.body)).toEqual([
+      { session: 's1', project: 'notes', event: 'begin', request: 't1:main:2' },
+      { session: 's1', project: 'notes', event: 'end', request: 't1:main:2' },
+    ])
+    expect(seen.events[0]?.socket).toBe('/Users/someone/Library/Application Support/AuthManager/claude-mod.sock')
+    expect(seen.status).toEqual([])
+  })
+
+  test('a held request waits for AuthManager and says so meanwhile', async ($, on) => {
+    const { seen } = network(on, [true, true, false])
+    await send($, { ...step, agentId: 'a7' })
+    expect(seen.sent).toBe(1)
+    expect(seen.events.map(e => e.body.event)).toEqual(['begin', 'begin', 'begin', 'end'])
+    expect(seen.events[0]?.body.request).toBe('t1:a7:2')
+    expect(seen.status).toEqual(['切换网络中：这条请求等新网络连上再发…', undefined])
+  })
+
+  test('without AuthManager the request goes at once', async ($, on) => {
+    const { seen } = network(on, [new Error('ECONNREFUSED')])
+    await send($)
+    expect(seen.sent).toBe(1)
+    expect(seen.status).toEqual([])
+  })
+
+  test('a long stream keeps saying it is alive', async ($, on) => {
+    const { seen, clock } = network(on, [false])
+    const stream = $.turn.step(step)
+    // The reply is mid-stream: its first piece is out, the rest still to come.
+    await stream.next()
+    await clock.advance(31_000)
+    let item = await stream.next()
+    while (!item.done) {
+      item = await stream.next()
+    }
+    expect(item.value.answer).toBe('hi')
+    expect(seen.events.map(e => e.body.event)).toEqual(['begin', 'alive', 'alive', 'end'])
   })
 })

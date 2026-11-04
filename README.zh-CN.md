@@ -19,7 +19,8 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - **Codex 桌面（实验）**：经本机调试端口连接官方桌面，不退出就能换号，可暂停并在换号后接续运行中的会话。
 - **Claude**：不退出客户端换号（运行中的会话约 30 秒内生效）；可选的 5 小时窗口预热，每天定点用官方 CLI 发一条 Haiku 消息，默认关闭。
 - **Claude 桌面**：Claude 桌面版每个账号、每个组织的本地 Code 会话列表保持一致，换号后侧栏不再是空的（对话原文本来就在 `~/.claude/projects` 共用）。不退出登录切换桌面账号（macOS）：Claude 退出，现在的登录原样存好、换上另一个，再打开 Claude。快照和留 30 天的回收站让每次改动都能撤回。移植自 [cc-same](https://github.com/songkeys/cc-same)（MIT）。后台同步默认关闭。
-- **集成**：pi 扩展按账号取用 access token，并给 Codex 模型提供 Codex 自己的联网搜索（`web_run`）；Claude Code 配套插件上报额度，被额度打断的一轮在换号后自动续跑。
+- **安全切换网络（macOS）**：切 Wi-Fi 会切断所有正在传输的模型回复，而 Claude Code 不会续写已经开始输出的回复。选好下一个网络（Wi-Fi 或你的 iPhone 热点），AuthBaton 只在没有回复在传输时才切：期间 Claude Code 插件暂停发新请求，其他客户端（Codex、Claude 桌面版、浏览器）经 mihomo 控制接口或 `nettop` 观察，只能等它们传完。5 分钟等不到就放弃，网络不动。iPhone 热点经接力远程打开，不用碰手机。Wi-Fi 密码第一次切换时输入，连上后记住，直到它不能用为止。
+- **集成**：pi 扩展按账号取用 access token，并给 Codex 模型提供 Codex 自己的联网搜索（`web_run`）；Claude Code 配套插件上报额度，被额度打断的一轮在换号后自动续跑，切网期间新的模型请求会等新网络连上再发。
 - **个人云端（可选）**：部署到你自己 Cloudflare 账户的 Worker 集中续期，多台设备共用同一批账号，见 [`cloud/`](cloud/README.zh-CN.md)。
 
 > [!TIP]
@@ -31,7 +32,8 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - 命令行参数只有一个例外：写入 Claude 或 Codex 官方 Keychain 条目时，如果内容超出 `security -i` 的 4096 字节单行上限，会改作 `/usr/bin/security` 的命令行参数传入。写入的那一刻，同一 macOS 用户下的进程能在进程列表里看到它。
 - 开启 Codex 桌面热切换后，AuthBaton 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 AuthBaton 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；AuthBaton 自己打开的桌面传入 `=0`，退出时照常确认。重启前会在 Codex 桌面自己的日志（`~/Library/Logs/com.openai.codex/`）里查找该进程「启动完成」的那一行，启动完成前不会让它退出；只读这一行，不保存日志内容。
 - Claude 桌面：换号时把桌面版整套登录（`Cookies`、`Local Storage`、`Session Storage`、`IndexedDB`、`WebStorage` 和 `config.json` 里的三个键）在 Claude 退出后移进 `~/Library/Application Support/AuthManager/claude-desktop/logins/<账号>`，再把另一个移回来，同一块盘上改名完成。这些文件由 Claude 用它自己的 Keychain 密钥加密，AuthBaton 不解密、不读、不续期、不外传。会话列表只复制、不做链接（Claude 遇到软链文件夹会存不住会话）。AuthBaton 用空环境启动 Claude。
-- 界面进程拿不到凭据；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
+- 切换网络：在切换框里输入的 Wi-Fi 密码从界面单向传给服务一次（不会再回到界面），加入成功前只在内存里，成功后存进 Vault，加入被拒就丢掉。加入用 `/usr/sbin/networksetup -setairportnetwork`，它只接受命令行参数形式的密码：它运行的几秒内，同一 macOS 用户下的进程能在进程列表里看到。iPhone 热点的密码由手机经 Sharing.framework 的私有接口 `SFRemoteHotspotSession`（热点组件）给出，不保存。只有你发起后才会改 Mac 的 Wi-Fi。切完的核对是一个不带认证的 `api.anthropic.com` 请求，不是模型请求。`network-log.jsonl`（0600）只记时间、网络名和结果。
+- 界面进程拿不到凭据（你输入的 Wi-Fi 密码除外）；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
 - 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。桌面操作记录 `desktop-log.jsonl`（0600，超过 512 KB 轮换一次）只记时间、对 Codex 桌面做的操作、账号 ID 和固定原因，不含凭据。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。
 
@@ -62,6 +64,9 @@ flowchart TD
     B -->|本机 CDP| D[Codex 桌面]
     P[pi 扩展] -->|pi.sock| S
     M[Claude Code 插件] -->|claude-mod.sock| S
+    S -->|"私有管道：热点密码"| HS[hotspot-helper]
+    HS -->|接力| PH[iPhone 热点]
+    S -->|networksetup| WIFI[Wi-Fi]
     S -.->|可选| W[个人云端 Worker]
 ```
 
@@ -71,6 +76,7 @@ flowchart TD
 | `macos/Sources/AuthManager/` | SwiftUI 界面与菜单栏 |
 | `macos/Sources/CredentialStore/` | 固定版本的 Keychain Vault / SQLite 组件 |
 | `macos/Sources/DesktopBridge/` | Codex 桌面连接助手和注入页面的脚本 |
+| `macos/Sources/HotspotHelper/` | 发现附近的 iPhone，经接力打开热点 |
 | `integrations/pi/` | pi 扩展与安装脚本 |
 | `integrations/claude-code/` | Claude Code 配套插件 |
 | `cloud/` | 个人云端 Worker |

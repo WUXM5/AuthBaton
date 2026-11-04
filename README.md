@@ -21,7 +21,8 @@ The interface is in Chinese.
 - **Codex desktop (experimental)**: connects to the official desktop app through a local debugging port and switches accounts without quitting it. Running sessions can be paused and continued after the switch.
 - **Claude**: switches accounts without quitting the client; running sessions pick up the change within about 30 seconds. Optional 5-hour window warm-up: each day at a set hour, one Haiku message is sent through the official CLI. Off by default.
 - **Claude desktop**: keeps the local Code session list of every account and organization in the Claude desktop app the same, so switching accounts no longer leaves the sidebar empty (transcripts were always shared in `~/.claude/projects`). Switches the desktop app to another account without signing out (macOS): Claude quits, its sign-in is set aside and the other one put back, and Claude opens again. Snapshots and a 30-day trash make every change undoable. Ported from [cc-same](https://github.com/songkeys/cc-same) (MIT). Background sync is off by default.
-- **Integrations**: the pi extension takes access tokens per account and gives Codex models Codex's own web search (`web_run`). The Claude Code plugin reports quota, and a turn cut off by the quota limit resumes automatically after the switch.
+- **Safe network switching (macOS)**: switching Wi-Fi cuts every model reply in flight, and Claude Code does not resume a reply that was already streaming. Pick the next network (a Wi-Fi, or your iPhone's hotspot) and AuthBaton switches only when no reply is in flight: the Claude Code plugin holds new requests meanwhile, other clients (Codex, the Claude desktop app, browsers) are watched through mihomo's controller or `nettop` and waited for. It gives up after 5 minutes and leaves the network alone. An iPhone hotspot is turned on remotely over Continuity, without touching the phone. A Wi-Fi password is typed the first time and remembered until it stops working.
+- **Integrations**: the pi extension takes access tokens per account and gives Codex models Codex's own web search (`web_run`). The Claude Code plugin reports quota, a turn cut off by the quota limit resumes automatically after the switch, and new model requests wait while the network is switched.
 - **Personal cloud (optional)**: a Worker deployed to your own Cloudflare account renews tokens centrally, so several devices share the same accounts. See [`cloud/`](cloud/README.md).
 
 > [!TIP]
@@ -33,7 +34,8 @@ The interface is in Chinese.
 - There is one exception for command-line arguments. When an official Claude or Codex Keychain entry is larger than the 4096-byte single-line limit of `security -i`, it is passed to `/usr/bin/security` as a command-line argument instead. While that write runs, processes of the same macOS user can see the entry in the process list.
 - With Codex desktop hot switching on, AuthBaton sets `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1` in the login session environment (`launchctl setenv`) while it runs. It clears the variable when hot switching is turned off or AuthBaton quits. This keeps a desktop app opened from the Dock, or restarted after an update, from stopping at the quit confirmation when AuthBaton restarts it in debugging mode. A desktop app that AuthBaton opens itself gets `=0` and asks for confirmation on quit as usual. Before a restart, AuthBaton looks in the desktop app's own log (`~/Library/Logs/com.openai.codex/`) for the line that says the process has finished starting, and does not let it quit before then. It reads only that line and keeps nothing from the log.
 - Claude desktop: switching moves the desktop app's whole sign-in (its `Cookies`, `Local Storage`, `Session Storage`, `IndexedDB` and `WebStorage`, and three keys of its `config.json`) into `~/Library/Application Support/AuthManager/claude-desktop/logins/<account>` and back, renamed on the same disk while Claude is closed. Claude encrypts these with its own Keychain key; AuthBaton never decrypts, reads, renews or sends them. Session lists are only copied, never linked (Claude stops saving through a symlinked folder). AuthBaton starts Claude with an empty environment.
-- The UI process never gets credentials. The Rust service is the only source of account state, and IPC responses use a field allowlist.
+- Network switching: a Wi-Fi password typed in the switch sheet goes once from the UI to the service (it never comes back to the UI), is kept in memory until the join works, and is then stored in the Vault; a refused join forgets it. Joining runs `/usr/sbin/networksetup -setairportnetwork`, which takes the password as a command-line argument: for the few seconds it runs, processes of the same macOS user can see it in the process list. An iPhone hotspot's password comes from the phone through Sharing.framework's private `SFRemoteHotspotSession` (the hotspot helper) and is never stored. A switch changes the Mac's Wi-Fi only after you ask for it. The check afterwards is an unauthenticated request to `api.anthropic.com`, not a model request. `network-log.jsonl` (0600) records the time, the networks' names and the result.
+- The UI process never gets credentials other than the Wi-Fi password you type. The Rust service is the only source of account state, and IPC responses use a field allowlist.
 - Apart from the warm-up you turn on for a Claude account, AuthBaton sends no model requests and never uses one as an authentication check.
 - The runtime directory `~/Library/Application Support/AuthManager/` has mode 0700; sockets and the database are 0600. The desktop operation log `desktop-log.jsonl` (0600, rotated once it passes 512 KB) records only the time, the operation on the Codex desktop app, the account ID and a fixed reason. It contains no credentials. These measures protect against mistakes and credential leaks; they cannot defend against malicious programs running as the same macOS user.
 
@@ -64,6 +66,9 @@ flowchart TD
     B -->|local CDP| D[Codex desktop]
     P[pi extension] -->|pi.sock| S
     M[Claude Code plugin] -->|claude-mod.sock| S
+    S -->|"private pipe: hotspot password"| HS[hotspot-helper]
+    HS -->|Continuity| PH[iPhone hotspot]
+    S -->|networksetup| WIFI[Wi-Fi]
     S -.->|optional| W[Personal cloud Worker]
 ```
 
@@ -73,6 +78,7 @@ flowchart TD
 | `macos/Sources/AuthManager/` | SwiftUI interface and menu bar |
 | `macos/Sources/CredentialStore/` | Fixed-version Keychain Vault / SQLite component |
 | `macos/Sources/DesktopBridge/` | Codex desktop connection helper and the scripts it injects into the page |
+| `macos/Sources/HotspotHelper/` | Finds nearby iPhones and turns on a hotspot over Continuity |
 | `integrations/pi/` | pi extension and install script |
 | `integrations/claude-code/` | Claude Code companion plugin |
 | `cloud/` | Personal cloud Worker |

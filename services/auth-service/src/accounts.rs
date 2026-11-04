@@ -103,6 +103,7 @@ pub struct Accounts {
     automation: crate::automation::Runtime,
     claude_mod: crate::claude_mod::Runtime,
     claude_desktop: crate::claude_desktop::Runtime,
+    network: crate::network_switch::Runtime,
     #[cfg(test)]
     reset_transport: Option<crate::codex_api::Transport>,
     #[cfg(test)]
@@ -133,6 +134,13 @@ impl Accounts {
         // Only the real service reads and writes Claude desktop's files; tests build through
         // with_platform and keep it off.
         manager.claude_desktop = crate::claude_desktop::Runtime::start(root);
+        // Only the real service switches networks; the hotspot helper ships beside it.
+        let hotspot = bundled.with_file_name("hotspot-helper");
+        manager.network = crate::network_switch::Runtime::start(
+            root,
+            manager.platform.clone(),
+            hotspot.is_file().then_some(hotspot),
+        );
         Ok(manager)
     }
     fn with_platform(
@@ -229,6 +237,7 @@ impl Accounts {
             automation: crate::automation::Runtime::default(),
             claude_mod: crate::claude_mod::Runtime::default(),
             claude_desktop: crate::claude_desktop::Runtime::off(),
+            network: crate::network_switch::Runtime::off(),
             #[cfg(test)]
             reset_transport: None,
             #[cfg(test)]
@@ -437,7 +446,7 @@ impl Accounts {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
         let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a)})).collect();
-        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"claude_desktop":self.claude_desktop.snapshot(|uuid|{let prefix=format!("claude:{uuid}:");self.db.accounts.iter().find(|a|a.provider=="claude"&&a.metadata.as_ref().is_some_and(|m|m.owner.starts_with(&prefix))).map(|a|a.id.clone())})})
+        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":self.claude_desktop.snapshot(|uuid|{let prefix=format!("claude:{uuid}:");self.db.accounts.iter().find(|a|a.provider=="claude"&&a.metadata.as_ref().is_some_and(|m|m.owner.starts_with(&prefix))).map(|a|a.id.clone())})})
     }
     pub fn claude_desktop(&mut self, command: crate::claude_desktop::Command<'_>) -> Result<()> {
         self.claude_desktop.command(command)
@@ -1273,6 +1282,7 @@ impl Accounts {
     }
     pub fn tick(&mut self) {
         self.claude_desktop.tick();
+        self.network.tick();
         self.cloud_tick();
         if self
             .reset_job
@@ -1479,7 +1489,20 @@ impl Accounts {
         self.finish_reset();
         self.warmup_stop();
         self.claude_desktop.stop();
+        self.network.stop();
         self.quota.stop(now());
+    }
+
+    /// Safe network switching: watch, switch, cancel, forget.
+    pub fn network(&mut self, command: crate::network_switch::Command<'_>) -> Result<()> {
+        self.network.command(command)
+    }
+    /// One model request of a Claude Code session, relayed by the companion mod.
+    pub fn network_mod(
+        &self,
+        event: &crate::network_switch::ModEvent,
+    ) -> crate::network_switch::ModReply {
+        self.network.mod_event(event)
     }
 
     /// A running Claude Code session's rate-limit reading, relayed by the companion mod. It only

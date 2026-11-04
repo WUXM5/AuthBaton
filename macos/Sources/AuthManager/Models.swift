@@ -63,6 +63,11 @@ struct LoginParams: Encodable, Sendable {
     var account: String? = nil
     var number: Int? = nil
     var snapshot: String? = nil
+    // accounts.network: watch, switch, cancel, forget; the target; a Wi-Fi password typed once.
+    var network_action: String? = nil
+    var phone: String? = nil
+    var ssid: String? = nil
+    var password: String? = nil
 }
 
 struct LoginResult: Decodable, Sendable { let attempt: LoginAttempt? }
@@ -141,6 +146,7 @@ struct AccountDirectory: Decodable, Sendable {
     var cloud: CloudStatus? = nil
     var strategy: CodexStrategyStatus? = nil
     var claudeDesktop: ClaudeDesktopStatus? = nil
+    var network: NetworkStatus? = nil
 }
 
 struct CodexStrategyInput: Encodable, Sendable {
