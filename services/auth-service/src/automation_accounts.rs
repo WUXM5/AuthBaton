@@ -195,6 +195,25 @@ impl Accounts {
             .flatten();
         automation::decide(rule.order, reset, target)
     }
+    /// A card a resetting rule would spend that lapses within 30 minutes. It is spent whatever
+    /// the line or episode, since it is lost otherwise, but only once the account has used some
+    /// quota: resetting untouched windows restores nothing.
+    fn expiring_credit(
+        &self,
+        account: &Account,
+        observation: &automation::Observation,
+    ) -> Option<String> {
+        let rule = self
+            .db
+            .automation
+            .config
+            .accounts
+            .iter()
+            .find(|r| r.id == account.id && r.participate)?;
+        (rule.order.resets() && observation.remaining < 100.)
+            .then(|| self.quota.expiring_credit(&account.id, now()))
+            .flatten()
+    }
     /// Plain-language state of an account the strategy leaves alone on this check.
     fn strategy_waiting(&self, account: &Account, observation: &automation::Observation) -> String {
         let rule = self
@@ -310,6 +329,7 @@ impl Accounts {
                     .insert(id, "等待新鲜额度或重置后的新查询".into());
                 continue;
             };
+            let expiring = self.expiring_credit(&account, &observation);
             if let Some(latch) = self.db.automation.latches.get(&id) {
                 let newer = observation.checked_at >= latch.created_at;
                 if newer && observation.remaining > f64::from(latch.threshold) {
@@ -317,21 +337,24 @@ impl Accounts {
                     if self.save().is_err() {
                         return;
                     }
-                } else if latch.kind == LatchKind::Switch {
+                } else if latch.kind == LatchKind::Switch && expiring.is_none() {
                     let message = format!(
                         "这一轮见底已换走；额度回到 {}% 以上后重新开始",
                         latch.threshold
                     );
                     self.automation.account_messages.insert(id, message);
                     continue;
-                } else if !newer {
+                } else if latch.kind == LatchKind::Reset && !newer {
                     self.automation
                         .account_messages
                         .insert(id, "已重置，等待重置后的新额度".into());
                     continue;
                 }
             }
-            let action = self.strategy_action(&account, &observation);
+            let action = match &expiring {
+                Some(credit) => Action::Reset(credit.clone()),
+                None => self.strategy_action(&account, &observation),
+            };
             let resetting = matches!(action, Action::Reset(_));
             let result = match action {
                 Action::None => {
@@ -339,9 +362,12 @@ impl Accounts {
                     self.automation.account_messages.insert(id, message);
                     continue;
                 }
-                Action::Reset(credit) => {
-                    self.start_strategy_reset(&account, &credit, observation.remaining)
-                }
+                Action::Reset(credit) => self.start_strategy_reset(
+                    &account,
+                    &credit,
+                    observation.remaining,
+                    expiring.is_some(),
+                ),
                 Action::Switch(target) if account.provider == "claude" => {
                     self.switch_claude(&account, &target)
                 }
@@ -395,6 +421,7 @@ impl Accounts {
         account: &Account,
         credit: &str,
         remaining: f64,
+        expiring: bool,
     ) -> Result<()> {
         let request_id = random_id()?;
         let started_at = now();
@@ -407,19 +434,24 @@ impl Accounts {
             .find(|r| r.id == account.id)
             .unwrap()
             .below;
-        self.db.automation.latches.insert(
-            account.id.clone(),
-            Latch {
-                request_id: request_id.clone(),
-                created_at: now(),
-                threshold,
-                kind: LatchKind::Reset,
-            },
-        );
-        self.save()?; // Episode admission precedes the durable POST intent.
+        // A lapsing card spent inside an episode leaves that episode's latch as it is.
+        let latched = self.db.automation.latches.contains_key(&account.id);
+        if !latched {
+            self.db.automation.latches.insert(
+                account.id.clone(),
+                Latch {
+                    request_id: request_id.clone(),
+                    created_at: now(),
+                    threshold,
+                    kind: LatchKind::Reset,
+                },
+            );
+            self.save()?; // Episode admission precedes the durable POST intent.
+        }
         let trigger = crate::resets::Trigger {
             remaining_percent: remaining,
             threshold_percent: threshold,
+            expiring,
         };
         if let Err(message) = self.reset_quota_with_trigger(
             &account.id,
@@ -453,12 +485,18 @@ impl Accounts {
                         detail: Some(message.into()),
                     }],
                 });
-                self.db.automation.latches.remove(&account.id);
+                if !latched {
+                    self.db.automation.latches.remove(&account.id);
+                }
                 self.save()?;
             }
             return Err(message);
         }
-        self.automation.message = format!("{}：已按确认规则提交自动重置", account.label);
+        self.automation.message = if expiring {
+            format!("{}：重置卡 30 分钟内到期，已自动使用", account.label)
+        } else {
+            format!("{}：已按确认规则提交自动重置", account.label)
+        };
         Ok(())
     }
     /// Claude has no batch to pause or resume: the switch is one locked write of the default

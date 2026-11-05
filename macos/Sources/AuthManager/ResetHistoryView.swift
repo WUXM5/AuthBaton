@@ -126,7 +126,7 @@ private struct ResetHistoryRow: View {
                     if let trigger = entry.trigger {
                         GridRow {
                             Text("触发时").foregroundStyle(Palette.ink3)
-                            Text("剩余 \(String(format: "%.1f", trigger.remainingPercent))% · 见底线 ≤ \(trigger.thresholdPercent)%").monospacedDigit()
+                            Text("剩余 \(String(format: "%.1f", trigger.remainingPercent))% · " + (trigger.expiring == true ? "重置卡 30 分钟内到期" : "见底线 ≤ \(trigger.thresholdPercent)%")).monospacedDigit()
                         }
                     }
                     if !entry.message.isEmpty {

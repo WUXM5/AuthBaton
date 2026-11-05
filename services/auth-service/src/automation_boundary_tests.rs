@@ -1444,3 +1444,184 @@ fn a_claim_the_server_keeps_refusing_waits_longer_each_time() {
     assert!(waits.windows(2).all(|w| w[1] >= w[0]), "{waits:?}");
     assert!(waits[0] <= 60 && waits[7] >= 3600, "{waits:?}");
 }
+
+/// Usage `used`% with the one credit lapsing in `lead` seconds; a POST spends it.
+fn lapsing(r: &Request, used: u64, lead: u64) -> Result<Response> {
+    if let Request::Consume { .. } = r {
+        return Ok(Response {
+            status: 200,
+            retry_after: None,
+            body: json!({"code":"reset"}),
+        });
+    }
+    let mut response = response(r, used);
+    if let Request::ResetCredits = r {
+        response.body["credits"][0]["expires_at"] =
+            json!(super::desktop_boundary_tests::iso(now() + lead));
+    }
+    Ok(response)
+}
+fn lapsing_used(_: &Access, r: &Request) -> Result<Response> {
+    lapsing(r, 10, 1200)
+}
+fn lapsing_untouched(_: &Access, r: &Request) -> Result<Response> {
+    lapsing(r, 0, 1200)
+}
+fn lapsing_later(_: &Access, r: &Request) -> Result<Response> {
+    lapsing(r, 10, 2400)
+}
+fn lapsing_low(_: &Access, r: &Request) -> Result<Response> {
+    lapsing(r, 99, 1200)
+}
+
+#[test]
+fn a_card_lapsing_within_30_minutes_is_spent_above_the_line_once_quota_is_used() {
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    m.reset_transport = Some(lapsing_used);
+    let tick = |m: &mut Accounts, transport: Transport, order: Order| {
+        quota(m, "a", transport, now());
+        m.db.automation.config.accounts[0].order = order;
+        m.automation.next_check = 0;
+        m.automation_tick();
+    };
+    // Untouched windows have nothing to restore; more than 30 minutes left waits for the line;
+    // a switch-only account never spends a card.
+    tick(&mut m, lapsing_untouched, Order::ResetFirst);
+    tick(&mut m, lapsing_later, Order::ResetFirst);
+    tick(&mut m, lapsing_used, Order::SwitchOnly);
+    assert!(m.reset_job.is_none() && m.db.reset_attempts.is_empty());
+    assert!(m.automation.account_messages["a"].contains("额度充足"));
+    // 90% left, far above the 2% line, and the card lapses in 20 minutes: spend it now.
+    tick(&mut m, lapsing_used, Order::ResetFirst);
+    assert!(m.reset_job.is_some());
+    assert!(m.automation.job.is_none() && m.db.automation.run.is_none());
+    assert!(m.automation.account_messages["a"].contains("30 分钟内到期"));
+    let trigger = m.db.reset_attempts[0].executions[0]
+        .trigger
+        .clone()
+        .unwrap();
+    assert!(trigger.expiring && trigger.remaining_percent == 90.);
+    m.finish_reset();
+    assert_eq!(
+        m.db.reset_attempts[0].outcome,
+        crate::resets::Outcome::Reset
+    );
+    let history = m.reset_history(None, None, None).unwrap();
+    assert_eq!(history["entries"][0]["trigger"]["expiring"], true);
+    // The newer reading after the reset ends the latch without spending another card.
+    tick(&mut m, high, Order::ResetFirst);
+    assert!(m.reset_job.is_none() && m.db.reset_attempts.len() == 1);
+    assert!(!m.db.automation.latches.contains_key("a"));
+    // A line-triggered reset still records the line, not an expiry.
+    tick(&mut m, low, Order::ResetFirst);
+    m.finish_reset();
+    let line = m.db.reset_attempts[1].executions[0]
+        .trigger
+        .clone()
+        .unwrap();
+    assert!(!line.expiring && line.remaining_percent == 1.);
+}
+
+#[test]
+fn a_lapsing_card_still_serves_a_switched_away_account_without_ending_its_episode() {
+    fn offline(_: &Access, r: &Request) -> Result<Response> {
+        assert!(matches!(r, Request::ResetCredits));
+        Err("synthetic offline before POST")
+    }
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    m.db.automation.config.accounts[0].order = Order::SwitchFirst;
+    settle(&mut m);
+    assert!(!m.db.accounts[0].native && m.db.accounts[1].native);
+    let episode = m.db.automation.latches["a"].clone();
+    assert_eq!(episode.kind, LatchKind::Switch);
+    let tick = |m: &mut Accounts, transport: Transport| {
+        quota(m, "a", transport, now());
+        m.automation.retry_after.clear(); // any wait has passed
+        m.automation.next_check = 0;
+        m.automation_tick();
+    };
+    // Still depleted with a card lapsing in 20 minutes. Nothing sent keeps the switch latch and
+    // waits before trying again.
+    m.reset_transport = Some(offline);
+    tick(&mut m, lapsing_low);
+    m.finish_reset();
+    assert_eq!(
+        m.db.reset_attempts[0].outcome,
+        crate::resets::Outcome::NotSent
+    );
+    assert_eq!(m.db.automation.latches["a"].request_id, episode.request_id);
+    assert!(m.automation.retry_after["a"] > now());
+    m.reset_transport = Some(lapsing_low);
+    tick(&mut m, lapsing_low);
+    m.finish_reset();
+    let spent = &m.db.reset_attempts[1];
+    assert_eq!(spent.outcome, crate::resets::Outcome::Reset);
+    assert!(spent.executions[0].trigger.as_ref().unwrap().expiring);
+    assert_eq!(m.db.automation.latches["a"].request_id, episode.request_id);
+    assert_eq!(m.db.automation.latches["a"].kind, LatchKind::Switch);
+    // Still depleted with only a distant card: the episode it was switched away in holds.
+    tick(&mut m, low);
+    assert!(m.reset_job.is_none() && m.db.reset_attempts.len() == 2);
+    assert!(m.automation.account_messages["a"].contains("已换走"));
+}
+
+#[test]
+fn a_claude_grant_lapsing_within_30_minutes_is_claimed_before_the_line() {
+    use crate::claude_resets::{Access as ClaudeAccess, Request as ClaudeRequest};
+    static CLAIMS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    fn usage() -> Value {
+        let mut usage = claude_usage(10);
+        usage["cedar_ember"]["grants"][0]["ends_at"] =
+            json!(super::desktop_boundary_tests::iso(now() + 1200));
+        usage
+    }
+    fn lapsing(_: &str, _: Option<&str>, body: Option<&Value>, _: bool) -> Result<(u16, Value)> {
+        assert!(body.is_none(), "quota polling must never claim");
+        Ok((200, usage()))
+    }
+    fn claim(_: &ClaudeAccess, request: &ClaudeRequest) -> Result<(u16, Value)> {
+        match request {
+            ClaudeRequest::Status => Ok((200, usage())),
+            ClaudeRequest::Claim { grant_id, .. } => {
+                CLAIMS.lock().unwrap().push(grant_id.clone());
+                Ok((200, json!({"result":"reset"})))
+            }
+        }
+    }
+    CLAIMS.lock().unwrap().clear();
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    let mut c = claude("c", "SYNTHETIC_REFRESH_C");
+    c.credential["expiresAt"] = json!((now() + 3600) * 1000);
+    f.platform.vault_write("c", &c.encoded()).unwrap();
+    m.db.accounts.push(account("c", &c, false));
+    m.save().unwrap();
+    m.claude_reset_transport = Some(claim);
+    let mut config = m.db.automation.config.clone();
+    config.accounts[0].participate = false;
+    config.accounts[1].participate = false;
+    config.accounts.push(Rule {
+        id: "c".into(),
+        order: Order::SwitchFirst,
+        participate: true,
+        below: 3,
+    });
+    m.configure_strategy(config, true).unwrap();
+    // 90% of the week left, far above the 3% line; the grant ends in 20 minutes.
+    claude_quota(&mut m, &c, lapsing);
+    m.automation_tick();
+    assert!(m.reset_job.is_some());
+    m.finish_reset();
+    let attempt = m.db.reset_attempts.last().unwrap();
+    assert_eq!(attempt.outcome, crate::resets::Outcome::Reset);
+    assert!(attempt.executions[0].trigger.as_ref().unwrap().expiring);
+    assert_eq!(*CLAIMS.lock().unwrap(), vec![GRANT.to_string()]);
+    // The same grant far from its end waits for the line as before.
+    claude_quota(&mut m, &c, claude_high);
+    m.automation.next_check = 0;
+    m.automation_tick();
+    assert!(m.reset_job.is_none());
+    assert_eq!(CLAIMS.lock().unwrap().len(), 1);
+}
