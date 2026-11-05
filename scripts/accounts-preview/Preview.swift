@@ -49,6 +49,11 @@ import Vision
             label: label, confirm: confirm, enabled: enabled, desktop_action: action, account: account, number: number,
             snapshot: snapshot))
     }
+    func network(_ action: String, phone: String? = nil, ssid: String? = nil, password: String? = nil) async {
+        await accountOperation("accounts.network", params: LoginParams(network_action: action, phone: phone, ssid: ssid, password: password))
+    }
+    // Passive: keeps the service reading traffic. Not a request the checks count.
+    func watchNetwork() async {}
     func clearAccountError() { accountError = nil; accountErrorID = nil }
     func refresh() async {}
     func restart() async { calls.append("restart {}") }
@@ -124,6 +129,31 @@ enum Fixture {
                           "next_update": now + 60, "refreshing": false,
                           "reset_credits": credits.map { ["available_count": $0.count, "details": $0] } ?? NSNull()]]
     }
+    // Safe network switching: synthetic networks, an iPhone, sessions and history.
+    static func network(_ now: Double, _ state: String) -> [String: Any] {
+        let live: [String: Any] = ["safe": ["notes": "idle", "rho": "idle", "codex": "idle"], "busy": ["notes": "live", "rho": "idle", "codex": "live"],
+                                   "waiting": ["notes": "held", "rho": "held", "codex": "live"]][state == "wrong" ? "safe" : state] as! [String: String]
+        let running = state == "waiting"
+        var operation: Any = NSNull()
+        if running {
+            operation = ["kind": "phone", "target": "我的 iPhone", "from": "Studio-5G", "step": "waiting", "running": true, "started_at": now - 48, "remaining": 252]
+        } else if state == "wrong" {
+            operation = ["kind": "wifi", "target": "Cafe Guest", "from": "Studio-5G", "step": "wrong_password", "running": false, "ok": false,
+                         "message": "密码不对，已连回原来的网络", "started_at": now - 120, "waited": 12]
+        }
+        return [
+            "available": true, "current": ["kind": "wifi", "name": "Studio-5G"], "safe": state == "safe" || state == "wrong", "watching": true, "monitor": "mihomo",
+            "sources": [["name": "Claude Code · notes", "state": live["notes"]!, "gated": true], ["name": "Claude Code · rho", "state": live["rho"]!, "gated": true],
+                        ["name": "Codex 桌面", "state": live["codex"]!, "gated": false], ["name": "Claude 桌面", "state": "idle", "gated": false]],
+            "phones": [["name": "我的 iPhone", "battery": 62, "network": "5G", "signal": 3]],
+            "networks": [["ssid": "Studio-5G", "remembered": true, "current": true], ["ssid": "Home-2.4G", "remembered": true, "current": false],
+                         ["ssid": "Cafe Guest", "remembered": false, "current": false], ["ssid": "Office-Lab", "remembered": true, "current": false]],
+            "operation": operation,
+            "history": [["at": now - 3 * 3600, "from": "Home-2.4G", "to": "我的 iPhone", "result": "done", "waited": 55],
+                        ["at": now - 4 * 3600, "from": "Studio-5G", "to": "Cafe Guest", "result": "wrong_password", "waited": 12, "message": "密码不对，已连回原来的网络"],
+                        ["at": now - 28 * 3600, "from": "Studio-5G", "to": "我的 iPhone", "result": "timeout", "message": "5 分钟没等到空闲，网络没动"]],
+        ]
+    }
     static func directory(_ scenario: String) -> [String: Any] {
         var accounts: [[String: Any]] = [
             codex("synthetic-nova", "Codex · nova", "o***@example.invalid", plan: "pro", native: false, state: "healthy", used: 0, resetDays: 7,
@@ -164,8 +194,12 @@ enum Fixture {
                          "account_states": [["id": "synthetic-orbit", "message": "额度充足，高于见底线 3%"],
                                             ["id": "synthetic-p", "message": "额度充足，高于见底线 2%"]]],
             "claude_desktop": claudeDesktop(now),
+            "network": network(now, "busy"),
         ]
         switch scenario {
+        case "netsafe": data["network"] = network(now, "safe")
+        case "netwaiting": data["network"] = network(now, "waiting")
+        case "netwrong": data["network"] = network(now, "wrong")
         case "desktopbehind":
             var desktop = claudeDesktop(now)
             var list = desktop["accounts"] as! [[String: Any]]
@@ -1296,7 +1330,7 @@ extension NSWindow {
 @main struct Preview {
     static func page(_ name: String) -> Page {
         ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation, "desktop": .desktop,
-         "claudedesktop": .claudeDesktop, "clients": .clients, "cloud": .cloud][name]!
+         "claudedesktop": .claudeDesktop, "clients": .clients, "cloud": .cloud, "network": .network][name]!
     }
     @MainActor static func main() {
         let args = CommandLine.arguments
@@ -1384,6 +1418,8 @@ extension NSWindow {
                 ("claude-desktop", "default", .claudeDesktop, nil), ("claude-desktop-behind", "desktopbehind", .claudeDesktop, nil),
                 ("claude-desktop-switching", "desktopswitching", .claudeDesktop, nil), ("claude-desktop-missing", "desktopmissing", .claudeDesktop, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
+                ("network", "default", .network, nil), ("network-safe", "netsafe", .network, nil),
+                ("network-waiting", "netwaiting", .network, nil), ("network-wrong", "netwrong", .network, nil),
             ]
             for (name, scenario, page, selection) in pages {
                 Fixture.load(scenario, into: state)
@@ -1404,11 +1440,22 @@ extension NSWindow {
                 ("sheet-rename", AnyView(RenameSheet(account: nova, close: {}))),
                 ("history", AnyView(ResetHistoryView(accountID: nil))),
                 ("menubar", AnyView(MenuBarPanel(openWindow: {}))),
+                ("sheet-network-new", AnyView(NetworkSwitchSheet(initial: .wifi("Cafe Guest"), started: {}, close: {}))),
+                ("sheet-network-phone", AnyView(NetworkSwitchSheet(initial: .phone("我的 iPhone"), started: {}, close: {}))),
             ]
             for (name, view) in sheets {
                 let size = render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
+            for (name, scenario) in [("sheet-network-waiting", "netwaiting"), ("sheet-network-wrong", "netwrong")] {
+                Fixture.load(scenario, into: state)
+                let size = render(NetworkProgressSheet(close: {}, retry: { _ in }), size: nil, appearance: appearance,
+                                  to: output.appendingPathComponent("\(appearance)-\(name).png"))
+                print("\(appearance)/\(name): \(size.width) × \(size.height)")
+            }
+            Fixture.load("netwaiting", into: state)
+            _ = render(MenuBarPanel(openWindow: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-menubar-network-waiting.png"))
+            Fixture.load("default", into: state)
             ClaudeLogin.waiting(state)
             let loginSize = render(LoginView(provider: "claude").background(Palette.card), size: nil, appearance: appearance,
                                    to: output.appendingPathComponent("\(appearance)-sheet-login-claude.png"))

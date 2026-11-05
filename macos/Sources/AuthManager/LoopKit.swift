@@ -144,6 +144,7 @@ enum SVGPath {
 enum Glyph: Sendable {
     case accounts, relay, desktop, clients, cloud, refresh, plus, sun, shield, sync, info, clock, alert
     case check, chevronDown, chevronRight, external, copy, server, mac, window, codex, claude
+    case wifi, hotspot, key, phone
 
     fileprivate var data: [String] {
         switch self {
@@ -170,6 +171,10 @@ enum Glyph: Sendable {
         case .window: [rect(2.5, 3.5, 15, 13, 3), "M7.5 3.5v13"]
         case .codex: ["M5.6 15.2h8.6a3.4 3.4 0 0 0 .3-6.8 4.7 4.7 0 0 0-9.1-.6 3.7 3.7 0 0 0 .2 7.4z", "M7.7 10.3l1.6 1.3-1.6 1.3M10.8 13h2.2"]
         case .claude: ["M10 3v14M3 10h14M5.05 5.05l9.9 9.9M14.95 5.05l-9.9 9.9"]
+        case .wifi: ["M2.5 8a11 11 0 0 1 15 0", "M5.2 10.9a7 7 0 0 1 9.6 0", "M7.9 13.7a3 3 0 0 1 4.2 0", "M10 16.4v.1"]
+        case .hotspot: ["M8.3 11.7a3.3 3.3 0 0 0 4.7 0l2.8-2.8a3.3 3.3 0 0 0-4.7-4.7l-1 1", "M11.7 8.3a3.3 3.3 0 0 0-4.7 0l-2.8 2.8a3.3 3.3 0 0 0 4.7 4.7l1-1"]
+        case .key: [circle(7, 12.5, 3.5), "M9.5 10l7-7M14 5.5l2 2M12 7.5l1.5 1.5"]
+        case .phone: [rect(6, 2.5, 8, 15, 2), "M9 15h2"]
         }
     }
 

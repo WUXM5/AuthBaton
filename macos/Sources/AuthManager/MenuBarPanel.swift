@@ -23,6 +23,7 @@ struct MenuBarPanel: View {
                     switchList(provider, directory: directory)
                 }
                 if let desktop = directory.claudeDesktop, desktop.installed { claudeDesktop(desktop) }
+                if let network = directory.network, network.available { networkRow(network) }
             } else if let cloud = directory?.cloud, !local {
                 cloudSummary(cloud)
             } else if service.isConnected {
@@ -37,6 +38,13 @@ struct MenuBarPanel: View {
         .background(Palette.panel)
         .foregroundStyle(Palette.ink)
         .tint(Palette.solid)
+        // The network row says whether a switch would cut a reply; the service reads traffic only while asked.
+        .task {
+            while !Task.isCancelled {
+                await service.watchNetwork()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
         .onChange(of: service.directory?.desktop?.action) { _, action in
             if let action, let since = attemptSince, action.state == "complete", (action.at ?? 0) >= since {
                 expanded = nil
@@ -287,6 +295,63 @@ struct MenuBarPanel: View {
             working = false
             guard service.accountError == nil else { return }
             if desktop { attemptSince = started } else { expanded = nil }
+        }
+    }
+
+    // Network: is it safe to switch now, and 切网, which opens the picker in the main window.
+    private func networkRow(_ network: NetworkStatus) -> some View {
+        let op = network.operation?.running == true ? network.operation : nil
+        let status: String = if let op {
+            "Claude Code 已暂停 · \(String(format: "%d:%02d", (op.remaining ?? 0) / 60, (op.remaining ?? 0) % 60)) 后不切了"
+        } else if network.watching {
+            network.safe ? "可以切网" : "\(network.live.count) 个回复在传输"
+        } else {
+            "正在读取…"
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("网络").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
+                .padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 3.5)
+            HStack(spacing: 9) {
+                if let op {
+                    ZStack {
+                        Circle().stroke(Palette.soft, lineWidth: 2.6)
+                        Circle().trim(from: 0, to: Double(op.remaining ?? 0) / 300)
+                            .stroke(Palette.brand, style: StrokeStyle(lineWidth: 2.6, lineCap: .round)).rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 17, height: 17).frame(width: 19, height: 19)
+                } else {
+                    Icon(network.current.kind == "hotspot" ? .hotspot : .wifi, size: 15, color: Palette.ink2).frame(width: 19, height: 19)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(op.map { "等着切到 \($0.target)" } ?? network.current.title).font(.system(size: 12)).lineLimit(1)
+                    HStack(spacing: 5) {
+                        if op == nil && network.watching && !network.safe {
+                            Circle().fill(Palette.brand).frame(width: 6, height: 6)
+                        }
+                        Text(status).font(.system(size: 10)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 3.5)
+                if op != nil {
+                    Button { Task { await service.network("cancel") } } label: { Text("×").font(.system(size: 12, weight: .semibold)) }
+                        .buttonStyle(.pill(.secondary, height: 20))
+                        .help("取消切换")
+                        .accessibilityLabel("取消切换")
+                } else {
+                    Button("切网") {
+                        AppNavigation.shared.show(.network)
+                        AppNavigation.shared.networkSheet = true
+                        openWindow()
+                    }
+                    .buttonStyle(.pill(.secondary, height: 20))
+                }
+            }
+            .padding(.horizontal, 7).frame(minHeight: 32)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                AppNavigation.shared.show(.network)
+                openWindow()
+            }
         }
     }
 

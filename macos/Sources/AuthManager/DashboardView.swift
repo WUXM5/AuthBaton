@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Page: Hashable {
-    case accounts, codex, claude, automation, desktop, claudeDesktop, clients, cloud
+    case accounts, codex, claude, automation, desktop, claudeDesktop, clients, cloud, network
 }
 
 // Shared so the menu bar panel can open the window on a specific page or account.
@@ -12,6 +12,8 @@ final class AppNavigation: ObservableObject {
     @Published var page: Page = .accounts
     // The account a page should point at: the Claude page shows it, the Codex page rings its card.
     @Published var selection: String?
+    // The menu bar's 切网 asks the network page to open its picker (or the running switch).
+    @Published var networkSheet = false
 
     func show(_ page: Page, select: String? = nil) {
         self.page = page
@@ -79,6 +81,7 @@ struct DashboardView: View {
         case .claudeDesktop: ClaudeDesktopPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
+        case .network: NetworkPage()
         }
     }
 }
@@ -146,6 +149,20 @@ private struct Sidebar: View {
                 }
                 item(.cloud, "个人云端", glyph: .cloud) {
                     if cloudMode { trailingText("云端") } else if directory?.cloud?.paired == true { trailingText("已配对") }
+                }
+                if let network = directory?.network, network.available {
+                    Color.clear.frame(height: 12)
+                    item(.network, "网络", glyph: .wifi) {
+                        if network.switching {
+                            ZStack {
+                                Circle().stroke(Palette.soft, lineWidth: 2.5)
+                                Circle().trim(from: 0, to: 0.7).stroke(Palette.brand, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                    .rotationEffect(.degrees(-90))
+                            }
+                            .frame(width: 10, height: 10)
+                        }
+                    }
+                    .accessibilityLabel(network.switching ? "网络，正在等安全时机切换" : "网络")
                 }
             }
             .padding(.top, 17)

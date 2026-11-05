@@ -113,8 +113,67 @@ async function startEpisode(s: State, $: EngineInterface) {
   }
 }
 
+// Safe network switching (AuthManager v0.22): every model request of every session, the desktop's
+// Code tabs and subagents included, is reported before it is sent and after it ends. While a switch
+// is pending AuthManager holds the answer to `begin` back (up to 20 s at a time), so the request
+// waits for the new network instead of being cut off by the switch. The wait is on the request
+// itself, which costs the hook none of its budget; AuthManager not running means go at once.
+const HEARTBEAT_MS = 15_000
+// AuthManager gives up on a switch after 5 minutes; past this the hook stops waiting regardless.
+const MAX_HOLD_MS = 330_000
+const HELD = '切换网络中：这条请求等新网络连上再发…'
+
+async function network(
+  $: EngineInterface,
+  event: 'begin' | 'alive' | 'end',
+  session: string,
+  project: string,
+  request: string,
+): Promise<{ hold: boolean } | undefined> {
+  try {
+    const home = await $.env.get('HOME')
+    const response = await $.http.fetch('http://authmanager/v1/network', {
+      method: 'POST',
+      socketPath: `${home}${SOCKET}`,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session, project, event, request }),
+    })
+    return response.ok ? (JSON.parse(response.text) as { hold: boolean }) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export const register: Register = on => {
   const s: State = { entry: null, windows: [] }
+
+  on('turn.step', async function* ($, e, next) {
+    const session = await $.session.id()
+    const project = (await $.session.cwd()).split('/').filter(Boolean).pop() ?? ''
+    const request = `${e.turnId}:${e.agentId ?? 'main'}:${e.index}`
+    const started = await $.clock.now()
+    let held = false
+    for (;;) {
+      const answer = await network($, 'begin', session, project, request)
+      if (answer?.hold !== true || next.signal.aborted || (await $.clock.now()) - started > MAX_HOLD_MS) {
+        break
+      }
+      if (!held) {
+        held = true
+        $.ui.status(HELD)
+      }
+    }
+    if (held) {
+      $.ui.status(undefined)
+    }
+    const heartbeat = $.clock.every(HEARTBEAT_MS, () => void network($, 'alive', session, project, request))
+    try {
+      return yield* next(e)
+    } finally {
+      heartbeat.cancel()
+      void network($, 'end', session, project, request)
+    }
+  })
 
   on('session.measure', async ($, e, next) => {
     const result = await next(e)

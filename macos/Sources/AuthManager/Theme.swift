@@ -95,6 +95,8 @@ struct PageHeader<Trailing: View>: View {
     let title: String
     var subtitle: Text? = nil
     var provider: String? = nil
+    // A page of its own topic (网络) shows its glyph on a brand tile instead of a provider's.
+    var glyph: Glyph? = nil
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
@@ -103,6 +105,11 @@ struct PageHeader<Trailing: View>: View {
                 HStack(spacing: 9) {
                     if let provider {
                         GlyphTile(provider: provider, size: 27)
+                            .overlay(RoundedRectangle(cornerRadius: 7.5, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+                    } else if let glyph {
+                        Icon(glyph, size: 17, color: Palette.solid)
+                            .frame(width: 27, height: 27)
+                            .background(Palette.soft, in: RoundedRectangle(cornerRadius: 7.5, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 7.5, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
                     }
                     Text(title).font(.system(size: 22, weight: .bold)).kerning(-0.26).foregroundStyle(Palette.ink)
@@ -128,6 +135,7 @@ struct PageScaffold<Trailing: View, Content: View>: View {
     let title: String
     var subtitle: Text? = nil
     var provider: String? = nil
+    var glyph: Glyph? = nil
     var spacing: CGFloat = 17
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
@@ -135,7 +143,7 @@ struct PageScaffold<Trailing: View, Content: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: spacing) {
-                PageHeader(title: title, subtitle: subtitle, provider: provider) { trailing }
+                PageHeader(title: title, subtitle: subtitle, provider: provider, glyph: glyph) { trailing }
                 content
             }
             .pageColumn()

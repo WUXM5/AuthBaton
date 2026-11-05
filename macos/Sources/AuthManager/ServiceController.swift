@@ -280,6 +280,23 @@ final class ServiceController: ObservableObject {
             snapshot: snapshot))
     }
 
+    // Safe network switching. The password, when there is one, goes to the service once and never comes back.
+    func network(_ action: String, phone: String? = nil, ssid: String? = nil, password: String? = nil) async {
+        await accountOperation("accounts.network", params: LoginParams(network_action: action, phone: phone, ssid: ssid, password: password))
+    }
+
+    // Keeps the service reading traffic and nearby networks while a page that shows them is open.
+    // Not an account operation: it must not wait for one or report "上一项操作尚未完成".
+    func watchNetwork() async {
+        guard isConnected else { return }
+        let path = socketPath
+        if let result = try? await Task.detached(operation: {
+            try IPCClient.accounts(method: "accounts.network", params: LoginParams(network_action: "watch"), socketPath: path)
+        }).value, !Task.isCancelled {
+            directory = result.directory
+        }
+    }
+
     func cloudAction(_ action: String, id: String? = nil, mode: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil, automatic: Bool? = nil) async {
         await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, automatic: automatic, cloud_action: action, mode: mode, endpoint: endpoint))
     }
@@ -314,7 +331,9 @@ final class ServiceController: ObservableObject {
         directoryTask = Task {
             while !Task.isCancelled {
                 // A Claude desktop switch reports each step; follow it closely while it runs.
-                let interval: Duration = directory?.claudeDesktop?.busy == true ? .milliseconds(500) : .seconds(2)
+                // A network switch too; while its page or the menu bar shows it, once a second.
+                let interval: Duration = directory?.claudeDesktop?.busy == true || directory?.network?.switching == true ? .milliseconds(500)
+                    : directory?.network?.watching == true ? .seconds(1) : .seconds(2)
                 do { try await Task.sleep(for: interval) } catch { return }
                 await reloadAccounts()
             }
