@@ -181,6 +181,9 @@ impl Outcome {
 pub struct Trigger {
     pub remaining_percent: f64,
     pub threshold_percent: u8,
+    /// Spent because the card was about to lapse, not because the account reached its line.
+    #[serde(default)]
+    pub expiring: bool,
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

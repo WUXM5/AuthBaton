@@ -189,6 +189,10 @@ impl Accounts {
             execution.outcome = outcome;
         }
         let id = attempt.account_id.clone();
+        let automatic = attempt
+            .executions
+            .last()
+            .is_some_and(|e| e.source == Source::Automatic);
         if outcome == ResetOutcome::Reset
             && let Some(account) = self
                 .db
@@ -202,19 +206,22 @@ impl Accounts {
                 label: account.label.clone(),
             });
         }
+        let unspent = matches!(outcome, ResetOutcome::NotSent | ResetOutcome::NoCredit);
         if let Some(latch) = self.db.automation.latches.get_mut(&id)
             && latch.request_id == request_id
         {
             latch.created_at = now();
             // Nothing was spent, so another credit may still serve this episode.
-            if matches!(outcome, ResetOutcome::NotSent | ResetOutcome::NoCredit) {
+            if unspent {
                 self.db.automation.latches.remove(&id);
-                let retry = self.reset_retry_after(&id);
-                self.automation.retry_after.insert(id.clone(), retry);
             }
             self.automation
                 .account_messages
                 .insert(id.clone(), outcome.message().into());
+        }
+        if automatic && unspent {
+            let retry = self.reset_retry_after(&id);
+            self.automation.retry_after.insert(id.clone(), retry);
         }
         self.automation.observation = None;
         if let Err(message) = self.save() {

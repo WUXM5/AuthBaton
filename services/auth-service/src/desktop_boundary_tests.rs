@@ -635,7 +635,7 @@ fn fresh_desktop(_: u16) -> Result<crate::desktop::Undebugged> {
         DESKTOP_AGE.load(std::sync::atomic::Ordering::SeqCst),
     )))
 }
-fn iso(secs: u64) -> String {
+pub(super) fn iso(secs: u64) -> String {
     let time = secs as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::gmtime_r(&time, &mut tm) };

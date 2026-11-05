@@ -479,7 +479,7 @@ struct ResetHistoryEntry: Decodable, Identifiable, Sendable {
     let message: String
     let trigger: Trigger?
     let retry: Bool
-    struct Trigger: Decodable, Sendable { let remainingPercent: Double; let thresholdPercent: Int }
+    struct Trigger: Decodable, Sendable { let remainingPercent: Double; let thresholdPercent: Int; let expiring: Bool? }
     var sourceLabel: String {
         switch source { case "automatic": "自动"; case "manual": "手动"; default: "旧记录 · 来源未知" }
     }

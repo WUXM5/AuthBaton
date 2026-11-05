@@ -15,6 +15,8 @@ const CACHE_TTL: u64 = 600;
 const MIN_INTERVAL: u64 = 30;
 /// Readings this old no longer shape the burn rate; long enough that whole-percent steps average out.
 const LOOKBACK: u64 = 600;
+/// A card this close to lapsing is spent by the strategy without waiting for the line.
+pub const EXPIRY_LEAD: u64 = 1800;
 
 #[derive(Clone, Default, Serialize)]
 pub struct Window {
@@ -507,6 +509,12 @@ impl Runtime {
             })
             .min_by_key(|c| c.0)
             .map(|c| c.1)
+    }
+    /// The card `automatic_credit` would spend, when it lapses within `EXPIRY_LEAD` seconds.
+    pub fn expiring_credit(&self, id: &str, time: u64) -> Option<String> {
+        let credit = self.automatic_credit(id, time)?;
+        let expiry = crate::resets::parse_expiry(&self.credit(id, &credit, time)??)?;
+        (expiry <= time + EXPIRY_LEAD).then_some(credit)
     }
     /// `schedulable`: whether the scheduler would pick this account now. A request for one it
     /// skips stays queued but is not shown as running.
