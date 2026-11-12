@@ -49,6 +49,7 @@ struct LoginParams: Encodable, Sendable {
     var enabled: Bool? = nil
     var credit_id: String? = nil
     var next_grant: Bool? = nil
+    var reset_kind: String? = nil
     var reset_id: String? = nil
     var cloud_action: String? = nil
     var mode: String? = nil
@@ -384,11 +385,35 @@ struct QuotaStatus: Decodable, Sendable {
 struct ClaudeResetStatus: Decodable, Sendable {
     let grants: ClaudeResetGrants?
     let weekly: ClaudeWeeklyReset?
-    // The grant a reset would claim now; the service keeps its ID.
-    let next: ClaudeNextGrant?
+    // The grant a rule would claim now (the official next); the service keeps its ID.
+    let next: ClaudeResetOffer?
+    // One card per kind a person can choose, in the official order; the service keeps their IDs.
+    let offers: [ClaudeResetOffer]
 }
-struct ClaudeNextGrant: Decodable, Sendable {
+struct ClaudeResetOffer: Decodable, Sendable {
+    let kind: String
+    let limits: [String]
+    let remaining: Int
     let endsAt: String?
+}
+// The official reset kinds: session (5-hour), weekly, fable (gives back what Fable used this week), full.
+enum ClaudeResetKind {
+    static func name(_ kind: String) -> String {
+        switch kind {
+        case "session": return "5 小时重置卡"
+        case "weekly": return "每周重置卡"
+        case "fable": return "Fable 重置卡"
+        case "full": return "完整重置卡"
+        default: return "重置卡"
+        }
+    }
+    // "用这张完整重置卡", "用这张 Fable 重置卡": a space only between Chinese and a Latin letter or digit.
+    static func phrase(_ prefix: String, _ kind: String) -> String {
+        let name = name(kind)
+        return prefix + (name.first?.isASCII == true ? " " : "") + name
+    }
+    // "1 张完整重置卡", "没有 Fable 重置卡".
+    static func counted(_ count: Int, _ kind: String) -> String { phrase(count > 0 ? "\(count) 张" : "没有", kind) }
 }
 struct ClaudeResetGrants: Decodable, Sendable {
     let eligible: Bool
@@ -400,6 +425,7 @@ struct ClaudeResetGrants: Decodable, Sendable {
 }
 struct ClaudeResetGrant: Decodable, Sendable {
     let label: String
+    let kind: String
     let remaining: Int
     let total: Int?
     let startsAt: String?

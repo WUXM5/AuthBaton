@@ -111,12 +111,20 @@ extension ManagedAccount {
     }
     // Resets the strategy can spend: listed Codex credits, or Claude's official grants (unknown counts as none).
     var usableResets: Int { provider == "claude" ? creditCount ?? 0 : codexCredits.count }
-    // The card a new reset spends: Codex's earliest-expiring listed credit, or Claude's official next grant,
-    // which the service names itself. None until the renewal is saved and confirmed: the service refuses then.
+    // The card a new reset spends: Codex's earliest-expiring listed credit, or the Claude card chosen in the
+    // confirmation (by default `claudeDefaultOffer`), which the service names itself. None until the renewal
+    // is saved and confirmed: the service refuses then.
     var nextReset: (creditID: String?, expiresAt: String?)? {
         if ["unsaved", "uncertain"].contains(state) { return nil }
-        if provider == "claude" { return usage?.claudeResets?.next.map { (nil, $0.endsAt) } }
+        if provider == "claude" { return claudeDefaultOffer.map { (nil, $0.endsAt) } }
         return codexCredits.first.map { ($0.id, $0.expiresAt) }
+    }
+    // The Claude kinds a person can choose from, one card each, in the official order.
+    var claudeOffers: [ClaudeResetOffer] { usage?.claudeResets?.offers ?? [] }
+    // Preselected: the kind of the official next card, which the rules spend; otherwise the first kind.
+    var claudeDefaultOffer: ClaudeResetOffer? {
+        let next = usage?.claudeResets?.next?.kind
+        return claudeOffers.first { $0.kind == next } ?? claudeOffers.first
     }
 
     // The reset chances as one ticket: how many, and how many run out within a week.

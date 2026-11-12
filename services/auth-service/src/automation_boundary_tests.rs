@@ -1168,8 +1168,8 @@ fn a_manual_claude_reset_spends_the_next_grant_without_the_view_naming_it() {
     m.save().unwrap();
     m.claude_reset_transport = Some(claim);
     // Nothing to name before a fresh reading; Codex credits are always named by the view.
-    assert!(m.next_grant("c").is_err());
-    assert!(m.next_grant("a").is_err());
+    assert!(m.next_grant("c", None).is_err());
+    assert!(m.next_grant("a", None).is_err());
     claude_quota(&mut m, &c, claude_high);
     // The view learns that a card is usable now and when it ends, never which one.
     let snapshot = m.snapshot();
@@ -1181,10 +1181,10 @@ fn a_manual_claude_reset_spends_the_next_grant_without_the_view_naming_it() {
         .unwrap();
     assert_eq!(
         entry["usage"]["claude_resets"]["next"],
-        json!({"ends_at": "2099-01-01T00:00:00Z"})
+        json!({"ends_at": "2099-01-01T00:00:00Z", "kind": "full", "limits": ["5 小时额度", "每周额度"], "remaining": 1})
     );
     assert!(!snapshot.to_string().contains(GRANT));
-    let grant = m.next_grant("c").unwrap();
+    let grant = m.next_grant("c", None).unwrap();
     m.reset_quota("c", &grant, "manual-claude-1", true).unwrap();
     m.finish_reset();
     let attempt = m.db.reset_attempts.last().unwrap();
@@ -1197,6 +1197,81 @@ fn a_manual_claude_reset_spends_the_next_grant_without_the_view_naming_it() {
         *CLAIMS.lock().unwrap(),
         vec![(GRANT.to_string(), "manual-claude-1".to_string())]
     );
+}
+
+#[test]
+fn a_manual_claude_reset_spends_the_chosen_kind_even_when_it_is_not_the_next_grant() {
+    use crate::claude_resets::{Access as ClaudeAccess, Request as ClaudeRequest};
+    static CLAIMS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    // The real shape of November 2026: a full reset is next, a Fable reset (gives back what Fable
+    // used this week) ends later.
+    fn two_kinds(_: &str, _: Option<&str>, _: Option<&Value>, _: bool) -> Result<(u16, Value)> {
+        Ok((200, usage()))
+    }
+    fn usage() -> Value {
+        let mut usage = claude_usage(40);
+        usage["cedar_ember"]["grants"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"grant_fable","label":"Synthetic Fable","resets_total":1,"resets_left":1,
+                "usable_now":true,"paused":false,"use_requires_limit":false,"gives_back_weekly":true,
+                "ends_at":"2099-03-01T00:00:00Z","clears":["five_hour","seven_day_overage_included"]}));
+        usage
+    }
+    fn claim(_: &ClaudeAccess, request: &ClaudeRequest) -> Result<(u16, Value)> {
+        match request {
+            ClaudeRequest::Status => Ok((200, usage())),
+            ClaudeRequest::Claim { grant_id, .. } => {
+                CLAIMS.lock().unwrap().push(grant_id.clone());
+                Ok((200, json!({"result":"reset"})))
+            }
+        }
+    }
+    CLAIMS.lock().unwrap().clear();
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    let mut c = claude("c", "SYNTHETIC_REFRESH_C");
+    c.credential["expiresAt"] = json!((now() + 3600) * 1000);
+    f.platform.vault_write("c", &c.encoded()).unwrap();
+    m.db.accounts.push(account("c", &c, false));
+    m.save().unwrap();
+    m.claude_reset_transport = Some(claim);
+    claude_quota(&mut m, &c, two_kinds);
+    // The view sees one offer per kind with its count and end, never a grant ID.
+    let snapshot = m.snapshot();
+    let resets = &snapshot["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "c")
+        .unwrap()["usage"]["claude_resets"];
+    assert_eq!(
+        resets["offers"],
+        json!([
+            {"kind":"fable","limits":["本周 Fable 用量","5 小时额度"],"remaining":1,"ends_at":"2099-03-01T00:00:00Z"},
+            {"kind":"full","limits":["5 小时额度","每周额度"],"remaining":1,"ends_at":"2099-01-01T00:00:00Z"}
+        ])
+    );
+    assert_eq!(
+        resets["grants"]["items"][1]["limits"],
+        json!(["本周 Fable 用量", "5 小时额度"])
+    );
+    assert!(!snapshot.to_string().contains("grant_fable"));
+    // A kind with no usable card, or a made-up kind, names nothing.
+    assert!(m.next_grant("c", Some("session")).is_err());
+    assert!(m.next_grant("c", Some("grant_fable")).is_err());
+    assert_eq!(m.next_grant("c", None).unwrap(), GRANT);
+    let grant = m.next_grant("c", Some("fable")).unwrap();
+    m.reset_quota("c", &grant, "manual-claude-fable", true)
+        .unwrap();
+    m.finish_reset();
+    let attempt = m.db.reset_attempts.last().unwrap();
+    assert_eq!(
+        (attempt.credit_id.as_str(), attempt.outcome),
+        ("grant_fable", crate::resets::Outcome::Reset)
+    );
+    assert_eq!(attempt.expires_at.as_deref(), Some("2099-03-01T00:00:00Z"));
+    assert_eq!(*CLAIMS.lock().unwrap(), vec!["grant_fable".to_string()]);
 }
 
 #[test]

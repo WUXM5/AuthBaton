@@ -26,14 +26,20 @@ impl Accounts {
             .map(|attempt| attempt.credit_id.clone())
             .ok_or("缺少重置卡标识")
     }
-    /// The grant a new Claude reset spends: the official next grant of a fresh reading, as a rule would.
-    pub fn next_grant(&self, id: &str) -> Result<String> {
+    /// The grant a new Claude reset spends, from a fresh reading: the first usable grant of the kind
+    /// the person chose, or without a choice the official next grant, as a rule would.
+    pub fn next_grant(&self, id: &str, kind: Option<&str>) -> Result<String> {
         if self.db.accounts[self.index(id)?].provider != "claude" {
             return Err("只有 Claude 账号按官方的下一张使用重置卡");
         }
-        self.quota
-            .automatic_credit(id, now())
-            .ok_or("请先检查用量，取得有效的重置卡明细")
+        match kind {
+            None => self.quota.automatic_credit(id, now()),
+            Some(kind) if crate::claude_resets::KINDS.contains(&kind) => {
+                self.quota.claude_offer(id, kind, now())
+            }
+            Some(_) => return Err("重置卡类别无效"),
+        }
+        .ok_or("请先检查用量，取得有效的重置卡明细")
     }
     pub(super) fn reset_quota_with_trigger(
         &mut self,
