@@ -60,6 +60,8 @@ struct AccountParams {
     enabled: Option<bool>,
     credit_id: Option<String>,
     next_grant: Option<bool>,
+    // The Claude reset kind a person chose; only with next_grant.
+    reset_kind: Option<String>,
     reset_id: Option<String>,
     cloud_action: Option<String>,
     mode: Option<String>,
@@ -239,8 +241,11 @@ fn response(
                         let reset_id = params.reset_id.as_deref().ok_or("缺少重置操作标识")?;
                         let credit_id = match params.credit_id {
                             Some(credit_id) => credit_id,
-                            // Claude grant IDs never reach the views: a new Claude reset asks for the next grant.
-                            None if params.next_grant == Some(true) => manager.next_grant(id)?,
+                            // Claude grant IDs never reach the views: a new Claude reset names a kind, or
+                            // without one asks for the official next grant.
+                            None if params.next_grant == Some(true) => {
+                                manager.next_grant(id, params.reset_kind.as_deref())?
+                            }
                             None => manager.retry_credit(reset_id)?,
                         };
                         manager.reset_quota(

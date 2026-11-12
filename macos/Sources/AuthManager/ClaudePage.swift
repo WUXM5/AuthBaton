@@ -159,7 +159,7 @@ private struct ClaudeMain: View {
         .loopCard()
     }
 
-    // Official reset cards; the card's button and a rule spend the next one.
+    // Official reset cards by kind; a rule spends the official next one, the card's button the kind chosen.
     private var resets: some View {
         let status = account.usage?.claudeResets
         return VStack(alignment: .leading, spacing: 10) {
@@ -176,7 +176,9 @@ private struct ClaudeMain: View {
                 ForEach(Array(grants.items.enumerated()), id: \.offset) { _, grant in
                     let soon = QuotaResetCredit.date(grant.endsAt).map { $0.timeIntervalSinceNow <= ExpiryReminder.window } ?? false
                     HStack(spacing: 12) {
-                        Ticket(text: grant.remaining > 0 ? "\(grant.remaining) 张重置卡" : "没有重置卡", soon: soon && grant.remaining > 0, large: true)
+                        // Kinds differ in name length; a common width keeps the dates in one column.
+                        Ticket(text: ClaudeResetKind.counted(grant.remaining, grant.kind), soon: soon && grant.remaining > 0, large: true)
+                            .frame(minWidth: 124, alignment: .leading)
                         VStack(alignment: .leading, spacing: 0) {
                             Text("有效期至 \(QuotaResetCredit.expiryLabel(grant.endsAt))").font(.system(size: 12)).foregroundStyle(Palette.ink2)
                             Text(usage(grant, eligible: grants.eligible)).font(.system(size: 11)).foregroundStyle(Palette.ink3)

@@ -190,7 +190,7 @@ struct AccountActions: View {
                 }
                 .buttonStyle(.pill(.secondary))
                 .disabled(directory.resetBlocked(account, busy: service.accountBusy))
-                .help((account.provider == "claude" ? "用官方指定的下一张：" : "用最早到期的那张：") + "\(QuotaResetCredit.expiryLabel(next.expiresAt)) 到期")
+                .help(help(next.expiresAt))
             }
             if showSwitch, directory.primaryAction(for: account) == .switchTo {
                 Button(account.native ? "接管" : "换上") { open(.switchTo(account.id)) }
@@ -198,6 +198,13 @@ struct AccountActions: View {
                     .disabled(service.accountBusy || directory.switchDisabled(for: account))
             }
         }
+    }
+
+    private func help(_ expiresAt: String?) -> String {
+        guard account.provider == "claude" else { return "用最早到期的那张：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期" }
+        let offers = account.claudeOffers
+        if offers.count > 1 { return "有 \(offers.count) 类重置卡，确认时选用哪一类" }
+        return "\(offers.first.map { ClaudeResetKind.name($0.kind) } ?? "重置卡")：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期"
     }
 }
 

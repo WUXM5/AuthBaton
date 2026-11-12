@@ -1,4 +1,5 @@
-//! Claude Code usage-reset metadata and the official cedar_ember grant claim (Claude Code 2.1.284).
+//! Claude Code usage-reset metadata and the official cedar_ember grant claim (Claude Code 2.1.284;
+//! reset kinds and the per-kind choice from 2.1.319).
 //! The UI projection never contains grant IDs; workers receive access only, never a refresh writer.
 use crate::credentials::Bundle;
 use crate::platform::Result;
@@ -18,23 +19,48 @@ pub struct Status {
     grants: Option<Grants>,
     weekly: Option<Weekly>,
     next: Option<Claim>,
+    /// One grant per kind that a person can choose, in the official order (session, weekly, fable, full).
+    offers: Vec<Claim>,
 }
-/// The grant the official client would claim next. The views learn only that it exists and when it ends.
+/// A grant a reset can claim. The views learn only its kind, what it refills, how many of that kind are
+/// left and when it ends.
 #[derive(Clone, Serialize)]
 pub struct Claim {
     #[serde(skip)]
     pub grant_id: String,
+    pub kind: &'static str,
+    pub limits: Vec<&'static str>,
+    pub remaining: u32,
     pub ends_at: Option<String>,
 }
+/// The official reset kinds in the order the official chooser lists them.
+pub const KINDS: [&str; 4] = ["session", "weekly", "fable", "full"];
+fn live(claim: &Claim, time: u64) -> bool {
+    claim
+        .ends_at
+        .as_deref()
+        .is_none_or(|end| crate::resets::parse_expiry(end).is_some_and(|end| end > time + 30))
+}
 impl Status {
-    /// Mirrors the official anytime offer: only the server's next grant, usable now, not paused,
-    /// with no known expiry within 30 seconds. A grant that needs the limit waits until at it.
+    /// The server's next grant, which the rules spend: usable now, not paused, with no known expiry
+    /// within 30 seconds. A grant that needs the limit waits until at it.
     pub fn claimable(&self, time: u64) -> Option<&Claim> {
-        self.next.as_ref().filter(|c| {
-            c.ends_at.as_deref().is_none_or(|end| {
-                crate::resets::parse_expiry(end).is_some_and(|end| end > time + 30)
-            })
-        })
+        self.next.as_ref().filter(|c| live(c, time))
+    }
+    /// The grant a person who chose this kind spends: the kind's first usable grant, as the official chooser.
+    pub fn offer(&self, kind: &str, time: u64) -> Option<&Claim> {
+        self.offers
+            .iter()
+            .find(|c| c.kind == kind)
+            .filter(|c| live(c, time))
+    }
+    /// A grant that is still the server's next or the first of its kind; anything else must not be claimed.
+    pub fn spendable(&self, grant_id: &str, time: u64) -> Option<&Claim> {
+        self.next
+            .iter()
+            .chain(&self.offers)
+            .find(|c| c.grant_id == grant_id)
+            .filter(|c| live(c, time))
     }
 }
 #[derive(Clone, Serialize)]
@@ -49,6 +75,7 @@ struct Grants {
 #[derive(Clone, Serialize)]
 struct Grant {
     label: String,
+    kind: &'static str,
     remaining: u32,
     total: Option<u32>,
     starts_at: Option<String>,
@@ -92,12 +119,56 @@ fn reason(value: &Value) -> String {
     }
     .into()
 }
+/// The official kind: a grant that gives back what Fable used is a Fable reset; otherwise the server's
+/// type, or failing that what it clears (only the 5-hour limit, only others, or both).
+fn kind(value: &Value) -> &'static str {
+    if value["gives_back_weekly"] == true {
+        return "fable";
+    }
+    if let Some(kind) = KINDS
+        .into_iter()
+        .find(|k| *k != "fable" && value["type"] == *k)
+    {
+        return kind;
+    }
+    let clears: Vec<&str> = value["clears"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|k| LIMITS.contains(k))
+        .collect();
+    let session = clears.contains(&"five_hour");
+    match (session, clears.iter().any(|k| *k != "five_hour")) {
+        (true, false) => "session",
+        (false, true) => "weekly",
+        _ => "full",
+    }
+}
+const LIMITS: [&str; 8] = [
+    "five_hour",
+    "seven_day",
+    "seven_day_overage_included",
+    "seven_day_opus",
+    "seven_day_sonnet",
+    "seven_day_cowork",
+    "seven_day_omelette",
+    "seven_day_oauth_apps",
+];
 fn grant(value: &Value) -> Option<Grant> {
     let remaining = count(&value["resets_left"])?;
-    let mut limits = vec![];
+    let fable = value["gives_back_weekly"] == true;
+    // The official wording: a Fable reset returns what Fable used this week; the Fable weekly limit
+    // (seven_day_overage_included) counts as the weekly limit on other kinds.
+    let mut limits = if fable {
+        vec!["本周 Fable 用量"]
+    } else {
+        vec![]
+    };
     for key in value["clears"].as_array().into_iter().flatten().take(16) {
         let label = match key.as_str() {
             Some("five_hour") => "5 小时额度",
+            Some("seven_day_overage_included") if fable => "本周 Fable 用量",
             Some("seven_day" | "seven_day_overage_included") => "每周额度",
             Some("seven_day_opus") => "Opus 每周额度",
             Some("seven_day_sonnet") => "Sonnet 每周额度",
@@ -112,6 +183,7 @@ fn grant(value: &Value) -> Option<Grant> {
     }
     Some(Grant {
         label: text(&value["label"]).unwrap_or_else(|| "额度重置".into()),
+        kind: kind(value),
         remaining,
         total: count(&value["resets_total"]),
         starts_at: text(&value["starts_at"]),
@@ -163,35 +235,66 @@ fn weekly(value: &Value) -> Option<Weekly> {
         weekly_resets_at: text(&value["weekly_resets_at"]),
     })
 }
-fn next(value: &Value) -> Option<Claim> {
-    // Official grant ID format; defaults follow its schema (usable_now false, use_requires_limit true).
-    let valid = |id: &str| {
-        (1..=40).contains(&id.len())
-            && id
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
-    };
-    let id = value["next_grant_id"].as_str().filter(|id| valid(id))?;
-    let grant = value["grants"].as_array()?.iter().find(|g| g["id"] == id)?;
-    let usable = value["eligible"] == true
+// Official grant ID format.
+fn valid_id(id: &str) -> bool {
+    (1..=40).contains(&id.len())
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+}
+/// Usable now by the official schema's defaults (usable_now false, use_requires_limit true).
+fn usable(block: &Value, grant: &Value) -> bool {
+    block["eligible"] == true
+        && grant["id"].as_str().is_some_and(valid_id)
         && grant["usable_now"] == true
         && grant["paused"] != true
         && grant["resets_left"].as_u64().is_some_and(|n| n > 0)
-        && (grant["use_requires_limit"] == false || value["at_limit"] == true);
-    let ends_at = match &grant["ends_at"] {
+        && (grant["use_requires_limit"] == false || block["at_limit"] == true)
+}
+fn claim(block: &Value, value: &Value) -> Option<Claim> {
+    let ends_at = match &value["ends_at"] {
         Value::Null => None,
         end => Some(text(end).filter(|e| crate::resets::parse_expiry(e).is_some())?),
     };
-    usable.then(|| Claim {
-        grant_id: id.into(),
+    let k = kind(value);
+    // How many of this kind are left, counted as the official chooser does (paused ones excluded).
+    let remaining = block["grants"]
+        .as_array()?
+        .iter()
+        .filter(|g| g["paused"] != true && kind(g) == k)
+        .filter_map(|g| count(&g["resets_left"]))
+        .sum();
+    Some(Claim {
+        grant_id: value["id"].as_str()?.into(),
+        kind: k,
+        limits: grant(value)?.limits,
+        remaining,
         ends_at,
     })
+}
+fn next(block: &Value) -> Option<Claim> {
+    let id = block["next_grant_id"].as_str().filter(|id| valid_id(id))?;
+    let grant = block["grants"].as_array()?.iter().find(|g| g["id"] == id)?;
+    usable(block, grant).then(|| claim(block, grant))?
+}
+fn offers(block: &Value) -> Vec<Claim> {
+    let Some(grants) = block["grants"].as_array().filter(|items| items.len() <= 64) else {
+        return vec![];
+    };
+    KINDS
+        .into_iter()
+        .filter_map(|k| {
+            let grant = grants.iter().find(|g| kind(g) == k && usable(block, g))?;
+            claim(block, grant)
+        })
+        .collect()
 }
 pub fn parse(body: &Value) -> Status {
     Status {
         grants: grants(&body["cedar_ember"]),
         weekly: weekly(&body["juniper_tide"]),
         next: next(&body["cedar_ember"]),
+        offers: offers(&body["cedar_ember"]),
     }
 }
 
@@ -319,10 +422,7 @@ pub fn run(
         if !body["cedar_ember"].is_object() {
             return Outcome::NotSent;
         }
-        if parse(&body)
-            .claimable(time)
-            .is_none_or(|c| c.grant_id != attempt.credit_id)
-        {
+        if parse(&body).spendable(&attempt.credit_id, time).is_none() {
             return Outcome::NoCredit;
         }
     }
@@ -444,6 +544,115 @@ mod tests {
             body["cedar_ember"][key] = value;
             assert!(parse(&body).claimable(time).is_none());
         }
+    }
+    #[test]
+    fn kinds_follow_the_official_rules_and_each_kind_offers_its_first_usable_grant() {
+        let grant = |id: &str, extra: Value| {
+            let mut grant = usable();
+            grant["id"] = json!(id);
+            for (key, value) in extra.as_object().unwrap() {
+                grant[key] = value.clone();
+            }
+            grant
+        };
+        let body = json!({"cedar_ember":{"eligible":true,"at_limit":false,"next_grant_id":"full_1","grants":[
+            grant("full_1", json!({"clears":["five_hour","seven_day"]})),
+            // gives_back_weekly wins over the server's type and what it clears.
+            grant("fable_1", json!({"type":"session","gives_back_weekly":true,"clears":["five_hour","seven_day_overage_included"]})),
+            grant("weekly_paused", json!({"type":"weekly","paused":true})),
+            grant("weekly_1", json!({"type":"weekly","clears":["five_hour"],"ends_at":"2031-01-01T00:00:00Z"})),
+            grant("weekly_2", json!({"type":"weekly"})),
+            grant("session_spent", json!({"clears":["five_hour"],"resets_left":0,"usable_now":false})),
+            // Unknown types and limits fall back to what it clears; nothing known is a full reset.
+            grant("session_1", json!({"type":"other","clears":["five_hour","not_a_limit"]})),
+        ]}});
+        let status = parse(&body);
+        let output = serde_json::to_value(&status).unwrap();
+        let kinds: Vec<_> = output["grants"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "full", "fable", "weekly", "weekly", "weekly", "session", "session"
+            ]
+        );
+        assert_eq!(
+            output["grants"]["items"][1]["limits"],
+            json!(["本周 Fable 用量", "5 小时额度"])
+        );
+        // One offer per kind in the official order; a paused or spent grant is skipped, and the count
+        // leaves paused grants out.
+        let offers: Vec<_> = status
+            .offers
+            .iter()
+            .map(|c| (c.kind, c.grant_id.as_str(), c.remaining))
+            .collect();
+        assert_eq!(
+            offers,
+            [
+                ("session", "session_1", 1),
+                ("weekly", "weekly_1", 2),
+                ("fable", "fable_1", 1),
+                ("full", "full_1", 1)
+            ]
+        );
+        assert!(!output.to_string().contains("_1\""));
+        let time = 1_900_000_000;
+        assert_eq!(status.offer("fable", time).unwrap().grant_id, "fable_1");
+        assert_eq!(status.claimable(time).unwrap().grant_id, "full_1");
+        // Only the server's next grant or a kind's first usable grant may be claimed.
+        for id in ["full_1", "fable_1", "weekly_1", "session_1"] {
+            assert!(status.spendable(id, time).is_some(), "{id}");
+        }
+        for id in ["weekly_2", "weekly_paused", "session_spent", "unknown"] {
+            assert!(status.spendable(id, time).is_none(), "{id}");
+        }
+        // weekly_1 ends 2031-01-01: not offered within its last 30 seconds.
+        assert!(status.offer("weekly", 1_924_992_000 - 30).is_none());
+        assert!(status.spendable("weekly_1", 1_924_992_000 - 30).is_none());
+        // An ineligible block offers nothing.
+        let mut ineligible = body.clone();
+        ineligible["cedar_ember"]["eligible"] = json!(false);
+        assert!(parse(&ineligible).offers.is_empty());
+    }
+    #[test]
+    fn a_chosen_kind_that_is_not_next_is_claimed_and_a_stale_choice_is_not() {
+        fn two(_: &Access, request: &Request) -> Result<(u16, Value)> {
+            let mut body = block(usable());
+            let mut fable = usable();
+            fable["id"] = json!("grant_fable");
+            fable["gives_back_weekly"] = json!(true);
+            body["cedar_ember"]["grants"]
+                .as_array_mut()
+                .unwrap()
+                .push(fable);
+            match request {
+                Request::Status => Ok((200, body)),
+                Request::Claim { grant_id, .. } => {
+                    assert_eq!(grant_id, "grant_fable");
+                    Ok((200, json!({"result":"reset"})))
+                }
+            }
+        }
+        let mut chosen = attempt();
+        chosen.credit_id = "grant_fable".into();
+        assert_eq!(
+            run(Access::synthetic(100), &chosen, false, two, 10),
+            Outcome::Reset
+        );
+        // Gone from the reading (spent elsewhere): never claimed.
+        let gone: Transport = |_, request| match request {
+            Request::Status => Ok((200, block(usable()))),
+            Request::Claim { .. } => panic!("a grant no longer offered must not be claimed"),
+        };
+        assert_eq!(
+            run(Access::synthetic(100), &chosen, false, gone, 10),
+            Outcome::NoCredit
+        );
     }
     #[test]
     fn claim_targets_the_accounts_organization_with_the_exact_grant_and_request() {

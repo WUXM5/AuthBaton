@@ -174,10 +174,14 @@ enum Fixture {
                                    ["label": "独立窗口", "used_percent": 0, "scope": "feature_x", "kind": "feature"],
                                    ["label": "7 天窗口", "used_percent": 70, "resets_at_iso": iso(26.4 * 3600)],
                                    ["label": "7 天窗口", "used_percent": 0, "scope": "ModelY", "kind": "model", "resets_at_iso": iso(26.4 * 3600)]],
-                       "claude_resets": ["grants": ["eligible": true, "message": "官方提供的重置卡", "remaining": 1, "weekly_resets_at": iso(26.4 * 3600),
-                                                    "items": [["label": "合成赠送：一次额度重置", "remaining": 1, "total": 1, "starts_at": iso(-7 * 86400), "ends_at": iso(24 * 86400),
-                                                               "limits": ["5 小时额度", "每周额度"], "paused": false, "usable_now": true, "requires_limit": false]]],
-                                         "next": ["ends_at": iso(24 * 86400)]]]],
+                       "claude_resets": ["grants": ["eligible": true, "message": "官方提供的重置卡", "remaining": 2, "weekly_resets_at": iso(26.4 * 3600),
+                                                    "items": [["label": "合成赠送：一次额度重置", "kind": "full", "remaining": 1, "total": 1, "starts_at": iso(-7 * 86400), "ends_at": iso(24 * 86400),
+                                                               "limits": ["5 小时额度", "每周额度"], "paused": false, "usable_now": true, "requires_limit": false],
+                                                              ["label": "合成赠送：一次 Fable 重置", "kind": "fable", "remaining": 1, "total": 1, "starts_at": iso(-3 * 86400), "ends_at": iso(117 * 86400),
+                                                               "limits": ["本周 Fable 用量", "5 小时额度"], "paused": false, "usable_now": true, "requires_limit": false]]],
+                                         "next": ["kind": "full", "limits": ["5 小时额度", "每周额度"], "remaining": 1, "ends_at": iso(24 * 86400)],
+                                         "offers": [["kind": "fable", "limits": ["本周 Fable 用量", "5 小时额度"], "remaining": 1, "ends_at": iso(117 * 86400)],
+                                                    ["kind": "full", "limits": ["5 小时额度", "每周额度"], "remaining": 1, "ends_at": iso(24 * 86400)]]]]],
         ]
         accounts[1]["reset"] = ["request_id": "synthetic-req", "credit_id": "synthetic-used", "expires_at": iso(20 * 86400), "outcome": "reset",
                                 "message": "已用 1 张重置卡；用量和剩余张数将重新查询", "unresolved": false, "started_at": now - 5 * 86400]
@@ -1065,7 +1069,8 @@ extension NSWindow {
         print("  → 窗口里同样不给换上")
         select(.claude, "synthetic-claude-b")
         check.expect(Driver.hits("换上", .exact).isEmpty, "Claude 页对续期待确认的账号不给「换上」")
-        check.expect(Driver.visible("等待重新确认"), "写明在等什么")
+        // OCR can merge the ⓘ before it into the first character (read as 「①警待」).
+        check.expect(Driver.visible("待重新确认"), "写明在等什么")
     }
     section(15, "云端交接和云端维护的账号：不显示成「可用」，交接未完成算要处理；不认识的状态不算正常") {
         Fixture.load("cloud", into: state)
@@ -1205,17 +1210,27 @@ extension NSWindow {
         check.expect(Driver.visible("旧记录"), "旧记录标明来源未知")
         Driver.press("完成", .exact)
     }
-    section(23, "Claude 用重置卡：和 Codex 一样确认后才用；请服务用官方的下一张，不带卡号") {
+    section(23, "Claude 用重置卡：确认后才用；有多类卡时可以选，默认官方下一张那一类，请求只带类别不带卡号") {
         Fixture.load("claude2", into: state)
         select(.claude, "synthetic-claude-b")
+        check.visible("1张完整重置卡", "Claude 页按类别列出完整重置卡")
+        check.visible("1张Fable重置卡", "Claude 页按类别列出 Fable 重置卡")
         state.calls.removeAll()
         if !Driver.press("用 1 张重置卡", .exact) { check.expect(false, "找到 Claude 备用卡片上的「用 1 张重置卡」") }
         check.expect(Driver.visible("用后还剩"), "确认框写明用后还剩几张")
+        check.expect(Driver.visible("用这张完整重置卡"), "默认选官方下一张那一类")
         check.expect(state.calls.isEmpty, "打开确认不发请求")
         Driver.press("用 1 张", .exact)
         let reset = check.lastCall("accounts.reset_quota") ?? ""
         check.expect(reset.contains("synthetic-claude-b") && reset.contains("\"next_grant\":true") && reset.contains("\"confirm\":true")
-                     && !reset.contains("credit_id"), "确认后请服务用官方的下一张，请求里没有卡号")
+                     && reset.contains("\"reset_kind\":\"full\"") && !reset.contains("credit_id"), "确认后请服务用完整重置卡这一类，请求里没有卡号")
+        state.calls.removeAll()
+        if !Driver.press("用 1 张重置卡", .exact) { check.expect(false, "再次找到「用 1 张重置卡」") }
+        Driver.press("Fable 重置卡", .exact)
+        check.expect(Driver.visible("用这张Fable重置卡") && Driver.visible("本周Fable用量"), "选了 Fable 重置卡后票上换成它和它适用的额度")
+        Driver.press("用 1 张", .exact)
+        let fable = check.lastCall("accounts.reset_quota") ?? ""
+        check.expect(fable.contains("\"reset_kind\":\"fable\"") && !fable.contains("credit_id"), "确认后请服务用 Fable 重置卡这一类")
     }
     section(24, "Claude 登录：不自动开浏览器，链接可以打开或复制，手动授权收在后备里") {
         Fixture.load("default", into: state)
@@ -1447,6 +1462,12 @@ extension NSWindow {
                 let size = render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
+            // A saved Claude account with two kinds of reset card to choose from.
+            Fixture.load("claude2", into: state)
+            let claudeB = state.directory!.accounts.first { $0.id == "synthetic-claude-b" }!
+            let resetSize = render(ResetSheet(account: claudeB, creditID: nil, requestID: "r", expiresAt: claudeB.nextReset?.expiresAt, retry: false, close: {}),
+                                   size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-reset-claude.png"))
+            print("\(appearance)/sheet-reset-claude: \(resetSize.width) × \(resetSize.height)")
             for (name, scenario) in [("sheet-network-waiting", "netwaiting"), ("sheet-network-wrong", "netwrong")] {
                 Fixture.load(scenario, into: state)
                 let size = render(NetworkProgressSheet(close: {}, retry: { _ in }), size: nil, appearance: appearance,

@@ -481,16 +481,23 @@ impl Runtime {
         };
         observation.fresh(time).then_some(observation)
     }
+    /// A successful query of the last interval that nothing is refreshing.
+    fn fresh(&self, id: &str, time: u64) -> Option<&Snapshot> {
+        self.entries.get(id).filter(|entry| {
+            entry.state == "ready"
+                && !entry.refreshing
+                && entry
+                    .checked_at
+                    .is_some_and(|t| t <= time && time - t <= INTERVAL)
+        })
+    }
+    /// The grant a manual Claude reset of the chosen kind spends, from a fresh reading.
+    pub fn claude_offer(&self, id: &str, kind: &str, time: u64) -> Option<String> {
+        let status = self.fresh(id, time)?.claude_resets.as_ref()?;
+        status.offer(kind, time).map(|c| c.grant_id.clone())
+    }
     pub fn automatic_credit(&self, id: &str, time: u64) -> Option<String> {
-        let entry = self.entries.get(id)?;
-        if entry.state != "ready"
-            || entry.refreshing
-            || entry
-                .checked_at
-                .is_none_or(|t| t > time || time - t > INTERVAL)
-        {
-            return None;
-        }
+        let entry = self.fresh(id, time)?;
         if let Some(status) = &entry.claude_resets {
             return status.claimable(time).map(|c| c.grant_id.clone());
         }
@@ -559,8 +566,9 @@ impl Runtime {
             return None;
         }
         if let Some(status) = &entry.claude_resets {
-            let claim = status.claimable(time)?;
-            return (claim.grant_id == credit_id).then(|| claim.ends_at.clone());
+            return status
+                .spendable(credit_id, time)
+                .map(|claim| claim.ends_at.clone());
         }
         let credit = entry.reset_credits.as_ref()?.credit(credit_id)?;
         Some(credit.expires_at.clone())

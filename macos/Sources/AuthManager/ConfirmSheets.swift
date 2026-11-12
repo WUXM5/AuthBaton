@@ -241,11 +241,23 @@ struct ResetSheet: View {
     let retry: Bool
     let close: () -> Void
     @State private var working = false
+    @State private var chosen: String? = nil
+
+    // A new Claude reset spends the kind chosen here, by default the official next card's kind.
+    private var offer: ClaudeResetOffer? {
+        guard account.provider == "claude", !retry else { return nil }
+        return account.claudeOffers.first { $0.kind == chosen } ?? account.claudeDefaultOffer
+    }
 
     var body: some View {
         SheetScaffold(title: retry ? "重试「\(account.displayName)」上次的重置？" : "给「\(account.displayName)」用 1 张重置卡？",
                       lead: retry ? "会重试原来的同一次操作，不会换用另一张卡。如果上次没有生效，这次可能用掉 1 张。"
+                                  : offer != nil ? "成功后这张卡适用的额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。"
                                   : "成功后额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。") {
+            if let offer, account.claudeOffers.count > 1 {
+                PillSegments(segments: account.claudeOffers.map { .init(value: $0.kind, title: ClaudeResetKind.name($0.kind)) },
+                             selection: offer.kind, select: { chosen = $0 }, fill: true)
+            }
             ticket
             if !retry, let remaining = account.lowestPrimary, remaining > 50 {
                 HStack(alignment: .top, spacing: 9) {
@@ -266,12 +278,13 @@ struct ResetSheet: View {
                 Task {
                     await submit(service, "accounts.reset_quota",
                                  LoginParams(id: account.id, confirm: true, credit_id: creditID,
-                                             next_grant: !retry && account.provider == "claude" ? true : nil, reset_id: requestID), close: close)
+                                             next_grant: !retry && account.provider == "claude" ? true : nil,
+                                             reset_kind: offer?.kind, reset_id: requestID), close: close)
                     working = false
                 }
             }
             .buttonStyle(.pill(.primary, height: 27))
-            .disabled(working || service.accountBusy)
+            .disabled(working || service.accountBusy || (!retry && account.provider == "claude" && offer == nil))
         }
     }
 
@@ -281,10 +294,14 @@ struct ResetSheet: View {
         let count = account.provider == "claude" ? account.creditCount : account.codexCredits.count
         return HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(retry ? "重试的这一次" : "用这一张").font(.system(size: 11)).foregroundStyle(Palette.ink2)
-                Text(expiresAt.map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
+                Text(retry ? "重试的这一次" : offer.map { ClaudeResetKind.phrase("用这张", $0.kind) } ?? "用这一张")
+                    .font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                Text((offer?.endsAt ?? expiresAt).map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                if !retry, let count {
+                if let offer {
+                    Text(offer.limits.isEmpty ? "适用额度没返回" : "适用 \(offer.limits.joined(separator: "、"))")
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
+                } else if !retry, let count {
                     Text("\(account.displayName) 现在有 \(count) 张").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
             }
