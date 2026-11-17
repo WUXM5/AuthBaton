@@ -461,6 +461,9 @@ struct DesktopSheetView: View {
             VStack(alignment: .leading, spacing: 7) {
                 CheckItem(kind: .system, text: "现在的登录原样存进 AuthBaton，随时能换回来")
                 CheckItem(kind: .you, text: "还有任务在跑的话，Claude 会先问你要不要退出")
+                if status?.turnsOnBypass(target) == true {
+                    CheckItem(kind: .you, text: "这个账号还没开 Bypass 权限模式，换上时会替它打开")
+                }
                 CheckItem(kind: .info, text: "不用重新登录，也不会注销任何账号；会话列表照常同步")
             }
             errorLine

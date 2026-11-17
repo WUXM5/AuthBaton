@@ -19,6 +19,7 @@
 //! (cc-same's serde_json kept its keys in order; here a `Map` sorts them), and the keys set aside
 //! keep the bytes Claude wrote. The steps after Claude has quit are told to the [`desktop::Watch`].
 
+use crate::bypass::{self, Carried};
 use crate::ctx::Ctx;
 use crate::desktop::{self, Step};
 use crate::fsx;
@@ -141,6 +142,8 @@ pub struct Switched {
     pub to: Option<String>,
     /// Claude was started again: it was running, or it is needed to sign in.
     pub launched: bool,
+    /// AuthManager: what was done about bypass permissions mode for `to`.
+    pub bypass: Carried,
 }
 
 /// Quit Claude, set its sign-in aside, put `target`'s back, and start Claude again if it was
@@ -172,6 +175,7 @@ pub fn switch(ctx: &Ctx, target: Target, watch: &desktop::Watch) -> Result<Switc
     }
     recover(&ctx.paths)?;
     let from = desktop::last_known_account(ctx);
+    let mut bypass = Carried::Nothing;
     if from.is_some() && from == to {
         // Already signed in to it; a copy set aside earlier is out of date.
         if let Some(account) = &to {
@@ -181,13 +185,17 @@ pub fn switch(ctx: &Ctx, target: Target, watch: &desktop::Watch) -> Result<Switc
         let email = from.as_ref().and_then(|a| crate::scan::account_labels(ctx).remove(a));
         watch.step(Step::MovingSignIn);
         swap(&ctx.paths, from.as_deref(), to.as_deref(), email)?;
+        // AuthManager: Claude has quit and has not started again, the one time its settings can change.
+        if let (Some(from), Some(to)) = (&from, &to) {
+            bypass = bypass::carry(ctx, from, to);
+        }
     }
     let launched = was_running || to.is_none();
     if launched {
         watch.step(Step::Launching);
         desktop::launch(ctx)?;
     }
-    Ok(Switched { from, to, launched })
+    Ok(Switched { from, to, launched, bypass })
 }
 
 /// Delete the sign-in saved for `account`.
@@ -563,7 +571,7 @@ mod tests {
     fn signing_in_to_another_account_sets_the_first_aside() {
         let mac = Mac::new(ADA);
         let switched = switch(&mac.ctx, Target::SignedOut, &desktop::Watch::default()).unwrap();
-        assert_eq!(switched, Switched { from: Some(ADA.into()), to: None, launched: true });
+        assert_eq!(switched, Switched { from: Some(ADA.into()), to: None, launched: true, bypass: Carried::Nothing });
         // Claude has nobody's sign-in, and keeps every other setting.
         assert!(!mac.data().join("Cookies").exists() && !mac.data().join("Local Storage").exists());
         let config = mac.config();
@@ -589,7 +597,10 @@ mod tests {
         assert_eq!(list(&mac.ctx).signed_in.as_deref(), Some(GRACE));
 
         let switched = switch(&mac.ctx, Target::Account(ADA), &desktop::Watch::default()).unwrap();
-        assert_eq!(switched, Switched { from: Some(GRACE.into()), to: Some(ADA.into()), launched: false });
+        assert_eq!(
+            switched,
+            Switched { from: Some(GRACE.into()), to: Some(ADA.into()), launched: false, bypass: Carried::Nothing }
+        );
         assert_eq!(mac.owner(), format!("cookies of {ADA}"));
         assert_eq!(mac.config()["oauth:tokenCacheV2"], format!("tokens of {ADA}"));
         assert_eq!(mac.config()["lastKnownAccountUuid"], ADA);
@@ -608,6 +619,34 @@ mod tests {
         assert_eq!(mac.owner(), format!("cookies of {GRACE}"));
         let keys = fsx::read_json(&saved_dir(&mac.ctx.paths, ADA).join(KEYS_FILE), 1 << 20).unwrap();
         assert_eq!(keys["oauth:tokenCacheV2"], "rotated tokens of ada");
+    }
+
+    /// AuthManager: sessions that ran in bypass mode drop to "accept edits" when Claude starts
+    /// signed in to an account that does not allow it, and then cannot message the others.
+    #[test]
+    fn a_switch_allows_bypass_for_the_account_switched_to_when_the_one_left_allows_it() {
+        let mac = Mac::new(ADA);
+        let gate = |mac: &Mac| {
+            fsx::read_json(&mac.ctx.paths.desktop_settings(), 1 << 20).unwrap()["preferences"]["bypassPermissionsGateByAccount"].clone()
+        };
+        let settings = serde_json::json!({ "preferences": { "bypassPermissionsGateByAccount": { ADA: true } } });
+        fs::write(mac.ctx.paths.desktop_settings(), serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        // Adding an account: nobody to allow it for yet.
+        let added = switch(&mac.ctx, Target::SignedOut, &desktop::Watch::default()).unwrap();
+        assert_eq!(added.bypass, Carried::Nothing);
+        mac.sign_in(GRACE);
+        assert_eq!(gate(&mac), serde_json::json!({ ADA: true }));
+        // Grace does not allow it: switching to Ada leaves Ada's as it is.
+        let back = switch(&mac.ctx, Target::Account(ADA), &desktop::Watch::default()).unwrap();
+        assert_eq!(back.bypass, Carried::Nothing);
+        assert_eq!(gate(&mac), serde_json::json!({ ADA: true }));
+        // Ada allows it, Grace does not: Grace is allowed it by the time Claude starts.
+        let switched = switch(&mac.ctx, Target::Account(GRACE), &desktop::Watch::default()).unwrap();
+        assert_eq!(switched.bypass, Carried::TurnedOn);
+        assert_eq!(gate(&mac), serde_json::json!({ ADA: true, GRACE: true }));
+        // Both allow it now.
+        let again = switch(&mac.ctx, Target::Account(ADA), &desktop::Watch::default()).unwrap();
+        assert_eq!(again.bypass, Carried::Nothing);
     }
 
     #[test]

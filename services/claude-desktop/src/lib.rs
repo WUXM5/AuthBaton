@@ -16,6 +16,8 @@
 //!   a `Map` sorts its keys. Files Claude or the user wrote are edited member by member instead
 //!   ([`jsonraw`]), and the places that depended on key order were changed (see the notes in
 //!   `merge`, `plan`, `apply`, `logins` and `retention`).
+//! * [`bypass`] is new: a switch allows bypass permissions mode for the account switched to when
+//!   the one left allows it.
 //! * [`api`] is new: the engine as AuthManager's service and window use it, every answer a
 //!   `Serialize` struct without credentials.
 //!
@@ -42,6 +44,7 @@ compile_error!("claude-desktop supports macOS only");
 pub mod accounts;
 pub mod api;
 pub mod apply;
+pub mod bypass;
 pub mod config;
 pub mod desktop;
 pub mod fsx;

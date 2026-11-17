@@ -390,7 +390,8 @@ struct MenuBarPanel: View {
             }
             if confirming, let next {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("换上 \(next.title)？Claude 桌面会退出再打开；还有任务在跑的话，Claude 会先问你。")
+                    Text("换上 \(next.title)？Claude 桌面会退出再打开；还有任务在跑的话，Claude 会先问你。"
+                         + (desktop.turnsOnBypass(next) ? "这个账号还没开 Bypass 权限模式，换上时会替它打开。" : ""))
                         .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 5) {
                         Spacer()

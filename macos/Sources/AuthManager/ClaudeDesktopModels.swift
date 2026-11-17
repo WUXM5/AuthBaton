@@ -54,6 +54,8 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         var linkedAccount: String? = nil
         // false: only session folders, from before AuthBaton kept this account's sign-in.
         let known: Bool
+        // Claude allows bypass permissions mode for this account (its Settings → Claude Code).
+        var bypass: Bool? = nil
 
         var id: String { handle }
         var canSwitch: Bool { known && loginSaved && !inUse }
@@ -110,4 +112,6 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
     var known: [Account] { accounts.filter(\.known) }
     var onlyFolders: [Account] { accounts.filter { !$0.known } }
     var busy: Bool { operation?.running == true }
+    // Switching to `target` turns bypass permissions mode on for it: the account in use allows it, `target` does not.
+    func turnsOnBypass(_ target: Account?) -> Bool { current?.bypass == true && target.map { $0.bypass != true } == true }
 }
