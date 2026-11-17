@@ -179,8 +179,10 @@ private struct Sidebar: View {
     private func claudeLowest(_ directory: AccountDirectory?) -> Int? {
         guard let directory else { return nil }
         if ClaudeUse.resolve(useSetting, directory) == .desktop {
-            let linked = directory.claudeDesktop?.current?.linkedAccount
-            return directory.relay("claude").first { $0.id == linked }?.lowestPrimary
+            let current = directory.claudeDesktop?.current
+            if let account = directory.relay("claude").first(where: { $0.id == current?.linkedAccount }) { return account.lowestPrimary }
+            // Only signed in to Claude 桌面: what its own sign-in read, when that is turned on.
+            return current?.tokenQuota?.primary.map(\.remaining).min()
         }
         return directory.current("claude")?.lowestPrimary
     }

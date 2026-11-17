@@ -126,6 +126,11 @@ fn safe_label(value: &Value) -> Option<String> {
         .filter(|s| !s.is_empty() && s.chars().count() <= 80 && !s.chars().any(char::is_control))
         .map(str::to_owned)
 }
+/// Windows from a Claude `GET /api/oauth/usage` body. Same shape the account card already shows.
+pub(crate) fn parse_claude_usage(value: &Value) -> Result<Vec<Window>> {
+    claude_windows(value)
+}
+
 fn claude_windows(value: &Value) -> Result<Vec<Window>> {
     let mut result = Vec::new();
     let mut keys = Vec::new();

@@ -20,6 +20,9 @@ use std::fs;
 pub struct Config {
     /// AuthManager: keep syncing in the background while AuthManager's service runs.
     pub background: bool,
+    /// AuthManager: read quota for desktop-only accounts from the desktop token cache.
+    /// Off unless the person turns it on. The keychain key is not stored here.
+    pub token_quota: bool,
     /// `<account>` or `<account>/<org>` entries that stay separate.
     pub exclude: Vec<String>,
     /// Accounts and orgs that appear later join automatically.
@@ -43,6 +46,7 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             background: false,
+            token_quota: false,
             exclude: Vec::new(),
             auto_join_new: true,
             keep_snapshots: 20,

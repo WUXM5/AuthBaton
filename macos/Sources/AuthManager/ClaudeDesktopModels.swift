@@ -23,6 +23,26 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
     var operation: Operation? = nil
     // Who each way of picking the next account would switch to right now.
     var picks: Picks? = nil
+    // Quota read through Claude 桌面's own sign-in, for accounts only signed in there. Off until the user turns it on.
+    var tokenQuota: TokenQuotaStatus? = nil
+
+    struct TokenQuotaStatus: Decodable, Sendable {
+        let enabled: Bool
+        // off, waiting_key (macOS is asking), key_denied, ready, error.
+        let state: String
+        let message: String
+    }
+
+    // One account's quota read with Claude 桌面's cached access: ready, checking, no_token, unauthorized, limited, error.
+    struct DeskQuota: Decodable, Sendable {
+        let state: String
+        let message: String
+        var checkedAt: Double? = nil
+        var windows: [AccountQuota] = []
+
+        // The 5-hour and weekly windows, as AuthBaton's own quota shows them.
+        var primary: [AccountQuota] { Array(windows.filter { $0.kind == nil }.prefix(2)) }
+    }
 
     struct Picks: Decodable, Sendable {
         var next: String? = nil
@@ -56,6 +76,8 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         let known: Bool
         // Claude allows bypass permissions mode for this account (its Settings → Claude Code).
         var bypass: Bool? = nil
+        // Present only while quota through the desktop sign-in is on and this account has no AuthBaton login.
+        var tokenQuota: DeskQuota? = nil
 
         var id: String { handle }
         var canSwitch: Bool { known && loginSaved && !inUse }

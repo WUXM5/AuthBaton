@@ -542,7 +542,7 @@ private struct DeskOnlyMain: View {
                 Spacer(minLength: 7)
                 Button("重命名…") { open(.desktop(.rename(desk.handle))) }.buttonStyle(.pill(.secondary))
             }
-            DeskOnlyQuota(desk: desk) { open(.account(.login(provider: "claude", accountID: nil))) }
+            DeskOnlyQuota(desk: desk, login: { open(.account(.login(provider: "claude", accountID: nil))) }, turnOn: { open(.tokenQuota) })
                 .padding(.top, 17)
             HStack {
                 Spacer()

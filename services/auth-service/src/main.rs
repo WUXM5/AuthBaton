@@ -10,6 +10,7 @@ mod cloud;
 mod codex_api;
 mod credentials;
 mod desktop;
+mod desktop_quota;
 mod login;
 mod maintenance;
 mod network;

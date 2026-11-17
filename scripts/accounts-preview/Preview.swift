@@ -284,6 +284,17 @@ enum Fixture {
             second["warmup"] = ["enabled": false, "hour": 9, "running": false]
             list.append(second)
             data["accounts"] = list
+        case "deskquota":
+            // Quota through Claude 桌面's own sign-in is on: work reads its quota that way, lab has no usable token.
+            var desktop = claudeDesktop(now)
+            desktop["token_quota"] = ["enabled": true, "state": "ready", "message": "已读到 Claude 桌面的登录"]
+            var rows = desktop["accounts"] as! [[String: Any]]
+            rows[1]["token_quota"] = ["state": "ready", "message": "额度已更新", "checked_at": now - 90,
+                                      "windows": [["label": "5 小时窗口", "used_percent": 41, "resets_at_iso": iso(2.2 * 3600)],
+                                                  ["label": "7 天窗口", "used_percent": 63, "resets_at_iso": iso(3.4 * 86400)]]]
+            rows[2]["token_quota"] = ["state": "no_token", "message": "Claude 桌面里没有能查额度的令牌", "checked_at": NSNull(), "windows": []]
+            desktop["accounts"] = rows
+            data["claude_desktop"] = desktop
         case "claudeboth":
             // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
             var list = data["accounts"] as! [[String: Any]]
@@ -1277,7 +1288,7 @@ extension NSWindow {
         Fixture.load("default", into: state)
         select(.claude)
         check.expect(Driver.visible("Code与桌面") && Driver.visible("个桌面会话") && Driver.visible("各账号一样"), "两边都用：页头写使用方式，同步条写会话数和各账号一样")
-        check.expect(Driver.visible("补登一次就能查额度") && !Driver.hits("补登", .exact).isEmpty, "只在桌面登录过的账号说明补登后才能查额度，给出补登")
+        check.expect(Driver.visible("或补登") && !Driver.hits("补登", .exact).isEmpty && !Driver.hits("用桌面登录查", .exact).isEmpty, "只在桌面登录过的账号给出「用桌面登录查」和「补登」")
         check.expect(Driver.visible("Claude桌面还在用work"), "Code 和桌面不在同一个账号时提示，可以把桌面也换上")
         state.calls.removeAll()
         if let toggle = Driver.views(NSSwitch.self).first {
@@ -1287,7 +1298,7 @@ extension NSWindow {
         } else {
             check.expect(false, "同步条有后台同步开关")
         }
-        Driver.press("桌面也换上", .exact)
+        Driver.press("也换上")
         check.visible("换上 Claude 当前账号", "「桌面也换上」先弹确认")
         check.visible("这次把桌面也换过来", "Code 已在用这个账号：确认里只说把桌面换过来")
         check.visible("打开Bypass权限模式", "在用的账号开着 Bypass、要换上的没开：确认里写明会替它打开")
@@ -1387,6 +1398,24 @@ extension NSWindow {
         check.expect(Driver.visible("只用桌面") && Driver.visible("个桌面账号") && Driver.visible("个桌面会话"), "只用桌面：页头写桌面账号数，同步条在")
         check.expect(Driver.visible("去桌面登录"), "没在桌面登录过的账号给「去桌面登录」")
         check.expect(Driver.visible("第1位", wait: 0.3) == false, "只用桌面：卡片不写 Claude Code 的顺位")
+    }
+    section(28, "只在桌面登录过的账号：打开「经桌面的登录查额度」要先说明并确认，打开后卡片显示额度和来源") {
+        Fixture.load("default", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        if !Driver.press("用桌面登录查", .exact) { check.expect(false, "找到「用桌面登录查」") }
+        check.visible("Claude Safe Storage", "确认框写明系统会问 Claude Safe Storage")
+        check.expect(Driver.visible("不续期") && Driver.visible("不用重置卡"), "确认框写明只查额度、不续期、不用重置卡")
+        check.expect(check.lastCall("accounts.claude_desktop") == nil, "打开确认框不发请求")
+        Driver.press("打开", .exact)
+        let call = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(call.contains("\"desktop_action\":\"token_quota\"") && call.contains("\"enabled\":true") && call.contains("\"confirm\":true"),
+                     "确认后发送 token_quota enabled:true confirm:true")
+        Fixture.load("deskquota", into: state)
+        select(.claude)
+        check.visible("经Claude桌面的登录查", "work 的卡片显示经桌面登录查到的额度和来源")
+        check.visible("没有能查额度", "lab 没有能用的令牌时写明原因")
+        check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
@@ -1497,7 +1526,7 @@ extension NSWindow {
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),
-                ("claude-desktop-behind", "desktopbehind", .claude, nil),
+                ("claude-desktop-behind", "desktopbehind", .claude, nil), ("claude-deskquota", "deskquota", .claude, nil),
                 ("claude-desktop-switching", "desktopswitching", .claude, nil), ("claude-desktop-missing", "desktopmissing", .claude, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
                 ("network", "default", .network, nil), ("network-safe", "netsafe", .network, nil),
@@ -1534,6 +1563,9 @@ extension NSWindow {
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
             UserDefaults.standard.removeObject(forKey: ClaudeUse.key)
+            Fixture.load("default", into: state)
+            let consentSize = render(TokenQuotaSheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-token-quota.png"))
+            print("\(appearance)/sheet-token-quota: \(consentSize.width) × \(consentSize.height)")
             // Both sides can move: the switch sheet offers 一起换 / 只换 Code / 只换桌面.
             Fixture.load("claudeboth", into: state)
             let choice = ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude-b", code: true, desk: true, choice: true), close: {})
