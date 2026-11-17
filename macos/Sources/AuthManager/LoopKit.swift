@@ -143,8 +143,8 @@ enum SVGPath {
 // The design's 20 × 20 line icons. Strokes scale with the drawn size, like the SVG originals.
 enum Glyph: Sendable {
     case accounts, relay, desktop, clients, cloud, refresh, plus, sun, shield, sync, info, clock, alert
-    case check, chevronDown, chevronRight, external, copy, server, mac, window, codex, claude
-    case wifi, hotspot, key, phone
+    case check, chevronDown, chevronLeft, chevronRight, external, copy, server, mac, window, codex, claude
+    case wifi, hotspot, key, phone, terminal
 
     fileprivate var data: [String] {
         switch self {
@@ -163,6 +163,7 @@ enum Glyph: Sendable {
         case .alert: [circle(10, 10, 7.5), "M10 6v4.6M10 13.6v.1"]
         case .check: ["M4 10.5l3.6 3.6L16 5.8"]
         case .chevronDown: ["M6 8l4 4 4-4"]
+        case .chevronLeft: ["M12 5.5L7.5 10l4.5 4.5"]
         case .chevronRight: ["M8 5.5l4.5 4.5L8 14.5"]
         case .external: ["M8 4H4.5A1.5 1.5 0 0 0 3 5.5v10A1.5 1.5 0 0 0 4.5 17h10a1.5 1.5 0 0 0 1.5-1.5V12M11 3h6v6M17 3l-8 8"]
         case .copy: [rect(7, 7, 10, 10, 2), "M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"]
@@ -175,13 +176,15 @@ enum Glyph: Sendable {
         case .hotspot: ["M8.3 11.7a3.3 3.3 0 0 0 4.7 0l2.8-2.8a3.3 3.3 0 0 0-4.7-4.7l-1 1", "M11.7 8.3a3.3 3.3 0 0 0-4.7 0l-2.8 2.8a3.3 3.3 0 0 0 4.7 4.7l1-1"]
         case .key: [circle(7, 12.5, 3.5), "M9.5 10l7-7M14 5.5l2 2M12 7.5l1.5 1.5"]
         case .phone: [rect(6, 2.5, 8, 15, 2), "M9 15h2"]
+        // Claude Code in a terminal: a prompt and a cursor, no frame, so it never reads as the desktop's screen.
+        case .terminal: ["M4 5.5l4.5 4.5L4 14.5", "M11 15h5.5"]
         }
     }
 
     fileprivate var weight: CGFloat {
         switch self {
         case .claude: 1.9
-        case .plus, .check: 1.9
+        case .plus, .check, .terminal: 1.9
         case .alert, .refresh: 1.7
         default: 1.6
         }

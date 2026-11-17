@@ -53,7 +53,12 @@ struct QuotaFigures<Trailing: View>: View {
             if inlineCaption {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Figure(value: window.remaining, size: size)
-                    Text(window.remainingCaption).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    // Two windows side by side at 100% leave no room: the caption shortens to the window's name, never wraps.
+                    ViewThatFits(in: .horizontal) {
+                        Text(window.remainingCaption)
+                        Text(window.shortLabel.trimmingCharacters(in: .whitespaces))
+                    }
+                    .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                 }
             } else {
                 Figure(value: window.remaining, size: size)
@@ -141,7 +146,7 @@ struct AccountMenu: View {
         let checkDisabled = service.accountBusy || (directory.checksBlocked ?? true) || account.checkStatus != nil
         let querying = service.quotaRequests.contains(account.id) || account.usage?.refreshing == true
         Menu {
-            Button(querying ? "正在查询额度…" : "立即查询额度") { Task { await service.checkQuota(id: account.id) } }
+            Button(querying ? "正在查询额度…" : "查询额度") { Task { await service.checkQuota(id: account.id) } }
                 .disabled(querying)
             Button("本地检查") { check(online: false) }.disabled(checkDisabled)
             Button("认证检查") { check(online: true) }.disabled(checkDisabled || account.state == "unsaved")
@@ -163,7 +168,7 @@ struct AccountMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded)
-        .help("立即查询额度、检查、重新登录、重命名、执行记录、移除")
+        .help("查询额度、检查、重新登录、重命名、执行记录、移除")
         .accessibilityLabel("\(account.displayName) 的更多操作")
     }
 
@@ -203,7 +208,7 @@ struct AccountActions: View {
     private func help(_ expiresAt: String?) -> String {
         guard account.provider == "claude" else { return "用最早到期的那张：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期" }
         let offers = account.claudeOffers
-        if offers.count > 1 { return "有 \(offers.count) 类重置卡，确认时选用哪一类" }
+        if offers.count > 1 { return "有 \(offers.count) 类重置卡，确认时再选" }
         return "\(offers.first.map { ClaudeResetKind.name($0.kind) } ?? "重置卡")：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期"
     }
 }
@@ -216,8 +221,8 @@ struct RecoveryBanner: View {
     @EnvironmentObject private var service: ServiceController
 
     var body: some View {
-        Banner(glyph: .sync, title: "上次切换没确认", text: "上次切换在写入默认登录时中断。结束相关任务后重试，AuthBaton 会按实际登录状态收尾。") {
-            Button("重试上次切换") { Task { await service.accountOperation("accounts.recover") } }
+        Banner(glyph: .sync, title: "上次切换没确认", text: "写入默认登录时中断。结束相关任务后重试，AuthBaton 会按实际登录状态收尾。") {
+            Button("重试切换") { Task { await service.accountOperation("accounts.recover") } }
                 .buttonStyle(.pill(.onAttention, height: 20))
         }
     }

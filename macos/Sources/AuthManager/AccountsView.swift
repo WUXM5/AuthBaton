@@ -130,7 +130,7 @@ struct AccountsView: View {
         VStack(spacing: 12) {
             BrandTile(size: 44)
             Text("把常用账号放在一起").font(.system(size: 14, weight: .bold))
-            Text("可以登录新账号单独保存，也可以导入这台 Mac 上官方客户端已有的登录；现在的默认登录不会被换掉。")
+            Text("登录新账号单独保存，或导入这台 Mac 上官方客户端已有的登录；不会换掉现在的默认登录。")
                 .font(.system(size: 12)).foregroundStyle(Palette.ink2).multilineTextAlignment(.center).frame(maxWidth: 374)
             HStack(spacing: 9) {
                 Button("添加 Codex 账号") { sheet = .login(provider: "codex", accountID: nil) }.buttonStyle(.pill(.primary, height: 27))

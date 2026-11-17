@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Page: Hashable {
-    case accounts, codex, claude, automation, desktop, claudeDesktop, clients, cloud, network
+    case accounts, codex, claude, automation, desktop, clients, cloud, network
 }
 
 // Shared so the menu bar panel can open the window on a specific page or account.
@@ -14,10 +14,13 @@ final class AppNavigation: ObservableObject {
     @Published var selection: String?
     // The menu bar's 切网 asks the network page to open its picker (or the running switch).
     @Published var networkSheet = false
+    // The Claude page shows this account in full (an AuthBaton account ID or a desktop handle); nil is the overview.
+    @Published var claudeDetail: String?
 
     func show(_ page: Page, select: String? = nil) {
         self.page = page
         if let select { selection = select }
+        if page == .claude { claudeDetail = select }
     }
 
     // The page an account lives on.
@@ -75,10 +78,9 @@ struct DashboardView: View {
                 AccountsView()
             }
         case .codex: cloudMode ? AnyView(AccountsView()) : AnyView(CodexPage())
-        case .claude: cloudMode ? AnyView(AccountsView()) : AnyView(ClaudePage())
+        case .claude: cloudMode ? AnyView(AccountsView()) : AnyView(ClaudeHomePage())
         case .automation: AutomationPage()
         case .desktop: DesktopPage()
-        case .claudeDesktop: ClaudeDesktopPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
         case .network: NetworkPage()
@@ -92,6 +94,7 @@ private struct Sidebar: View {
     @EnvironmentObject private var service: ServiceController
     @ObservedObject private var nav = AppNavigation.shared
     @ObservedObject private var reminders = ReminderModel.shared
+    @AppStorage(ClaudeUse.key) private var useSetting = "auto"
 
     var body: some View {
         let directory = service.directory
@@ -115,11 +118,19 @@ private struct Sidebar: View {
                 }
                 .accessibilityLabel(issues > 0 ? "账号，\(issues) 件事要处理" : "账号")
                 if !cloudMode {
-                    ForEach(["codex", "claude"], id: \.self) { provider in
-                        item(provider == "codex" ? .codex : .claude, GlyphTile.name(provider), glyph: .provider(provider)) {
-                            if let lowest = directory?.current(provider)?.lowestPrimary { trailingText("\(lowest)%") }
+                    item(.codex, GlyphTile.name("codex"), glyph: .provider("codex")) {
+                        if let lowest = directory?.current("codex")?.lowestPrimary { trailingText("\(lowest)%") }
+                    }
+                    // Claude Code and Claude 桌面 share one page; the dot is the desktop's own trouble.
+                    let claudeDesktop = directory?.claudeDesktop
+                    item(.claude, "Claude", glyph: .provider("claude")) {
+                        if claudeDesktop?.attention != nil {
+                            Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
+                        } else if let lowest = claudeLowest(directory) {
+                            trailingText("\(lowest)%")
                         }
                     }
+                    .accessibilityLabel(claudeDesktop?.attention.map { "Claude，\($0)" } ?? "Claude")
                 }
                 Color.clear.frame(height: 12)
                 item(.automation, "换号与重置", glyph: .relay) {
@@ -133,15 +144,6 @@ private struct Sidebar: View {
                     }
                 }
                 .accessibilityLabel(directory?.desktopBlocked == true ? "Codex 桌面，没连上" : "Codex 桌面")
-                let claudeDesktop = directory?.claudeDesktop
-                item(.claudeDesktop, "Claude 桌面", glyph: .desktop) {
-                    if claudeDesktop?.attention != nil {
-                        Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
-                    } else if claudeDesktop?.installed == true && claudeDesktop?.background == false {
-                        trailingText("关")
-                    }
-                }
-                .accessibilityLabel(claudeDesktop?.attention.map { "Claude 桌面，\($0)" } ?? "Claude 桌面")
                 item(.clients, "客户端与服务", glyph: .clients) {
                     if !service.isConnected && !service.isConnecting {
                         Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
@@ -171,6 +173,16 @@ private struct Sidebar: View {
         .padding(.horizontal, 9)
         .padding(.top, 43)
         .padding(.bottom, 10)
+    }
+
+    // The account in use where this Mac uses Claude: Claude Code's, or for desktop-only the desktop's linked one.
+    private func claudeLowest(_ directory: AccountDirectory?) -> Int? {
+        guard let directory else { return nil }
+        if ClaudeUse.resolve(useSetting, directory) == .desktop {
+            let linked = directory.claudeDesktop?.current?.linkedAccount
+            return directory.relay("claude").first { $0.id == linked }?.lowestPrimary
+        }
+        return directory.current("claude")?.lowestPrimary
     }
 
     private func trailingText(_ text: String) -> some View {

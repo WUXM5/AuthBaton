@@ -66,7 +66,7 @@ struct DesktopPage: View {
                     .buttonStyle(.pill(.primary, height: 29))
                     .disabled(disabled || desktop?.busy == true)
                 } else {
-                    Button(connected ? "重新以调试模式启动" : "以调试模式重新打开") {
+                    Button(connected ? "以调试模式重新打开" : "以调试模式重新打开") {
                         Task { await service.accountOperation("accounts.desktop_launch") }
                     }
                     .buttonStyle(.pill(connected ? .secondary : .primary, height: 29))
@@ -124,7 +124,7 @@ struct DesktopPage: View {
             }
             .buttonStyle(.pill(.secondary, height: 27))
             .disabled(disabled || (UInt16(port).map { $0 < 1024 } ?? true))
-            Text("1024–65535；改已接管桌面的端口前，要先退出桌面。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            Text("1024–65535；已接管时，改端口前要先退出桌面。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
         }
     }
 
@@ -134,8 +134,8 @@ struct DesktopPage: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("点「以调试模式重新打开」后会这样做").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .top, spacing: 14) {
-                step("01", "退出 Codex 桌面", "只在桌面里没有任务在运行时退出；AuthBaton 不会替你结束任务。")
-                step("02", "用调试模式打开", "AuthBaton 用调试端口 \(desktop.map { String($0.port) } ?? "9522") 重新打开桌面。")
+                step("01", "退出 Codex 桌面", "只在桌面没有任务运行时退出；AuthBaton 不会替你结束任务。")
+                step("02", "以调试模式打开", "AuthBaton 用调试端口 \(desktop.map { String($0.port) } ?? "9522") 重新打开桌面。")
                 step("03", "连上后自动核对", "桌面账号和默认文件一致才算连上，之后就能热切换。")
             }
         }
@@ -171,7 +171,7 @@ struct DesktopPage: View {
                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 .disabled(disabled || desktop?.busy == true)
             }
-            Text("热切换开着时，你照常打开的桌面会在启动完成、还没有任务时，自动以调试模式重开，不会停在退出确认上。AuthBaton 启动前就在用的桌面不会被重启，需要时在上面以调试模式打开一次。")
+            Text("热切换开着时，照常打开的桌面在启动完成、还没有任务时，会自动以调试模式重开，不会停在退出确认上。AuthBaton 启动前就在用的桌面不会重启，需要时在上面以调试模式打开一次。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
                 .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }

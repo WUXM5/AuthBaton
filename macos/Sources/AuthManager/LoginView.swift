@@ -83,7 +83,7 @@ struct LoginView: View {
             } else if account?.native == true {
                 Banner(text: "这会更新在用账号的默认登录。先结束任务并退出官方客户端，完成后再打开。").padding(.top, 15)
             } else if cloudAccountID != nil {
-                Text("授权完成后自动发到你的个人认证中心，更新同一个云端账号。请在浏览器里选这个账号；本机客户端保持现在的登录。")
+                Text("授权完成后自动发到个人云端，更新同一个云端账号。请在浏览器里选这个账号；本机客户端保持现在的登录。")
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true).padding(.top, 15)
             } else {
                 Text("授权完成后，更新这个账号保存的登录；现在的默认登录不变。")
@@ -186,7 +186,7 @@ struct LoginView: View {
                     .buttonStyle(.pill(.secondary, height: 27))
                 }
                 HStack(spacing: 7) {
-                    LoopField(placeholder: "手动授权代码（只用这一次）", text: $authorizationCode, secure: true)
+                    LoopField(placeholder: "手动授权码（只用这一次）", text: $authorizationCode, secure: true)
                     Button("提交") {
                         let code = authorizationCode.trimmingCharacters(in: .whitespacesAndNewlines)
                         authorizationCode = ""
@@ -251,7 +251,7 @@ struct LoginView: View {
                         .buttonStyle(.pill(.secondary, height: 27))
                         .help("关掉窗口，登录照常进行；之后可以在账号页重新打开进度")
                 } else {
-                    Button("重新尝试") { service.clearLogin() }.buttonStyle(.pill(.secondary, height: 27))
+                    Button("重试") { service.clearLogin() }.buttonStyle(.pill(.secondary, height: 27))
                     Spacer()
                     Button("完成") { service.clearLogin(); dismiss() }
                         .buttonStyle(.pill(.primary, height: 27)).keyboardShortcut(.defaultAction)

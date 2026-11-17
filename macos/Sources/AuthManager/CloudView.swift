@@ -63,7 +63,7 @@ struct CloudConnectionView: View {
         } message: {
             Text(pendingMode == "cloud"
                  ? "切换后：账号页和菜单栏只显示云端账号\(cloud?.paired == true ? "" : "（还没配对，会是空的）")；自动换号与重置（包括自动重置）暂停；pi 的默认入口改用云端账号\(cloud?.paired == true ? "" : "，没配对时 pi 会提示先选账号")。本机账号、认证维护和额度查询照常，随时可以切回。"
-                 : "切回后：账号页、菜单栏和 pi 恢复用本机账号，自动换号与重置几秒内按原规则恢复。云端账号保留。")
+                 : "切回后：账号页、菜单栏和 pi 改回本机账号，自动换号与重置几秒内按原规则恢复。云端账号保留。")
         }
     }
 
@@ -113,7 +113,7 @@ struct CloudConnectionView: View {
                 if paired {
                     Button("管理已授权设备") { openCloud((cloud?.endpoint ?? "") + "/admin") }.buttonStyle(.pill(.secondary, height: 29))
                 } else {
-                    Button("发起设备配对") { Task { await service.cloudAction("pair") } }
+                    Button("配对设备") { Task { await service.cloudAction("pair") } }
                         .buttonStyle(.pill(.secondary, height: 29))
                         .disabled(cloud?.endpoint.isEmpty != false)
                     if cloud?.endpoint.isEmpty != false {
@@ -125,11 +125,11 @@ struct CloudConnectionView: View {
             .padding(.top, 14)
             if let pair = cloud?.pair {
                 VStack(spacing: 7) {
-                    Text("在 Safari 里核对这个配对码，再批准设备").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Text("在 Safari 里核对配对码，再批准设备").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                     Text(pair.code).font(.system(size: 22, weight: .semibold, design: .monospaced)).kerning(2.6).textSelection(.enabled)
                     Text("有效期到 \(When.text(pair.expiresAt))").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                     HStack(spacing: 9) {
-                        Button("在 Safari 中授权设备") { openCloud(pair.url) }.buttonStyle(.pill(.primary, height: 27))
+                        Button("在 Safari 里批准设备") { openCloud(pair.url) }.buttonStyle(.pill(.primary, height: 27))
                         Button("检查配对结果") { Task { await service.cloudAction("pair_poll") } }.buttonStyle(.pill(.secondary, height: 27))
                     }
                     .padding(.top, 3.5)
@@ -157,7 +157,7 @@ struct CloudConnectionView: View {
             Text("两种模式").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .top, spacing: 14) {
                 mode("本地", "沿用这台 Mac 上的登录和维护，账号不离开本机。")
-                mode("云端", "只用你主动导入的账号。中心在本机应用退出后也能续期；本机客户端的凭据同步仍要 AuthBaton 在运行。")
+                mode("云端", "只用你主动导入的账号。本机应用退出后认证中心也能续期；同步凭据给本机客户端仍需运行 AuthBaton。")
             }
         }
         .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 17)
@@ -264,7 +264,7 @@ struct CloudAccountsView: View {
                 Text("还没有云端账号。可以直接导入本机已有的登录，不用重新授权。").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                     .frame(maxWidth: .infinity).padding(.vertical, 27)
             }
-            Text("用量每 5 分钟单独查询。原生同步是实验功能：第一次启用要退出对应客户端。Claude 提前收到新凭据已有合成验证，401 后的原请求不保证自动重试；请让本机 AuthBaton 保持运行。")
+            Text("用量每 5 分钟单独查询。原生同步是实验功能：第一次启用要退出对应客户端。Claude 提前收到新凭据已做合成验证，401 后的原请求不保证自动重试；请保持本机 AuthBaton 运行。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
         Color.clear.frame(height: 0)
@@ -373,11 +373,11 @@ private struct CloudIntent {
     var title: String { action == "unselect" ? "停止本机使用？" : action == "remove" ? "移除云端账号？" : action == "cancel_import" ? "取消交接并恢复本地？" : action == "activate" ? "切换本机原生登录？" : "把账号交给云端维护？" }
     var message: String {
         switch action {
-        case "unselect": "本机不再同步「\(label)」，并清除它的 pi 默认选择。已发出的短期凭据保留到过期；不会恢复旧的刷新凭据。之后可以选别的账号。"
-        case "remove": "移除「\(label)」后，其他设备也不能再领取它的凭据。不会撤销上游已经发出的短期凭据。"
+        case "unselect": "本机不再同步「\(label)」，并清除 pi 默认选择。已发出的短期凭据保留到过期；不会恢复旧的刷新凭据。之后可以选别的账号。"
+        case "remove": "移除「\(label)」后，其他设备也不能再领取凭据。不会撤销上游已发出的短期凭据。"
         case "activate": "把「\(label)」写入本机原生存储，使用云端提供的短期凭据。先结束任务并退出对应客户端；AuthBaton 不会替你退出。"
         case "cancel_import": "只有云端还没接管时才能恢复本地维护；已轮换的旧凭据不会恢复。先退出对应客户端。"
-        default: "把「\(label)」的登录凭据发到已配置的个人认证中心。确认其他机器没有单独使用同一份刷新凭据；如果它是本机在用的登录，先退出对应客户端。完成后本机不再单独续期，不用重新登录。"
+        default: "把「\(label)」的登录凭据发到已配置的个人云端。确认其他机器没有单独使用同一份刷新凭据；如果是本机在用的登录，先退出对应客户端。完成后本机不再单独续期，不用重新登录。"
         }
     }
 }

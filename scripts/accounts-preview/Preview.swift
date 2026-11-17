@@ -284,6 +284,20 @@ enum Fixture {
             second["warmup"] = ["enabled": false, "hour": 9, "running": false]
             list.append(second)
             data["accounts"] = list
+        case "claudeboth":
+            // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
+            var list = data["accounts"] as! [[String: Any]]
+            var second = list.first { $0["provider"] as? String == "claude" }!
+            second["id"] = "synthetic-claude-b"; second["label"] = "Claude 备用"; second["identity"] = "b***@example.invalid"
+            second["native"] = false; second["state"] = "healthy"; second["message"] = ""; second["expires_at"] = now + 3600
+            second["warmup"] = ["enabled": false, "hour": 9, "running": false]
+            list.append(second)
+            data["accounts"] = list
+            var desktop = claudeDesktop(now)
+            var rows = desktop["accounts"] as! [[String: Any]]
+            rows[0]["linked_account"] = "synthetic-claude-b"
+            desktop["accounts"] = rows
+            data["claude_desktop"] = desktop
         case "switchblock":
             // Saved logins a switch must not use yet: one needs a new login, one an unsaved renewal,
             // one a renewal whose reply was lost.
@@ -781,8 +795,10 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
+        for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey] { UserDefaults.standard.removeObject(forKey: key) }
         ReminderModel.shared.reload()
         AppNavigation.shared.selection = nil
+        AppNavigation.shared.claudeDetail = nil
         Driver.settle(0.5)
         run()
         // Let a closing sheet finish; one still open is closed with Escape so SwiftUI clears its state.
@@ -876,7 +892,7 @@ extension NSWindow {
         select(.codex)
         more("lab team", choose: "重命名…")
         check.expect(Driver.lastMenu.contains { $0.title.contains("移除") } && Driver.lastMenu.contains { $0.title.contains("本地检查") }
-                     && Driver.lastMenu.contains { $0.title == "立即查询额度" } && Driver.lastMenu.contains { $0.title == "执行记录" },
+                     && Driver.lastMenu.contains { $0.title == "查询额度" } && Driver.lastMenu.contains { $0.title == "执行记录" },
                      "更多菜单列出查询额度、检查、重命名、执行记录、移除")
         check.expect(Driver.visible("当名称"), "重命名框提供「用登录邮箱当名称」")
         Driver.press("当名称")
@@ -889,7 +905,7 @@ extension NSWindow {
         check.expect(Driver.visible("现在还换不到"), "打开了换号框")
         check.expect(!Driver.visible("合成失败"), "新打开的换号框不带上一个错误")
         Driver.press("取消", .exact)
-        select(.claude)
+        select(.claude, "synthetic-claude")
         more("Claude 当前账号", choose: nil)
         check.expect(Driver.lastMenu.contains { $0.title.contains("认证检查") && !$0.enabled }, "续期未保存时「认证检查」不可用")
         if Driver.lastMenu.isEmpty || Driver.lastMenu.contains(where: { $0.title.contains("认证检查") && $0.enabled }) { print("    菜单：\(Driver.lastMenu)") }
@@ -993,23 +1009,22 @@ extension NSWindow {
         panel.orderOut(nil)
         main.orderFrontRegardless()
     }
-    section(11, "Claude 换号：不用退出会话，确认后调用 accounts.activate") {
+    section(11, "Claude 换号：只换 Claude Code 时点了就换，不弹框，调用 accounts.activate") {
         Fixture.load("claude2", into: state)
         select(.claude, "synthetic-claude-b")
-        Driver.press("换上", .exact)
-        check.expect(Driver.visible("不用退出") && Driver.visible("按一次回车继续"), "换号框写明不用退出、被额度打断的会话回车继续")
-        check.expect(!Driver.visible("已结束任务"), "Claude 换号不要求先结束任务")
         state.calls.removeAll()
         Driver.press("换上", .exact)
         let activate = check.lastCall("accounts.activate") ?? ""
-        check.expect(activate.contains("synthetic-claude-b") && activate.contains("\"confirm\":true"), "确认后调用 accounts.activate(id, confirm:true)")
-        check.expect(main.attachedSheet == nil, "Claude 换号完成后框关闭")
+        check.expect(activate.contains("synthetic-claude-b") && activate.contains("\"confirm\":true"), "点「换上」直接调用 accounts.activate(id, confirm:true)")
+        check.expect(main.attachedSheet == nil, "只换 Claude Code 不弹确认框")
+        check.expect(!state.calls.contains { $0.contains("claude_desktop") }, "没有桌面登录的账号不碰 Claude 桌面")
     }
     section(12, "Claude 续期没收到回应：自动重新确认，不要求人处理") {
         Fixture.load("uncertain", into: state)
-        select(.claude)
-        check.expect(Driver.visible("等待重新确认"), "Claude 页写明「等待重新确认」")
-        check.expect(Driver.visible("自动用同一凭据重新确认"), "说明会自动重新确认")
+        select(.claude, "synthetic-claude")
+        // The strip's ⓘ merges into the first characters and its small text is often misread: match the steadier parts.
+        check.visible("没有收到回应", "Claude 页写明续期没收到回应、在等重新确认")
+        check.visible("稍后自动用", "说明会自动重新确认")
         check.expect(!state.directory!.issues(dismissed: []).contains { $0.account == "synthetic-claude" }, "不计入要处理的事")
         check.expect(Driver.hits("恢复同步").isEmpty, "不给恢复同步按钮")
         check.expect(Driver.hits("用 1 张重置卡").isEmpty, "续期没确认时不给用重置卡（服务会拒绝）")
@@ -1018,7 +1033,7 @@ extension NSWindow {
         if Driver.lastMenu.isEmpty { print("    菜单：\(Driver.lastMenu)") }
     }
     section(13, "Claude 5 小时窗口预热：开关沿用关闭前的时间，已开的显示起点、上次结果和下次时间；立即预热点一次发一条") {
-        select(.claude)
+        select(.claude, "synthetic-claude")
         check.visible("06:00", "已开启的账号显示每天的起点")
         check.visible("5小时窗口开始计时", "显示上次预热结果")
         check.visible("下次约", "显示下次预热时间")
@@ -1235,8 +1250,9 @@ extension NSWindow {
     section(24, "Claude 登录：不自动开浏览器，链接可以打开或复制，手动授权收在后备里") {
         Fixture.load("default", into: state)
         ClaudeLogin.waiting(state)
+        UserDefaults.standard.set(ClaudeUse.code.rawValue, forKey: ClaudeUse.key)
         select(.claude)
-        Driver.press("添加 Claude 账号")
+        Driver.press("添加账号", .suffix)
         check.expect(Driver.visible("打开浏览器") && Driver.visible("复制链接"), "授权中给出「打开浏览器」和「复制链接」")
         check.expect(!Driver.visible("提交", wait: 0.3), "手动授权默认收起")
         // The real pasteboard: keep whatever the person had on it and put it back afterwards.
@@ -1257,47 +1273,51 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
     }
-    section(25, "Claude 桌面：后台同步开关、换上要确认并按 handle 发送，不能换的账号不给换上") {
+    section(25, "Claude 页（两边都用）：同步条、桌面换号要确认并按 handle 发送，Code 在用的账号只把桌面换过来") {
         Fixture.load("default", into: state)
-        select(.claudeDesktop)
-        // OCR drops 的 from small text, so the headline is matched without it.
-        check.expect(Driver.visible("会话都一样") && Driver.visible("个会话") && Driver.visible("全部一致"), "页头一句话状态，会话卡写会话数和全部一致")
-        check.expect(Driver.visible("只有会话、还没保存登录") && Driver.visible("c***@example.invalid"), "只有会话目录的账号单独一组")
-        check.expect(Driver.hits("换上", .exact).count == 2, "备用且保存了登录的两个账号有「换上」，在用的没有")
+        select(.claude)
+        check.expect(Driver.visible("Code与桌面") && Driver.visible("个桌面会话") && Driver.visible("各账号一样"), "两边都用：页头写使用方式，同步条写会话数和各账号一样")
+        check.expect(Driver.visible("补登一次就能查额度") && !Driver.hits("补登", .exact).isEmpty, "只在桌面登录过的账号说明补登后才能查额度，给出补登")
+        check.expect(Driver.visible("Claude桌面还在用work"), "Code 和桌面不在同一个账号时提示，可以把桌面也换上")
         state.calls.removeAll()
         if let toggle = Driver.views(NSSwitch.self).first {
             Driver.click(toggle)
             let call = check.lastCall("accounts.claude_desktop") ?? ""
             check.expect(call.contains("\"desktop_action\":\"background\"") && call.contains("\"enabled\":false"), "关掉后台同步发送 background enabled:false")
         } else {
-            check.expect(false, "会话卡有后台同步开关")
+            check.expect(false, "同步条有后台同步开关")
         }
-        Driver.pressBeside("nova@example", "换上")
-        check.visible("换上 #1 nova@example", "换上先弹确认，标题带编号")
-        check.visible("换上时会替它打开", "在用的账号开着 Bypass、要换上的没开：确认里写明会替它打开")
+        Driver.press("桌面也换上", .exact)
+        check.visible("换上 Claude 当前账号", "「桌面也换上」先弹确认")
+        check.visible("这次把桌面也换过来", "Code 已在用这个账号：确认里只说把桌面换过来")
+        check.visible("打开Bypass权限模式", "在用的账号开着 Bypass、要换上的没开：确认里写明会替它打开")
         check.expect(Driver.visible("退出登录", wait: 0.3) == false, "换号确认不混入添加账号的提醒")
         Driver.press("换上", .exact)
         let call = check.lastCall("accounts.claude_desktop") ?? ""
         check.expect(call.contains("\"desktop_action\":\"switch\"") && call.contains("\"account\":\"h-nova\"") && call.contains("\"confirm\":true"),
                      "确认后发送 switch，账号用 handle、带 confirm")
+        check.expect(check.lastCall("accounts.activate") == nil, "Code 已在用，不再换 Claude Code")
         check.visible("让 Claude 退出", "确认后同一个框接着显示步骤")
         Driver.press("好", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"dismiss\"") == true, "结束后点「好」清掉这次操作")
         Driver.press("下一个账号", .exact)
-        check.visible("换上 #1 nova@example", "「下一个账号」按编号挑到 #1，同样先确认")
+        check.visible("换上 Claude 当前账号", "「下一个账号」按编号挑到 #1，同样先确认")
         Driver.press("取消", .exact)
-        Driver.press("换上", .exact, nth: 1)
-        check.visible("换上 #3 lab", "第二个「换上」是 #3")
-        check.expect(Driver.visible("替它打开", wait: 0.3) == false, "要换上的账号已经开了 Bypass，确认里不提")
+        if !Driver.pressNear("lab", "换上") { check.expect(false, "找到 lab 卡片上的「换上」") }
+        check.visible("换上 lab", "只有桌面登录的账号也能换上桌面")
+        check.expect(Driver.visible("打开Bypass权限模式", wait: 0.3) == false, "要换上的账号已经开了 Bypass，确认里不提")
         Driver.press("取消", .exact)
+        Driver.press("不用", .exact)
+        check.expect(Driver.visible("Claude桌面还在用work", wait: 0.3) == false, "点「不用」后不再提示这一对")
+        Driver.menuChoice = "在 Claude 桌面登录新账号…"
         Driver.press("添加账号", .suffix)
-        check.visible("退出登录", "添加账号提醒不要退出登录")
+        check.visible("退出登录", "两边都用时添加账号可以选在 Claude 桌面登录，提醒不要退出登录")
         Driver.press("取消", .exact)
     }
-    section(26, "Claude 桌面：换号进行中可以不等，落后、要重启、保留期和软链都写明并给出处理") {
+    section(26, "Claude 页的桌面部分：换号进行中可以不等，落后、要重启、保留期和软链都写明并给出处理") {
         Fixture.load("desktopswitching", into: state)
-        select(.claudeDesktop)
-        check.visible("正在换上 #2 work", "换号进行中页面顶部写明")
+        select(.claude)
+        check.visible("Claude桌面正在换上#2work", "换号进行中页面顶部写明")
         Driver.press("查看", .exact)
         check.expect(Driver.visible("Claude 在问要不要退出") && Driver.visible("不等了"), "Claude 在问时说明去 Claude 里回答，可以不等")
         state.calls.removeAll()
@@ -1305,8 +1325,8 @@ extension NSWindow {
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"stop\"") == true, "「不等了」发送 stop")
         Driver.press("在后台继续", .exact)
         Fixture.load("desktopbehind", into: state)
-        select(.claudeDesktop)
-        check.expect(Driver.visible("要重启一次 Claude 才看得到新会话") && Driver.visible("差 4"), "落后的账号写差几个，要重启时写明")
+        select(.claude)
+        check.expect(Driver.visible("要重启一次Claude才看得到新会话"), "同步条写明要重启一次 Claude")
         check.expect(Driver.visible("12 天后") && Driver.visible("改回真文件夹"), "保留期和软链提醒都在")
         state.calls.removeAll()
         Driver.press("一直保留", .exact)
@@ -1314,9 +1334,11 @@ extension NSWindow {
         Driver.press("改回真文件夹", .exact)
         let fix = check.lastCall("accounts.claude_desktop") ?? ""
         check.expect(fix.contains("\"desktop_action\":\"fix_symlinks\"") && fix.contains("\"confirm\":true"), "「改回真文件夹」发送 fix_symlinks")
+        // Left to itself the page would drop Claude 桌面 once it is gone; someone who said they use both still sees why.
+        UserDefaults.standard.set(ClaudeUse.both.rawValue, forKey: ClaudeUse.key)
         Fixture.load("desktopmissing", into: state)
-        select(.claudeDesktop)
-        check.visible("这台 Mac 上没找到 Claude 桌面。", "没装 Claude 桌面时写明")
+        select(.claude)
+        check.visible("这台Mac上没找到Claude桌面", "没装 Claude 桌面时写明")
         main.orderOut(nil)
         Fixture.load("default", into: state)
         let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 720))
@@ -1329,6 +1351,42 @@ extension NSWindow {
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"account\":\"h-nova\"") == true, "菜单栏确认后按 handle 换上")
         panel.orderOut(nil)
         main.orderFrontRegardless()
+    }
+    section(27, "Claude 页：两边都能换时「换上」分两半，▾ 选只换一边并记住；只用 Code / 只用桌面时页面只放那一边") {
+        Fixture.load("claudeboth", into: state)
+        select(.claude)
+        check.expect(Driver.visible("只有会话、没保存登录") && Driver.visible("c***@example.invalid"), "只有会话目录的旧账号单独写一句")
+        state.calls.removeAll()
+        // Only Claude 备用 can move both sides, so its split button is the one plain 「换上」 on the page.
+        if !Driver.press("换上", .exact) { check.expect(false, "找到 Claude 备用卡片上的「换上」") }
+        check.expect(Driver.visible("一起换") && Driver.visible("只换Code") && Driver.visible("只换桌面"), "两边都能换：确认框给一起换 / 只换 Code / 只换桌面")
+        check.visible("下次点「换上」默认按这次的选择来", "写明会记住这次的选择")
+        check.expect(Driver.visible("不用退出CLI") && Driver.visible("会退出再打开Claude桌面"), "默认一起换：两边各写一句会怎样")
+        Driver.press("只换Code", .exact)
+        check.expect(Driver.visible("会退出再打开Claude桌面", wait: 0.3) == false, "选只换 Code 后不再提 Claude 桌面")
+        Driver.press("立即换上", .exact)
+        let activate = check.lastCall("accounts.activate") ?? ""
+        check.expect(activate.contains("synthetic-claude-b") && activate.contains("\"confirm\":true"), "只换 Code：调用 accounts.activate")
+        check.expect(!state.calls.contains { $0.contains("\"desktop_action\":\"switch\"") }, "只换 Code 不碰 Claude 桌面")
+        check.expect(UserDefaults.standard.string(forKey: ClaudeUse.scopeKey) == SwitchScope.code.rawValue, "记住了「只换 Code」")
+        Driver.settle(0.5)
+        state.calls.removeAll()
+        if !Driver.press("换上", .exact) { check.expect(false, "再次找到「换上」") }
+        check.expect(main.attachedSheet == nil && check.lastCall("accounts.activate") != nil, "下次按记住的「只换 Code」直接换，不弹框")
+        print("  → 只用 Code")
+        UserDefaults.standard.set(ClaudeUse.code.rawValue, forKey: ClaudeUse.key)
+        Fixture.load("default", into: state)
+        select(.claude)
+        check.expect(Driver.visible("只用Code") && !Driver.visible("个桌面会话", wait: 0.3), "只用 Code：没有桌面会话同步条")
+        check.expect(Driver.hits("下一个账号", .exact).isEmpty, "只用 Code：没有「下一个账号」")
+        check.visible("只存了桌面登录", "只在桌面登录过的账号收成一行提示")
+        print("  → 只用桌面")
+        UserDefaults.standard.set(ClaudeUse.desktop.rawValue, forKey: ClaudeUse.key)
+        Fixture.load("claude2", into: state)
+        select(.claude)
+        check.expect(Driver.visible("只用桌面") && Driver.visible("个桌面账号") && Driver.visible("个桌面会话"), "只用桌面：页头写桌面账号数，同步条在")
+        check.expect(Driver.visible("去桌面登录"), "没在桌面登录过的账号给「去桌面登录」")
+        check.expect(Driver.visible("第1位", wait: 0.3) == false, "只用桌面：卡片不写 Claude Code 的顺位")
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
@@ -1351,7 +1409,7 @@ extension NSWindow {
 @main struct Preview {
     static func page(_ name: String) -> Page {
         ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation, "desktop": .desktop,
-         "claudedesktop": .claudeDesktop, "clients": .clients, "cloud": .cloud, "network": .network][name]!
+         "clients": .clients, "cloud": .cloud, "network": .network][name]!
     }
     @MainActor static func main() {
         let args = CommandLine.arguments
@@ -1412,7 +1470,7 @@ extension NSWindow {
             let output = URL(fileURLWithPath: args[4], isDirectory: true)
             try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let claude = state.directory!.accounts.first { $0.provider == "claude" }?.id
-            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude", .claude, claude), ("automation", .automation, nil), ("desktop", .desktop, nil), ("claude-desktop", .claudeDesktop, nil)] {
+            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude), ("automation", .automation, nil), ("desktop", .desktop, nil)] {
                 AppNavigation.shared.show(page, select: selection)
                 _ = render(DashboardView(), size: NSSize(width: 1020, height: 660), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
             }
@@ -1432,18 +1490,24 @@ extension NSWindow {
                 ("accounts-connected", "connected", .accounts, nil), ("accounts-plain", "plain", .accounts, nil), ("accounts-claude2", "claude2", .accounts, nil),
                 ("codex", "default", .codex, nil), ("codex-attention", "attention", .codex, nil), ("codex-cloud", "cloud", .codex, nil),
                 ("codex-unmanaged", "unmanaged", .codex, nil), ("codex-selected", "connected", .codex, "synthetic-nova"),
-                ("claude", "default", .claude, nil), ("claude2", "claude2", .claude, "synthetic-claude-b"), ("claude-switchblock", "switchblock", .claude, "synthetic-claude-b"),
+                ("claude", "default", .claude, nil), ("claude-both", "claudeboth", .claude, nil), ("claude-code", "default", .claude, nil),
+                ("claude-desktop", "claude2", .claude, nil), ("claude-account", "default", .claude, "synthetic-claude"),
+                ("claude2", "claude2", .claude, "synthetic-claude-b"), ("claude-lab", "default", .claude, "h-lab"),
+                ("claude-switchblock", "switchblock", .claude, "synthetic-claude-b"),
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),
-                ("claude-desktop", "default", .claudeDesktop, nil), ("claude-desktop-behind", "desktopbehind", .claudeDesktop, nil),
-                ("claude-desktop-switching", "desktopswitching", .claudeDesktop, nil), ("claude-desktop-missing", "desktopmissing", .claudeDesktop, nil),
+                ("claude-desktop-behind", "desktopbehind", .claude, nil),
+                ("claude-desktop-switching", "desktopswitching", .claude, nil), ("claude-desktop-missing", "desktopmissing", .claude, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
                 ("network", "default", .network, nil), ("network-safe", "netsafe", .network, nil),
                 ("network-waiting", "netwaiting", .network, nil), ("network-wrong", "netwrong", .network, nil),
             ]
+            // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
+            let modes: [String: ClaudeUse] = ["claude-code": .code, "claude-desktop": .desktop]
             for (name, scenario, page, selection) in pages {
                 Fixture.load(scenario, into: state)
+                if let mode = modes[name] { UserDefaults.standard.set(mode.rawValue, forKey: ClaudeUse.key) } else { UserDefaults.standard.removeObject(forKey: ClaudeUse.key) }
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }
                 let size = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
@@ -1461,7 +1525,7 @@ extension NSWindow {
                 ("sheet-rename", AnyView(RenameSheet(account: nova, close: {}))),
                 ("history", AnyView(ResetHistoryView(accountID: nil))),
                 ("menubar", AnyView(MenuBarPanel(openWindow: {}))),
-                ("sheet-desktop-switch", AnyView(DesktopSheetView(item: .switchTo("h-nova"), close: {}))),
+                ("sheet-desktop-switch", AnyView(ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude", code: false, desk: true, choice: false), close: {}))),
                 ("sheet-network-new", AnyView(NetworkSwitchSheet(initial: .wifi("Cafe Guest"), started: {}, close: {}))),
                 ("sheet-network-phone", AnyView(NetworkSwitchSheet(initial: .phone("我的 iPhone"), started: {}, close: {}))),
             ]
@@ -1469,6 +1533,12 @@ extension NSWindow {
                 let size = render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
+            UserDefaults.standard.removeObject(forKey: ClaudeUse.key)
+            // Both sides can move: the switch sheet offers 一起换 / 只换 Code / 只换桌面.
+            Fixture.load("claudeboth", into: state)
+            let choice = ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude-b", code: true, desk: true, choice: true), close: {})
+            let choiceSize = render(choice, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-claude-switch.png"))
+            print("\(appearance)/sheet-claude-switch: \(choiceSize.width) × \(choiceSize.height)")
             // A saved Claude account with two kinds of reset card to choose from.
             Fixture.load("claude2", into: state)
             let claudeB = state.directory!.accounts.first { $0.id == "synthetic-claude-b" }!

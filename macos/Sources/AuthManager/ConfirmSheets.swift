@@ -81,14 +81,14 @@ struct SwitchSheet: View {
     private var confirm: some View {
         SheetScaffold(title: account.native ? "让 Codex 桌面用「\(account.displayName)」？" : "把 \(account.providerName) 换到「\(account.displayName)」？",
                       lead: claudeInPlace ? "运行中的会话约 30 秒内改用新账号；在那之前发出的请求仍用原账号完成。"
-                                          : "之后新开的会话用新账号；正在进行的请求不保证不中断。") {
+                                          : "之后新开的会话用新账号；正在进行的请求可能中断。") {
             // Taking over keeps the account; only who supplies the desktop's login changes.
             if !account.native { Handoff(from: from, to: account, blocked: nil) }
             VStack(alignment: .leading, spacing: 9) {
                 switch route {
                 case .desktop:
                     CheckItem(kind: .system, text: "同时更新 Codex 桌面和 ~/.codex/auth.json；pi 的新任务跟着换。")
-                    CheckItem(kind: .you, text: "先结束桌面里正在运行的任务，退出独立的 Codex CLI。VS Code 的 Codex 插件要在 VS Code 里停用，或者退出 VS Code。桌面窗口可以开着。")
+                    CheckItem(kind: .you, text: "先结束桌面里正在运行的任务，退出独立的 Codex CLI，停用 VS Code 的 Codex 插件或退出 VS Code。桌面窗口可以开着。")
                 default:
                     if account.provider == "codex" {
                         CheckItem(kind: .system, text: "更新 ~/.codex/auth.json；pi 的新任务跟着换。")
@@ -142,7 +142,7 @@ struct SwitchSheet: View {
                         Text("以调试模式重启桌面并换上").font(.system(size: 12, weight: .semibold))
                         Pill("推荐", style: .brand, small: true)
                     }
-                    Text("桌面里没有任务在运行时，AuthBaton 会退出桌面、用调试模式重新打开，连上后直接换上。有任务在运行就不会重启。")
+                    Text("桌面没有任务运行时，AuthBaton 会退出桌面、以调试模式重新打开，连上后直接换上；有任务运行时不会重启。")
                         .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
                     if let attempt, attempt.pending {
                         HStack(spacing: 5) {
@@ -251,7 +251,7 @@ struct ResetSheet: View {
 
     var body: some View {
         SheetScaffold(title: retry ? "重试「\(account.displayName)」上次的重置？" : "给「\(account.displayName)」用 1 张重置卡？",
-                      lead: retry ? "会重试原来的同一次操作，不会换用另一张卡。如果上次没有生效，这次可能用掉 1 张。"
+                      lead: retry ? "会重试同一次操作，不会换用另一张卡。如果上次没生效，这次可能用掉 1 张。"
                                   : offer != nil ? "成功后这张卡适用的额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。"
                                   : "成功后额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。") {
             if let offer, account.claudeOffers.count > 1 {
@@ -273,7 +273,7 @@ struct ResetSheet: View {
             SheetError()
         } actions: {
             Button("取消", action: close).buttonStyle(.pill(.secondary, height: 27)).keyboardShortcut(.cancelAction)
-            Button(working ? "正在重置…" : retry ? "确认重试同一次操作" : "用 1 张") {
+            Button(working ? "正在重置…" : retry ? "确认重试" : "用 1 张") {
                 working = true
                 Task {
                     await submit(service, "accounts.reset_quota",
@@ -294,7 +294,7 @@ struct ResetSheet: View {
         let count = account.provider == "claude" ? account.creditCount : account.codexCredits.count
         return HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(retry ? "重试的这一次" : offer.map { ClaudeResetKind.phrase("用这张", $0.kind) } ?? "用这一张")
+                Text(retry ? "重试上次操作" : offer.map { ClaudeResetKind.phrase("用这张", $0.kind) } ?? "用这张")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink2)
                 Text((offer?.endsAt ?? expiresAt).map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
@@ -347,9 +347,9 @@ struct RemoveSheet: View {
     let close: () -> Void
 
     var body: some View {
-        SheetScaffold(title: "从 AuthBaton 移除「\(account.displayName)」？", lead: "以后要用它，需要重新导入或登录。") {
+        SheetScaffold(title: "从 AuthBaton 移除「\(account.displayName)」？", lead: "以后再用，需要重新导入或登录。") {
             VStack(alignment: .leading, spacing: 9) {
-                CheckItem(kind: .you, text: "删除 AuthBaton 保存的记录、凭据和额度缓存，停止它的后台查询和维护。")
+                CheckItem(kind: .you, text: "删除 AuthBaton 保存的记录、凭据和额度缓存，停止后台查询和维护。")
                 CheckItem(kind: .system, text: "原来的认证文件和官方客户端登录不变，不会注销订阅账号。")
             }
             SheetError()
@@ -385,7 +385,7 @@ struct RecoverSaveSheet: View {
                     CheckItem(kind: .info, text: "完成约 1 分钟后，AuthBaton 重新和 Claude CLI 协同续期：access 快到期时会联网续期。")
                 } else {
                     CheckItem(kind: .system, text: "保存成功后恢复自动维护。")
-                    CheckItem(kind: .you, text: "如果它是在用的账号，先退出对应的官方客户端。")
+                    CheckItem(kind: .you, text: "如果是在用账号，先退出对应的官方客户端。")
                 }
             }
             SheetError()
