@@ -31,6 +31,8 @@ pub struct Member<'a> {
     pub key: String,
     /// `"key": value`, exactly as written.
     pub raw: &'a [u8],
+    /// Where the value starts in `raw`.
+    value_at: usize,
 }
 
 fn is_ws(b: u8) -> bool {
@@ -120,7 +122,7 @@ pub fn parse(s: &[u8]) -> Option<Object<'_>> {
             let value = skip_ws(s, colon + 1);
             obj.colon.get_or_insert(&s[key_end..value]);
             let end = value_end(s, value)?;
-            obj.members.push(Member { key, raw: &s[start..end] });
+            obj.members.push(Member { key, raw: &s[start..end], value_at: value - start });
             let next = skip_ws(s, end);
             match s.get(next) {
                 Some(b',') => {
@@ -190,6 +192,27 @@ pub fn reads_as(bytes: &[u8], want: &Map<String, Value>) -> bool {
     matches!(serde_json::from_slice::<Value>(bytes), Ok(Value::Object(m)) if m == *want)
 }
 
+/// The JSON object `text` with the member at `path` set to `value`: the objects on the way are
+/// made where they are missing, and every other byte stays. `None` when `text`, or a value on the
+/// way, is not an object.
+pub fn with_member(text: &[u8], path: &[&str], value: &Value) -> Option<Vec<u8>> {
+    let obj = parse(text)?;
+    let (key, rest) = path.split_first()?;
+    let existing = obj.members.iter().find(|m| m.key == *key);
+    let member = match existing {
+        Some(m) if !rest.is_empty() => {
+            let (head, inner) = m.raw.split_at(m.value_at);
+            [head, with_member(inner, rest, value)?.as_slice()].concat()
+        }
+        _ => obj.member(key, &rest.iter().rev().fold(value.clone(), |v, k| serde_json::json!({ *k: v }))),
+    };
+    let kept = obj.members.iter().map(|m| if m.key == *key { member.as_slice() } else { m.raw });
+    Some(match existing {
+        Some(_) => obj.rebuild(kept),
+        None => obj.rebuild(kept.chain([member.as_slice()])),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +248,29 @@ mod tests {
         assert!(reads_as(&out, want.as_object().unwrap()));
         let compact = parse(br#"{"b":2}"#).unwrap();
         assert_eq!(compact.member("a", &json!([1, 2])), br#""a":[1,2]"#);
+    }
+
+    #[test]
+    fn a_member_deep_inside_is_set_and_every_other_byte_stays() {
+        let text = "{\n  \"mcpServers\": {\"z\": 1,   \"a\": 2},\n  \"preferences\": {\n    \"sidebarMode\": \"code\",\n    \"gate\": {\n      \"ada\": true\n    }\n  }\n}";
+        let set = |text: &str, path: &[&str], value: Value| {
+            String::from_utf8(with_member(text.as_bytes(), path, &value).unwrap()).unwrap()
+        };
+        // One more member in an object that is there.
+        assert_eq!(
+            set(text, &["preferences", "gate", "bob"], json!(true)),
+            text.replace("\"ada\": true", "\"ada\": true,\n      \"bob\": true")
+        );
+        // A member that is there gets its new value in place.
+        assert_eq!(set(text, &["preferences", "gate", "ada"], json!(false)), text.replace("true", "false"));
+        // Objects on the way are made, the way `member` writes a nested value.
+        assert_eq!(
+            set(text, &["preferences", "other", "bob"], json!(true)),
+            text.replace("    }\n  }", "    },\n    \"other\": {\n        \"bob\": true\n    }\n  }")
+        );
+        assert_eq!(set("{}", &["a", "b"], json!(1)), r#"{"a":{"b":1}}"#);
+        // Not an object on the way: nothing to set.
+        assert!(with_member(text.as_bytes(), &["preferences", "sidebarMode", "x"], &json!(1)).is_none());
+        assert!(with_member(b"[1]", &["a"], &json!(1)).is_none());
     }
 }

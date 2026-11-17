@@ -75,6 +75,11 @@ impl Paths {
         self.user_data.join("config.json")
     }
 
+    /// Desktop's settings, the ones people set in its Settings window among them.
+    pub fn desktop_settings(&self) -> PathBuf {
+        self.user_data.join("claude_desktop_config.json")
+    }
+
     pub fn config_file(&self) -> PathBuf {
         self.state_dir.join("config.json")
     }

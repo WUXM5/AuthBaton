@@ -11,6 +11,7 @@
 
 use crate::accounts::{self, NotFound, Roster, Slot, Strategy};
 use crate::apply::{self, Busy, Outcome};
+use crate::bypass::{self, Carried};
 use crate::config::Config;
 use crate::ctx::{Ctx, FakeDesktop, LogSink};
 use crate::desktop::{self, NotReady, Quitting, Step};
@@ -268,6 +269,8 @@ pub struct AccountView {
     pub broken: bool,
     /// What it last used of its plan, as Claude last read it.
     pub usage: Option<UsageView>,
+    /// Claude allows bypass permissions mode for it.
+    pub bypass: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -399,7 +402,7 @@ const ROUTINE_SESSIONS: usize = 3;
 pub fn overview(ctx: &Ctx) -> Overview {
     let ov = report::overview(ctx);
     let now = fsx::now_secs();
-    let accounts = account_rows(&ov, now);
+    let accounts = account_rows(&ov, now, &bypass::allowed(ctx));
     let pick = |strategy: Strategy| {
         let can_switch = |s: &Slot| ov.logins.saved(&s.account).is_some();
         let current = ov.logins.signed_in.as_deref();
@@ -510,7 +513,7 @@ fn usage_view(u: &Usage, now: f64, in_use: bool) -> Option<UsageView> {
 
 /// One row per account (cc-same app's `model::accounts`): the accounts in the list by number,
 /// then the ones only seen in Claude's session folders.
-fn account_rows(ov: &report::Overview, now: f64) -> Vec<AccountView> {
+fn account_rows(ov: &report::Overview, now: f64, bypass: &BTreeSet<String>) -> Vec<AccountView> {
     let logins = &ov.logins;
     let mut groups: Vec<Vec<&PartitionView>> = Vec::new();
     for p in ov.surface(Surface::Code).map(|c| c.partitions.as_slice()).unwrap_or_default() {
@@ -557,6 +560,7 @@ fn account_rows(ov: &report::Overview, now: f64) -> Vec<AccountView> {
             excluded: !lists.is_empty() && lists.iter().all(|p| p.excluded),
             broken: lists.iter().any(|p| p.error.is_some() || p.part.is_link),
             usage: ov.usage.get(acct).and_then(|u| usage_view(u, now, open)),
+            bypass: bypass.contains(acct),
         }
     };
     let mut rows: Vec<AccountView> = groups.iter().map(|lists| row(&lists[0].part.acct, lists)).collect();
@@ -1260,6 +1264,8 @@ pub struct SwitchProgress {
     pub launched: bool,
     /// Done: Claude was signed in to the target already; nothing was changed.
     pub already: bool,
+    /// Done: what was done about bypass permissions mode for the account switched to.
+    pub bypass: Carried,
     /// Failed: why.
     pub failure: Option<Failure>,
     /// Stopped while Claude waited for its work: it still quits once that is done.
@@ -1278,6 +1284,7 @@ impl SwitchProgress {
             to: None,
             launched: false,
             already: false,
+            bypass: Carried::Nothing,
             failure: None,
             after_work: false,
         }
@@ -1373,7 +1380,9 @@ fn run_switch(
         None => accounts::add(ctx, &watch),
     };
     let end = match result {
-        Ok(done) => SwitchProgress { from: done.from, to: done.to, launched: done.launched, ..at(S::Done) },
+        Ok(done) => {
+            SwitchProgress { from: done.from, to: done.to, launched: done.launched, bypass: done.bypass, ..at(S::Done) }
+        }
         Err(e) if e.downcast_ref::<NotReady>() == Some(&NotReady::Stopped) => {
             SwitchProgress { after_work: quitting.get() == Some(Quitting::AfterWork), ..at(S::Stopped) }
         }

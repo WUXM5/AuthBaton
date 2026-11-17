@@ -9,6 +9,7 @@ use claude_desktop::api::{
     self, AccountView, Failure, FailureReason, HeadlineKind, LoginState, Overview, PassSummary,
     SwitchProgress, SwitchStage, SwitchTarget,
 };
+use claude_desktop::bypass::Carried;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -458,6 +459,7 @@ impl Runtime {
                     "weekly": window(usage.and_then(|u| u.weekly)),
                     "linked_account": linked(&a.account_id),
                     "known": a.in_list,
+                    "bypass": a.bypass,
                 })
             })
             .collect();
@@ -556,13 +558,22 @@ fn step_of(progress: &SwitchProgress) -> &'static str {
 }
 
 fn finished(end: &SwitchProgress, target: &str) -> (&'static str, Option<String>, Option<bool>) {
+    let bypass = match end.bypass {
+        Carried::Nothing => "",
+        Carried::TurnedOn => "。这个账号原先没开 Bypass 权限模式，已替它打开",
+        Carried::Failed => {
+            "。这个账号没开 Bypass 权限模式，这次没能替它打开；要用就在 Claude 的设置里打开"
+        }
+    };
     let message = match end.stage {
         SwitchStage::Done if end.adding => {
             "在 Claude 的登录页登录新账号；登录后会自动加进列表".to_string()
         }
         SwitchStage::Done if end.already => "Claude 已经登录着这个账号，什么都没改".to_string(),
-        SwitchStage::Done if end.launched => format!("已换上 {target}，Claude 已重新打开"),
-        SwitchStage::Done => format!("已换上 {target}；Claude 下次打开就是这个账号"),
+        SwitchStage::Done if end.launched => {
+            format!("已换上 {target}，Claude 已重新打开{bypass}")
+        }
+        SwitchStage::Done => format!("已换上 {target}；Claude 下次打开就是这个账号{bypass}"),
         SwitchStage::Stopped if end.after_work => {
             "Claude 会在手上的事做完后自己退出；这次没换号".to_string()
         }
@@ -850,6 +861,29 @@ mod tests {
     }
 
     #[test]
+    fn the_window_knows_which_accounts_claude_allows_bypass_for() {
+        let mut fixture = Fixture::new("bypass");
+        let settings =
+            json!({"preferences": {"bypassPermissionsGateByAccount": {ADA.0: true, BOB.0: false}}});
+        fs::write(
+            fixture.root.join("Claude/claude_desktop_config.json"),
+            settings.to_string(),
+        )
+        .unwrap();
+        let snapshot = fixture.settle();
+        let bypass = |account: &str| {
+            let handle = Fixture::handle(&snapshot, account);
+            let accounts = snapshot["accounts"].as_array().unwrap();
+            accounts
+                .iter()
+                .find(|a| a["handle"] == handle.as_str())
+                .unwrap()["bypass"]
+                .clone()
+        };
+        assert_eq!((bypass(ADA.0), bypass(BOB.0)), (json!(true), json!(false)));
+    }
+
+    #[test]
     fn an_alias_renames_the_row_and_a_bad_one_is_refused_in_chinese() {
         let mut fixture = Fixture::new("alias");
         let snapshot = fixture.settle();
@@ -1110,6 +1144,7 @@ mod tests {
             to: None,
             launched,
             already,
+            bypass: Carried::Nothing,
             failure: None,
             after_work: false,
         };
@@ -1125,6 +1160,22 @@ mod tests {
                 .unwrap(),
             "Claude 已经登录着这个账号，什么都没改"
         );
+        let carried = |bypass, launched| SwitchProgress {
+            bypass,
+            ..progress(SwitchStage::Done, false, false, launched)
+        };
+        assert_eq!(
+            finished(&carried(Carried::TurnedOn, true), "#2 work")
+                .1
+                .unwrap(),
+            "已换上 #2 work，Claude 已重新打开。这个账号原先没开 Bypass 权限模式，已替它打开"
+        );
+        let not_carried = finished(&carried(Carried::Failed, false), "#2 work");
+        assert_eq!(
+            not_carried.1.unwrap(),
+            "已换上 #2 work；Claude 下次打开就是这个账号。这个账号没开 Bypass 权限模式，这次没能替它打开；要用就在 Claude 的设置里打开"
+        );
+        assert_eq!(not_carried.2, Some(true));
         let added = finished(&progress(SwitchStage::Done, true, false, true), "");
         assert_eq!((added.0, added.2), ("waiting_sign_in", None));
         assert_eq!(

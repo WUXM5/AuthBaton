@@ -89,9 +89,9 @@ enum Fixture {
     static func claudeDesktop(_ now: Double) -> [String: Any] {
         func usage(_ remaining: Int, _ age: Double) -> [String: Any] { ["remaining": remaining, "at": now - age, "stale": false] }
         func account(_ handle: String, _ number: Int?, _ display: String, _ email: String?, alias: String?, inUse: Bool, participates: Bool = true,
-                     five: [String: Any]?, weekly: [String: Any]?, linked: String? = nil, known: Bool = true, sessions: Int = 25) -> [String: Any] {
+                     five: [String: Any]?, weekly: [String: Any]?, linked: String? = nil, known: Bool = true, sessions: Int = 25, bypass: Bool = false) -> [String: Any] {
             var row: [String: Any] = ["handle": handle, "display": display, "in_use": inUse, "login_saved": known, "participates": participates,
-                                      "sessions": sessions, "behind": 0, "known": known]
+                                      "sessions": sessions, "behind": 0, "known": known, "bypass": bypass]
             if let number { row["number"] = number }
             if let email { row["email"] = email }
             if let alias { row["alias"] = alias }
@@ -107,8 +107,8 @@ enum Fixture {
             "accounts": [
                 account("h-nova", 1, "nova@example.invalid", "nova@example.invalid", alias: nil, inUse: false,
                         five: usage(88, 600), weekly: usage(54, 600), linked: "synthetic-claude"),
-                account("h-orbit", 2, "work", "orbit@example.invalid", alias: "work", inUse: true, five: usage(38, 120), weekly: usage(71, 120)),
-                account("h-lab", 3, "lab", "lab@example.invalid", alias: "lab", inUse: false, participates: false, five: nil, weekly: usage(12, 5 * 3600)),
+                account("h-orbit", 2, "work", "orbit@example.invalid", alias: "work", inUse: true, five: usage(38, 120), weekly: usage(71, 120), bypass: true),
+                account("h-lab", 3, "lab", "lab@example.invalid", alias: "lab", inUse: false, participates: false, five: nil, weekly: usage(12, 5 * 3600), bypass: true),
                 account("h-old", nil, "c***@example.invalid", "c***@example.invalid", alias: nil, inUse: false, five: nil, weekly: nil, known: false, sessions: 6),
             ],
             "picks": ["next": "h-nova", "next_available": "h-nova", "best": "h-nova"],
@@ -1274,6 +1274,7 @@ extension NSWindow {
         }
         Driver.pressBeside("nova@example", "换上")
         check.visible("换上 #1 nova@example", "换上先弹确认，标题带编号")
+        check.visible("换上时会替它打开", "在用的账号开着 Bypass、要换上的没开：确认里写明会替它打开")
         check.expect(Driver.visible("退出登录", wait: 0.3) == false, "换号确认不混入添加账号的提醒")
         Driver.press("换上", .exact)
         let call = check.lastCall("accounts.claude_desktop") ?? ""
@@ -1284,6 +1285,10 @@ extension NSWindow {
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"dismiss\"") == true, "结束后点「好」清掉这次操作")
         Driver.press("下一个账号", .exact)
         check.visible("换上 #1 nova@example", "「下一个账号」按编号挑到 #1，同样先确认")
+        Driver.press("取消", .exact)
+        Driver.press("换上", .exact, nth: 1)
+        check.visible("换上 #3 lab", "第二个「换上」是 #3")
+        check.expect(Driver.visible("替它打开", wait: 0.3) == false, "要换上的账号已经开了 Bypass，确认里不提")
         Driver.press("取消", .exact)
         Driver.press("添加账号", .suffix)
         check.visible("退出登录", "添加账号提醒不要退出登录")
@@ -1318,6 +1323,7 @@ extension NSWindow {
         check.expect(Driver.visible("在用 #2 work") && Driver.visible("会话一致"), "菜单栏写桌面在用的账号和同步状态")
         Driver.press("下一个", .exact)
         check.visible("换上 #1 nova@example", "菜单栏「下一个」先在行内确认")
+        check.visible("换上时会替它打开", "菜单栏的确认同样写明会替它打开 Bypass")
         state.calls.removeAll()
         Driver.press("换上", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"account\":\"h-nova\"") == true, "菜单栏确认后按 handle 换上")
@@ -1455,6 +1461,7 @@ extension NSWindow {
                 ("sheet-rename", AnyView(RenameSheet(account: nova, close: {}))),
                 ("history", AnyView(ResetHistoryView(accountID: nil))),
                 ("menubar", AnyView(MenuBarPanel(openWindow: {}))),
+                ("sheet-desktop-switch", AnyView(DesktopSheetView(item: .switchTo("h-nova"), close: {}))),
                 ("sheet-network-new", AnyView(NetworkSwitchSheet(initial: .wifi("Cafe Guest"), started: {}, close: {}))),
                 ("sheet-network-phone", AnyView(NetworkSwitchSheet(initial: .phone("我的 iPhone"), started: {}, close: {}))),
             ]
