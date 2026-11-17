@@ -63,7 +63,7 @@ struct AutomationPage: View {
                 }
                 .safeAreaInset(edge: .bottom) { if dirty { saveBar } }
             } else if service.directory != nil {
-                PageScaffold(title: "换号与重置", subtitle: Text("这个后台服务版本没有提供换号与重置。")) {}
+                PageScaffold(title: "换号与重置", subtitle: Text("当前后台服务版本不支持换号与重置。")) {}
             } else {
                 ProgressView("正在载入…").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -236,10 +236,10 @@ struct AutomationPage: View {
             }
             if let index {
                 editor($draft.accounts[index], lane: rules).padding(.top, 14)
-                Text(rules.count > 1 ? "拖动账号调整顺序；点一个账号，在下面改它的规则。" : "点一个账号，在下面改它的规则。")
+                Text(rules.count > 1 ? "拖动账号调整顺序；点一个账号，在下面改规则。" : "点一个账号，在下面改规则。")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 10)
             } else if !rules.isEmpty {
-                Text("点一个账号，改它的规则。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 10)
+                Text("点一个账号，改规则。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 10)
             }
         }
         .padding(.horizontal, 19).padding(.top, 15).padding(.bottom, 17)
@@ -395,7 +395,7 @@ struct AutomationPage: View {
                 HStack(spacing: 19) { info; controls }
                 VStack(alignment: .leading, spacing: 10) { info; controls }
             }
-            Text(rule.wrappedValue.participate ? rule.wrappedValue.order.explanation : "不参与：见底时不会自动换走它，也不会自动给它用重置卡。")
+            Text(rule.wrappedValue.participate ? rule.wrappedValue.order.explanation : "不参与：见底时不会自动换走，也不会自动用重置卡。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 15).padding(.vertical, 12)

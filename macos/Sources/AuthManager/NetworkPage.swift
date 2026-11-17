@@ -512,7 +512,7 @@ struct NetworkProgressSheet: View {
                 stepRow(5, "Claude Code 恢复发请求", detail: nil, step: step)
             }
             if step == "wrong_password", op?.running == false {
-                Text("密码改了的话，在切换网络里重新输入即可。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text("密码改了的话，在切换网络里重新输入就行。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             HStack(spacing: 9) {
                 Spacer(minLength: 0)

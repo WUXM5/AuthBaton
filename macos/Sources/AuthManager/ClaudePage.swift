@@ -1,75 +1,83 @@
 import SwiftUI
 
-// Claude Code: one account at a time in full; with more than one, a row of seals picks which.
-struct ClaudePage: View {
+// One Claude account in full: quota, reset cards, warmup, checks and rules on the left and right; the row of
+// seals at the top moves between accounts without going back to the overview.
+struct ClaudeAccountPage: View {
     @EnvironmentObject private var service: ServiceController
     @ObservedObject private var nav = AppNavigation.shared
-    @State private var sheet: AccountSheet?
+    let entry: ClaudeEntry
+    let entries: [ClaudeEntry]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let open: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
 
     var body: some View {
-        Group {
-            if let directory = service.directory {
-                let accounts = directory.relay("claude")
-                let account = accounts.first { $0.id == nav.selection } ?? directory.current("claude") ?? accounts.first
-                PageScaffold(title: "Claude Code", subtitle: Text(subtitle(directory, accounts)), provider: "claude") {
-                    RefreshPill(checkedAt: accounts.compactMap { $0.usage?.checkedAt }.max(), busy: service.isRefreshing) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Button { nav.claudeDetail = nil } label: {
+                        HStack(spacing: 4) {
+                            Icon(.chevronLeft, size: 10, color: Palette.ink2, weight: 2.4)
+                            Text("Claude")
+                        }
+                    }
+                    .buttonStyle(.pill(.secondary, height: 27))
+                    .keyboardShortcut("[", modifiers: .command)
+                    if entries.count > 1 { picker }
+                    Spacer(minLength: 7)
+                    RefreshPill(checkedAt: entry.cli?.usage?.checkedAt, busy: service.isRefreshing) {
                         Task {
                             await service.refresh()
                             await service.refreshQuotaIfNeeded()
                         }
                     }
-                    Button { sheet = .login(provider: "claude", accountID: nil) } label: {
-                        HStack(spacing: 5) {
-                            Icon(.plus, size: 12, color: .white, weight: 2)
-                            Text("添加 Claude 账号")
-                        }
+                }
+                .padding(.top, 34)
+                if use.code && directory.recoveryNeeded { RecoveryBanner() }
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 14) {
+                        main.frame(minWidth: 323, idealWidth: 323, maxWidth: .infinity)
+                        side.frame(minWidth: 255, idealWidth: 255, maxWidth: 306)
                     }
-                    .buttonStyle(.pill(.primary, height: 27))
-                    .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded)
-                } content: {
-                    if directory.recoveryNeeded { RecoveryBanner() }
-                    if accounts.count > 1, let account { picker(accounts, selected: account.id) }
-                    if let account {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(alignment: .top, spacing: 14) {
-                                ClaudeMain(account: account, directory: directory) { sheet = $0 }
-                                    .frame(minWidth: 323, idealWidth: 323, maxWidth: .infinity)
-                                ClaudeSide(account: account, directory: directory) { sheet = $0 }
-                                    .frame(minWidth: 255, idealWidth: 255, maxWidth: 306)
-                            }
-                            VStack(spacing: 14) {
-                                ClaudeMain(account: account, directory: directory) { sheet = $0 }
-                                ClaudeSide(account: account, directory: directory) { sheet = $0 }
-                            }
-                        }
-                    } else {
-                        AddCard(provider: "claude", open: { sheet = $0 }, lead: "还没有 Claude Code 账号", detail: "登录一个，或导入这台 Mac 上已有的登录。")
+                    VStack(spacing: 14) {
+                        main
+                        side
                     }
                 }
-            } else {
-                Color.clear
             }
-        }
-        .task { await service.refreshQuotaIfNeeded() }
-        .sheet(item: $sheet) { item in
-            AccountSheetView(item: item, close: { sheet = nil }).environmentObject(service)
+            .pageColumn()
         }
     }
 
-    private func subtitle(_ directory: AccountDirectory, _ accounts: [ManagedAccount]) -> String {
-        "\(accounts.count) 个账号" + (directory.current("claude").map { " · 在用 \($0.displayName)" } ?? " · 还没有在用的账号")
+    @ViewBuilder private var main: some View {
+        if let account = entry.cli {
+            ClaudeMain(account: account, entry: entry, use: use, directory: directory, open: { open(.account($0)) },
+                       switchTo: { switchTo(entry, $0) }, deskLogin: { open(.desktop(.add)) })
+        } else if let desk = entry.desk {
+            DeskOnlyMain(entry: entry, desk: desk, use: use, directory: directory, open: open, switchTo: { switchTo(entry, $0) })
+        }
     }
 
-    private func picker(_ accounts: [ManagedAccount], selected: String) -> some View {
+    @ViewBuilder private var side: some View {
+        if let account = entry.cli {
+            ClaudeSide(account: account, entry: entry, use: use, directory: directory, open: open)
+        } else if let desk = entry.desk {
+            DeskOnlySide(desk: desk, open: open)
+        }
+    }
+
+    private var picker: some View {
         HStack(spacing: 3.5) {
-            ForEach(accounts) { account in
-                let on = account.id == selected
-                Button { nav.selection = account.id } label: {
-                    HStack(spacing: 7) {
-                        Seal(account.displayName, style: account.native ? .inUse : .standby, size: 19)
-                        Text(account.displayName).font(.system(size: 12, weight: on ? .semibold : .regular)).lineLimit(1)
-                        if account.native { Pill("在用", style: .brand, small: true) }
-                        if account.needsAction { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
+            ForEach(entries) { item in
+                let on = item.id == entry.id
+                Button { nav.claudeDetail = item.id } label: {
+                    HStack(spacing: 6) {
+                        ClaudeSeal(entry: item, size: 19, rule: item.cli.flatMap { directory.rule(for: $0.id) })
+                        Text(item.name).font(.system(size: 12, weight: on ? .semibold : .regular)).lineLimit(1)
+                        if use == .both && use.code && item.inCode { Icon(.terminal, size: 10, color: Palette.deep, weight: 2.2) }
+                        if use == .both && item.inDesk { Icon(.desktop, size: 10, color: Palette.deep, weight: 2) }
+                        if item.cli?.needsAction == true { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
                     }
                     .padding(.leading, 5).padding(.trailing, 10).frame(height: 27)
                     .background {
@@ -78,6 +86,7 @@ struct ClaudePage: View {
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.inUse ? "\(item.name)，在用" : item.name)
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
@@ -91,8 +100,12 @@ struct ClaudePage: View {
 private struct ClaudeMain: View {
     @EnvironmentObject private var service: ServiceController
     let account: ManagedAccount
+    let entry: ClaudeEntry
+    let use: ClaudeUse
     let directory: AccountDirectory
     let open: (AccountSheet) -> Void
+    let switchTo: (SwitchScope?) -> Void
+    let deskLogin: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -107,13 +120,13 @@ private struct ClaudeMain: View {
         return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
-                    Seal(account.displayName, style: account.native ? .inUse : rule?.participate == false ? .out : .standby, size: 34)
+                    ClaudeSeal(entry: entry, size: 34, rule: rule)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
                             Text(account.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                            if account.native { Pill("在用", style: .brand, small: true) }
+                            InUsePill(entry: entry, use: use)
                         }
-                        Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                        Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3)
                             .textSelection(.enabled).lineLimit(1)
                     }
                     Spacer(minLength: 7)
@@ -121,7 +134,9 @@ private struct ClaudeMain: View {
                 }
                 QuotaFigures(account: account, notch: directory.notch(for: account), size: 44, exact: true) {
                     Spacer(minLength: 0)
-                    AccountActions(account: account, directory: directory, open: open)
+                    if let lag { Text(lag).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1) }
+                    AccountActions(account: account, directory: directory, open: open, showSwitch: false)
+                    ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo, login: deskLogin)
                 }
                 .padding(.top, 17)
             }
@@ -129,6 +144,19 @@ private struct ClaudeMain: View {
             AccountStrips(account: account, directory: directory, open: open).padding(.horizontal, 19)
         }
         .loopCard(radius: 19, raised: true)
+    }
+
+    private var subtitle: String {
+        let desk = use.desk ? entry.desk.map { desk in "桌面登录已保存" + (desk.number.map { "（#\($0)）" } ?? "") } : nil
+        let parts = [account.subtitle, desk].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? " " : parts.joined(separator: " · ")
+    }
+
+    // Both clients in use and only Claude Code on this account: say where Claude 桌面 still is.
+    private var lag: String? {
+        guard use == .both, entry.inCode, !entry.inDesk, entry.desk != nil,
+              let other = directory.claudeDesktop?.current?.display else { return nil }
+        return "桌面还在用 \(other)"
     }
 
     // Model or feature windows of their own; they never decide a switch.
@@ -171,7 +199,7 @@ private struct ClaudeMain: View {
             if let grants = status?.grants {
                 if !grants.eligible { Text(grants.message).font(.system(size: 11)).foregroundStyle(Palette.ink3) }
                 if grants.remaining == nil {
-                    Text("剩余张数这次没返回，不能按 0 张算。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Text("这次没返回剩余张数，不能按 0 张算。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
                 ForEach(Array(grants.items.enumerated()), id: \.offset) { _, grant in
                     let soon = QuotaResetCredit.date(grant.endsAt).map { $0.timeIntervalSinceNow <= ExpiryReminder.window } ?? false
@@ -206,7 +234,7 @@ private struct ClaudeMain: View {
                 }
             }
             if status?.grants == nil && status?.weekly == nil {
-                Text("官方还没返回重置信息；可以立即查询后再看。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text("官方还没返回重置信息，立即查询后再看。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             if let reset = account.reset, !reset.unresolved, let when = reset.finishedAt ?? reset.startedAt,
                Date().timeIntervalSince1970 - when >= 600 {
@@ -232,8 +260,10 @@ private struct ClaudeMain: View {
 private struct ClaudeSide: View {
     @EnvironmentObject private var service: ServiceController
     let account: ManagedAccount
+    let entry: ClaudeEntry
+    let use: ClaudeUse
     let directory: AccountDirectory
-    let open: (AccountSheet) -> Void
+    let open: (ClaudeSheet) -> Void
 
     private var locked: Bool { service.accountBusy || directory.busy || directory.recoveryNeeded }
 
@@ -390,7 +420,8 @@ private struct ClaudeSide: View {
     // MARK: 换号与重置
 
     @ViewBuilder private var rules: some View {
-        if let strategy = directory.strategy {
+        let desk = use.desk ? entry.desk : nil
+        if let strategy = directory.strategy, use.code {
             let rule = directory.rule(for: account.id)
             VStack(alignment: .leading, spacing: 9) {
                 HStack {
@@ -415,9 +446,17 @@ private struct ClaudeSide: View {
                 if !strategy.config.enabled {
                     Text("自动换号与重置现在关着。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
+                if let desk {
+                    Rectangle().fill(Palette.divider).frame(height: 1).padding(.vertical, 2)
+                    NextToggle(desk: desk)
+                }
             }
             .padding(.horizontal, 17).padding(.vertical, 15)
             .loopCard()
+        } else if let desk {
+            NextToggle(desk: desk)
+                .padding(.horizontal, 17).padding(.vertical, 13)
+                .loopCard()
         }
     }
 
@@ -426,12 +465,110 @@ private struct ClaudeSide: View {
     private var removal: some View {
         let blocker = account.removeBlocker(directory)
         return VStack(alignment: .leading, spacing: 2) {
-            Button("从 AuthBaton 移除…", role: .destructive) { open(.remove(account.id)) }
+            Button("从 AuthBaton 移除…", role: .destructive) { open(.account(.remove(account.id))) }
                 .buttonStyle(.pill(.danger))
                 .disabled(blocker != nil || locked)
             Text((blocker ?? "") + "只删 AuthBaton 保存的记录和凭据，不注销官方账号。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
+            if use.desk, let desk = entry.desk {
+                DeskRemoval(desk: desk, open: open).padding(.top, 9)
+            }
         }
         .padding(.horizontal, 3.5)
+    }
+}
+
+// MARK: 桌面这一端
+
+// Whether 下一个账号 stops at this account in Claude 桌面.
+private struct NextToggle: View {
+    @EnvironmentObject private var service: ServiceController
+    let desk: ClaudeDesktopStatus.Account
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Text("参与「下一个」").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+            if let number = desk.number {
+                Text("#\(number)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.ink3)
+            }
+            Spacer(minLength: 7)
+            Toggle("参与「下一个」", isOn: Binding(get: { desk.participates }, set: { value in
+                Task { await service.claudeDesktop(value ? "enable" : "disable", account: desk.handle) }
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            .disabled(service.accountBusy || service.directory?.claudeDesktop?.busy == true)
+        }
+        .help("Claude 桌面的「下一个账号」按编号轮；关掉后跳过这个账号，仍可直接换上")
+    }
+}
+
+private struct DeskRemoval: View {
+    @EnvironmentObject private var service: ServiceController
+    let desk: ClaudeDesktopStatus.Account
+    let open: (ClaudeSheet) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button("移除桌面登录…", role: .destructive) { open(.desktop(.remove(desk.handle))) }
+                .buttonStyle(.pill(.danger))
+                .disabled(desk.inUse || service.accountBusy || service.directory?.claudeDesktop?.busy == true)
+            Text(desk.inUse ? "Claude 桌面正在用这个登录，先换到别的账号再移除。" : "只删 AuthBaton 存的这份桌面登录，会话不动。")
+                .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// An account only Claude 桌面 knows: the hero says how to get its quota, the switch still works.
+private struct DeskOnlyMain: View {
+    let entry: ClaudeEntry
+    let desk: ClaudeDesktopStatus.Account
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let open: (ClaudeSheet) -> Void
+    let switchTo: (SwitchScope?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                ClaudeSeal(entry: entry, size: 34)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 7) {
+                        Text(entry.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                        InUsePill(entry: entry, use: use)
+                    }
+                    Text([desk.email, desk.number.map { "桌面登录已保存（#\($0)）" } ?? "桌面登录已保存"].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink3).textSelection(.enabled).lineLimit(1)
+                }
+                Spacer(minLength: 7)
+                Button("重命名…") { open(.desktop(.rename(desk.handle))) }.buttonStyle(.pill(.secondary))
+            }
+            DeskOnlyQuota(desk: desk) { open(.account(.login(provider: "claude", accountID: nil))) }
+                .padding(.top, 17)
+            HStack {
+                Spacer()
+                ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo, login: { open(.desktop(.add)) })
+            }
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 15)
+        .loopCard(radius: 19, raised: entry.inUse)
+    }
+}
+
+private struct DeskOnlySide: View {
+    let desk: ClaudeDesktopStatus.Account
+    let open: (ClaudeSheet) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                NextToggle(desk: desk)
+                Text("预热、自动检查与续期、自动换号都要先补登到 AuthBaton。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 17).padding(.vertical, 13)
+            .loopCard()
+            DeskRemoval(desk: desk, open: open).padding(.horizontal, 3.5)
+        }
     }
 }

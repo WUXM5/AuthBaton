@@ -95,8 +95,8 @@ struct LoginAttempt: Decodable, Sendable {
         case "waiting": "等待浏览器授权"
         case "cancelling": "正在停止"
         case "succeeded": "官方登录已完成"
-        case "cancelled": "已取消授权等待"
-        case "stopped": "登录等待已停止"
+        case "cancelled": "已取消等待授权"
+        case "stopped": "已停止等待登录"
         default: "未确认登录成功"
         }
     }
@@ -224,7 +224,7 @@ struct CodexStrategyStatus: Decodable, Sendable {
             case "paused": "已暂停"
             case "resume_sent": "正在确认接续"
             case "resumed": "已接续"
-            case "skipped": "状态已改变，已跳过"
+            case "skipped": "状态有变，已跳过"
             default: "待核对"
             }
         }
@@ -440,7 +440,7 @@ struct ClaudeResetGrant: Decodable, Sendable {
         if let start = QuotaResetCredit.date(startsAt), start > now { return "尚未开始" }
         if paused { return "已暂停" }
         if !eligible { return "当前不可用" }
-        switch usableNow { case true: return "当前可用"; case false: return "当前不可用"; default: return "可用状态未提供" }
+        switch usableNow { case true: return "当前可用"; case false: return "当前不可用"; default: return "未提供可用状态" }
     }
 }
 struct ClaudeWeeklyReset: Decodable, Sendable {
@@ -470,7 +470,7 @@ struct QuotaResetCredit: Decodable, Identifiable, Sendable {
     }
     static func expiryLabel(_ value: String?) -> String {
         guard let value else { return "未提供到期时间" }
-        guard let date = date(value) else { return "到期时间格式不可识别" }
+        guard let date = date(value) else { return "到期时间格式无法识别" }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
     var available: Bool {

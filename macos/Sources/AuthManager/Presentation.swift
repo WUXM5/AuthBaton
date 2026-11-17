@@ -79,8 +79,8 @@ extension ManagedAccount {
         case "limited": return Health(tone: .neutral, title: "在线查询受限", detail: message)
         case "pending": return Health(tone: .active, title: "等待登录", detail: message)
         case "checking": return Health(tone: .active, title: "正在检查", detail: message)
-        case "delegated": return Health(tone: .neutral, title: "可用", detail: "由官方客户端续期；额度独立查询，无需退出客户端。")
-        case "saved": return Health(tone: .neutral, title: "已保存", detail: "已保存在本机，尚未在线验证。")
+        case "delegated": return Health(tone: .neutral, title: "可用", detail: "由官方客户端续期，不用退出也能独立查额度。")
+        case "saved": return Health(tone: .neutral, title: "已保存", detail: "已保存在本机，还没在线验证。")
         case "healthy": return Health(tone: .neutral, title: "可用", detail: nil)
         // A state this build does not know says nothing about whether the login works.
         default: return Health(tone: .attention, title: "状态未识别", detail: message)
@@ -92,11 +92,11 @@ extension ManagedAccount {
 
     // Short status for the quota line; stale or unknown quota is muted, not alarming.
     var quotaCaption: String? {
-        guard let usage else { return "尚未查询额度" }
+        guard let usage else { return "还没查额度" }
         switch usage.state {
         case "ready": return nil
-        case "pending": return "正在查询额度"
-        case "expired": return "等待续期后重新查询"
+        case "pending": return "正在查额度"
+        case "expired": return "等续期后再查"
         default: return usage.windows.isEmpty ? "额度暂不可查" : "显示上次结果"
         }
     }
@@ -156,8 +156,8 @@ extension ManagedAccount {
     func removeBlocker(_ directory: AccountDirectory) -> String? {
         if native || directory.desktop?.selected == id { return "在用的账号不能移除，先换上别的账号。" }
         if reset?.unresolved == true { return "先确认上次重置的结果。" }
-        if usage?.refreshing == true { return "额度查询进行中，稍后再移除。" }
-        if warmup?.running == true { return "正在发送预热，稍后再移除。" }
+        if usage?.refreshing == true { return "正在查额度，稍后再移除。" }
+        if warmup?.running == true { return "正在预热，稍后再移除。" }
         return nil
     }
 }

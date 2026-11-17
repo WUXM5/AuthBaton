@@ -18,7 +18,7 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - **换号与重置**：每个账号一条见底线和一种处理顺序（先重置、先换号、只重置、只换号），见底时自动处理，有执行记录。默认关闭。
 - **Codex 桌面（实验）**：经本机调试端口连接官方桌面，不退出就能换号，可暂停并在换号后接续运行中的会话。
 - **Claude**：不退出客户端换号（运行中的会话约 30 秒内生效）；可选的 5 小时窗口预热，每天定点用官方 CLI 发一条 Haiku 消息，默认关闭。
-- **Claude 桌面**：Claude 桌面版每个账号、每个组织的本地 Code 会话列表保持一致，换号后侧栏不再是空的（对话原文本来就在 `~/.claude/projects` 共用）。不退出登录切换桌面账号（macOS）：Claude 退出，现在的登录原样存好、换上另一个，再打开 Claude。快照和留 30 天的回收站让每次改动都能撤回。移植自 [cc-same](https://github.com/songkeys/cc-same)（MIT）。后台同步默认关闭。
+- **Claude 桌面**：Claude 桌面版每个账号、每个组织的本地 Code 会话列表保持一致，换号后侧栏不再是空的（对话原文本来就在 `~/.claude/projects` 共用）。不退出登录切换桌面账号（macOS）：Claude 退出，现在的登录原样存好、换上另一个，再打开 Claude。快照和留 30 天的回收站让每次改动都能撤回。移植自 [cc-same](https://github.com/songkeys/cc-same)（MIT）。后台同步默认关闭。Claude Code 和桌面版共用一个「Claude」页：额度和重置卡跟着账号走（经它在 AuthBaton 里的登录查），换号可以只换 Claude Code、只换桌面或一起换；只用一边时页面只放那一边。
 - **安全切换网络（macOS）**：切 Wi-Fi 会切断所有正在传输的模型回复，而 Claude Code 不会续写已经开始输出的回复。选好下一个网络（Wi-Fi 或你的 iPhone 热点），AuthBaton 只在没有回复在传输时才切：期间 Claude Code 插件暂停发新请求，其他客户端（Codex、Claude 桌面版、浏览器）经 mihomo 控制接口或 `nettop` 观察，只能等它们传完。5 分钟等不到就放弃，网络不动。iPhone 热点经接力远程打开，不用碰手机。Wi-Fi 密码第一次切换时输入，连上后记住，直到它不能用为止。
 - **集成**：pi 扩展按账号取用 access token，并给 Codex 模型提供 Codex 自己的联网搜索（`web_run`）；Claude Code 配套插件上报额度，被额度打断的一轮在换号后自动续跑，切网期间新的模型请求会等新网络连上再发。
 - **个人云端（可选）**：部署到你自己 Cloudflare 账户的 Worker 集中续期，多台设备共用同一批账号，见 [`cloud/`](cloud/README.zh-CN.md)。

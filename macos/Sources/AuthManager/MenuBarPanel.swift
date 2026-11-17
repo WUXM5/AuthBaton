@@ -385,7 +385,7 @@ struct MenuBarPanel: View {
             .padding(.horizontal, 7).frame(minHeight: 32)
             .contentShape(Rectangle())
             .onTapGesture {
-                AppNavigation.shared.show(.claudeDesktop)
+                AppNavigation.shared.show(.claude)
                 openWindow()
             }
             if confirming, let next {

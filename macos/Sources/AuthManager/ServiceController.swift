@@ -130,7 +130,7 @@ final class ServiceController: ObservableObject {
         guard case ServiceError.connection = error else { return }
         connectionFailures += 1
         if connectionFailures >= 3, isConnected {
-            disconnect("后台服务没有响应，账号和额度暂停显示；恢复后会自动刷新，也可以重新连接后台服务。")
+            disconnect("后台服务没响应，账号和额度暂停显示；恢复后会自动刷新，也可以重新连接。")
         }
     }
 
@@ -150,7 +150,7 @@ final class ServiceController: ObservableObject {
         process = nil
         guard lifetimePipe != nil, !isConnecting else { return }
         stop()
-        errorText = "后台服务已退出，账号和额度不再更新。重新连接后台服务后恢复。"
+        errorText = "后台服务已退出，账号和额度不再更新；重新连接后恢复。"
     }
     func resetHistory(accountID: String?, before: String? = nil) async throws -> ResetHistoryPage {
         let path = socketPath
@@ -223,7 +223,7 @@ final class ServiceController: ObservableObject {
 
     func accountOperation(_ method: String, params: LoginParams = LoginParams()) async {
         guard !accountBusy else {
-            accountError = "上一项操作尚未完成，请稍后重试"
+            accountError = "上一个操作还没完成，稍后再试"
             accountErrorID = params.id
             return
         }
