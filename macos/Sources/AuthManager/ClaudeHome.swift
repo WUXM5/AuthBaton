@@ -121,12 +121,14 @@ enum ClaudeSheet: Identifiable {
     case account(AccountSheet)
     case desktop(DesktopSheet)
     case switching(ClaudeSwitchRequest)
+    case tokenQuota
 
     var id: String {
         switch self {
         case .account(let sheet): "account-\(sheet.id)"
         case .desktop(let sheet): "desktop-\(sheet.id)"
         case .switching(let request): "switch-\(request.id)"
+        case .tokenQuota: "token-quota"
         }
     }
 }
@@ -163,6 +165,7 @@ struct ClaudeHomePage: View {
                 case .account(let sheet): AccountSheetView(item: sheet, close: { self.sheet = nil })
                 case .desktop(let sheet): DesktopSheetView(item: sheet, close: { self.sheet = nil })
                 case .switching(let request): ClaudeSwitchSheet(request: request, close: { self.sheet = nil })
+                case .tokenQuota: TokenQuotaSheet(close: { self.sheet = nil })
                 }
             }
             .environmentObject(service)
@@ -369,6 +372,12 @@ struct ClaudeHomePage: View {
             } else {
                 Text("点卡片看 5 小时窗口预热与续期。")
             }
+            if use.desk, let feature = status?.tokenQuota, feature.enabled {
+                HStack(spacing: 5) {
+                    Text("只在桌面登录过的账号经 Claude 桌面的登录查额度。")
+                    Button("关掉") { Task { await service.claudeDesktop("token_quota", enabled: false) } }.buttonStyle(.pill(.link))
+                }
+            }
             if use.desk {
                 if let retention = status?.retention, retention.kept {
                     HStack(spacing: 5) {
@@ -553,7 +562,7 @@ private struct ClaudeEntryCard: View {
                             .padding(.top, 9)
                     }
                 } else if let desk = entry.desk {
-                    DeskOnlyQuota(desk: desk) { open(.account(.login(provider: "claude", accountID: nil))) }
+                    DeskOnlyQuota(desk: desk, login: { open(.account(.login(provider: "claude", accountID: nil))) }, turnOn: { open(.tokenQuota) })
                         .padding(.top, 14)
                     if use.desk && !desk.participates {
                         Text("不参与「下一个」").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 9)
@@ -654,16 +663,71 @@ struct DeskNumber: View {
 
 // An account only Claude 桌面 knows: AuthBaton has no login to ask for its quota with.
 struct DeskOnlyQuota: View {
+    @EnvironmentObject private var service: ServiceController
     let desk: ClaudeDesktopStatus.Account
     let login: () -> Void
+    let turnOn: () -> Void
+
+    private var feature: ClaudeDesktopStatus.TokenQuotaStatus? { service.directory?.claudeDesktop?.tokenQuota }
 
     var body: some View {
-        HStack(spacing: 10) {
+        if let quota = desk.tokenQuota, !quota.primary.isEmpty {
+            figures(quota)
+        } else {
+            placeholder
+        }
+    }
+
+    // Quota read through Claude 桌面's sign-in: the same figures an AuthBaton login gets, and where they came from.
+    private func figures(_ quota: ClaudeDesktopStatus.DeskQuota) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 20) {
+                ForEach(Array(quota.primary.enumerated()), id: \.offset) { _, window in
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            Figure(value: window.remaining, size: 36)
+                            ViewThatFits(in: .horizontal) {
+                                Text(window.remainingCaption)
+                                Text(window.shortLabel.trimmingCharacters(in: .whitespaces))
+                            }
+                            .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                        }
+                        QuotaBar(remaining: window.remaining).padding(.top, 10)
+                        Text(window.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1).padding(.top, 7)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack(spacing: 6) {
+                Icon(.desktop, size: 11, color: Palette.ink3)
+                Text("经 Claude 桌面的登录查" + (quota.checkedAt.map { " · \(When.text($0))" } ?? ""))
+                    .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    .help(quota.message)
+                Spacer(minLength: 6)
+                Button("补登", action: login).buttonStyle(.pill(.soft))
+                    .help("用这个账号登录 AuthBaton，之后还能用重置卡、预热和自动换号")
+            }
+        }
+    }
+
+    private var placeholder: some View {
+        let enabled = feature?.enabled == true
+        let message = desk.tokenQuota?.message ?? (enabled ? feature?.message : nil)
+        let stuck = feature?.state == "key_denied" || ["unauthorized", "error"].contains(desk.tokenQuota?.state ?? "")
+        return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(seen ?? "只在桌面登录过，读不到额度").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.ink2)
-                Text("补登一次就能查额度、用重置卡").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text(message ?? seen ?? "只在桌面登录过，读不到额度").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(enabled ? "补登一次就能用重置卡和预热" : "用桌面登录查，或补登")
+                    .font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if !enabled {
+                Button("用桌面登录查", action: turnOn).buttonStyle(.pill(.secondary))
+                    .help("读 Claude 桌面的登录来查这个账号的额度；打开前会说明会做什么")
+            } else if stuck {
+                Button("重试") { Task { await service.claudeDesktop("token_quota_retry") } }.buttonStyle(.pill(.secondary))
+            }
             Button("补登", action: login).buttonStyle(.pill(.soft))
                 .help("用这个账号登录 AuthBaton，之后就能按账号查额度、用重置卡和预热")
         }
@@ -676,6 +740,40 @@ struct DeskOnlyQuota: View {
     private var seen: String? {
         let parts = [desk.fiveHour.map { "5 小时 \($0.remaining)%" }, desk.weekly.map { "每周 \($0.remaining)%" }].compactMap { $0 }
         return parts.isEmpty ? nil : "Claude 桌面上次读到：" + parts.joined(separator: " · ")
+    }
+}
+
+// Turning on quota through Claude 桌面's sign-in: what AuthBaton will read and send, and what it never does.
+struct TokenQuotaSheet: View {
+    @EnvironmentObject private var service: ServiceController
+    let close: () -> Void
+    @State private var working = false
+
+    var body: some View {
+        SheetScaffold(title: "用 Claude 桌面的登录查额度？", lead: "给只在 Claude 桌面登录过的账号查额度，不用补登。", width: 442) {
+            VStack(alignment: .leading, spacing: 7) {
+                CheckItem(kind: .you, text: "macOS 会问能不能让 AuthBaton 使用「Claude Safe Storage」，点「允许」。AuthBaton 重启或更新后会再问一次")
+                CheckItem(kind: .system, text: "用这把钥匙读出 Claude 桌面登录里的令牌，每 5 分钟查一次额度；钥匙只在内存里，不存盘")
+                CheckItem(kind: .info, text: "只查额度：不续期、不用重置卡、不发模型请求，也不改 Claude 的任何文件")
+                CheckItem(kind: .info, text: "已经补登过的账号照旧用自己的登录；随时可以在页面底部关掉")
+            }
+            if let error = service.accountError {
+                Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
+            }
+        } actions: {
+            Button("取消", action: close).keyboardShortcut(.cancelAction).buttonStyle(.pill(.secondary, height: 27))
+            Button(working ? "正在打开…" : "打开") {
+                working = true
+                Task {
+                    await service.claudeDesktop("token_quota", enabled: true, confirm: true)
+                    working = false
+                    if service.accountError == nil { close() }
+                }
+            }
+            .keyboardShortcut(.defaultAction).buttonStyle(.pill(.primary, height: 27))
+            .disabled(working || service.accountBusy)
+        }
+        .onAppear { service.clearAccountError() }
     }
 }
 

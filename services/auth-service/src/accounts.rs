@@ -1282,6 +1282,17 @@ impl Accounts {
     }
     pub fn tick(&mut self) {
         self.claude_desktop.tick();
+        let owners: Vec<String> = self
+            .db
+            .accounts
+            .iter()
+            .filter(|account| account.provider == "claude")
+            .filter_map(|account| account.metadata.as_ref().map(|meta| meta.owner.clone()))
+            .collect();
+        self.claude_desktop.tick_quota(|uuid| {
+            let prefix = format!("claude:{uuid}:");
+            owners.iter().any(|owner| owner.starts_with(&prefix))
+        });
         self.network.tick();
         self.cloud_tick();
         if self

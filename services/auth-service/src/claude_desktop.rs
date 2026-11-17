@@ -64,6 +64,8 @@ pub struct Runtime {
     watch: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     watch_retry: Option<Instant>,
     job: Option<JoinHandle<()>>,
+    /// Desktop-only quota. Tests keep the inert reader so they never touch the keychain.
+    quota: crate::desktop_quota::Quota,
 }
 
 impl Runtime {
@@ -76,6 +78,7 @@ impl Runtime {
             watch: None,
             watch_retry: None,
             job: None,
+            quota: crate::desktop_quota::Quota::inert(),
         }
     }
 
@@ -100,6 +103,7 @@ impl Runtime {
             shared: Some(shared.clone()),
             ..Runtime::off()
         };
+        runtime.quota = crate::desktop_quota::Quota::system();
         runtime.job = Some(std::thread::spawn(move || {
             let _ = api::recover(&shared.ctx);
         }));
@@ -134,6 +138,7 @@ impl Runtime {
             let _ = self.refresher.take().map(JoinHandle::join);
         }
         self.follow_background(&shared);
+        self.quota.set_enabled(shared.ctx.config().token_quota);
         if self.refresher.is_none() && Instant::now() >= self.next_refresh {
             let busy = self.job.is_some();
             self.next_refresh = Instant::now() + if busy { REFRESH_BUSY } else { REFRESH };
@@ -171,6 +176,7 @@ impl Runtime {
     }
 
     pub fn stop(&mut self) {
+        self.quota.shutdown();
         if let Some(shared) = &self.shared {
             shared.stop.store(true, Ordering::Release);
         }
@@ -215,6 +221,20 @@ impl Runtime {
                 quick(api::set_background(&shared.ctx, on).map(drop))?;
                 self.watch_retry = None;
                 self.follow_background(&shared);
+            }
+            "token_quota" => {
+                let on = command.enabled.ok_or("缺少桌面额度开关")?;
+                if on {
+                    confirmed(command.confirm)?;
+                }
+                quick(api::set_token_quota(&shared.ctx, on).map(drop))?;
+                self.quota.set_enabled(on);
+            }
+            "token_quota_retry" => {
+                if !shared.ctx.config().token_quota {
+                    return Err("先打开用桌面登录查额度");
+                }
+                self.quota.retry();
             }
             "alias" => {
                 let (id, _) = account()?;
@@ -380,6 +400,31 @@ impl Runtime {
         Ok(())
     }
 
+    /// Read desktop-only quota for accounts that have a saved sign-in and no AuthBaton login.
+    pub fn tick_quota(&mut self, linked: impl Fn(&str) -> bool) {
+        let Some(shared) = self.shared.clone() else {
+            return;
+        };
+        let accounts: Vec<crate::desktop_quota::Candidate> = shared
+            .overview
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|overview| {
+                overview
+                    .accounts
+                    .iter()
+                    .map(|account| crate::desktop_quota::Candidate {
+                        id: account.account_id.clone(),
+                        known: account.in_list,
+                        login: account.login,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.quota.poll(&shared.ctx, &accounts, linked);
+    }
+
     /// What the window shows. `linked` names the AuthBaton Claude Code account signed in as the same
     /// person, if there is one.
     pub fn snapshot(&self, linked: impl Fn(&str) -> Option<String>) -> Value {
@@ -444,7 +489,8 @@ impl Runtime {
                 let window = |used: Option<u32>| {
                     used.zip(usage).map(|(used, u)| json!({"remaining":100u32.saturating_sub(used),"at":u.at,"stale":u.stale}))
                 };
-                json!({
+                let linked_account = linked(&a.account_id);
+                let mut row = json!({
                     "handle": handle_of(&a.account_id),
                     "number": a.number,
                     "display": display(a),
@@ -457,10 +503,21 @@ impl Runtime {
                     "behind": a.missing,
                     "five_hour": window(usage.and_then(|u| u.five_hour)),
                     "weekly": window(usage.and_then(|u| u.weekly)),
-                    "linked_account": linked(&a.account_id),
+                    "linked_account": linked_account,
                     "known": a.in_list,
                     "bypass": a.bypass,
-                })
+                });
+                if let Some(field) = self.quota.account_field(
+                    &crate::desktop_quota::Candidate {
+                        id: a.account_id.clone(),
+                        known: a.in_list,
+                        login: a.login,
+                    },
+                    linked_account.is_some(),
+                ) {
+                    row["token_quota"] = field;
+                }
+                row
             })
             .collect();
         let snapshots: Vec<Value> = ov
@@ -486,6 +543,7 @@ impl Runtime {
             "version": ov.desktop.version,
             "switch_supported": ov.desktop.can_switch,
             "background": ov.sync.background,
+            "token_quota": self.quota.top(),
             "syncing": syncing,
             "headline": headline(ov, current),
             "attention": attention,
@@ -637,7 +695,7 @@ fn failure_text(failure: &Failure) -> &'static str {
 }
 
 /// The window names an account by this; the account ID itself stays in the service.
-fn handle_of(account_id: &str) -> String {
+pub(crate) fn handle_of(account_id: &str) -> String {
     format!("{:x}", Sha256::digest(account_id.as_bytes()))[..12].to_string()
 }
 
@@ -1054,6 +1112,77 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(fixture.runtime.snapshot(|_| None)["background"], false);
+    }
+
+    #[test]
+    fn desktop_quota_stays_off_until_confirmed_and_is_absent_for_a_linked_account() {
+        let mut fixture = Fixture::new("token-quota");
+        fixture.settle();
+        assert_eq!(
+            fixture.runtime.snapshot(|_| None)["token_quota"]["enabled"],
+            false
+        );
+        assert_eq!(
+            fixture.runtime.snapshot(|_| None)["token_quota"]["state"],
+            "off"
+        );
+        let rejected = fixture.runtime.command(Command {
+            action: "token_quota",
+            account: None,
+            label: None,
+            enabled: Some(true),
+            number: None,
+            snapshot: None,
+            confirm: false,
+        });
+        assert_eq!(rejected, Err("需要确认后才能执行"));
+        let config = fs::read(fixture.root.join("state/config.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(json!({}));
+        assert!(config["tokenQuota"].is_null() || config["tokenQuota"] == false);
+        fixture
+            .runtime
+            .command(Command {
+                action: "token_quota",
+                account: None,
+                label: None,
+                enabled: Some(true),
+                number: None,
+                snapshot: None,
+                confirm: true,
+            })
+            .unwrap();
+        let snapshot = fixture.runtime.snapshot(|_| Some("linked".into()));
+        assert_eq!(snapshot["token_quota"]["enabled"], true);
+        assert!(
+            snapshot["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|account| account.get("token_quota").is_none()),
+            "a linked account must not grow a desktop quota reading"
+        );
+        fixture
+            .runtime
+            .command(Command {
+                action: "token_quota",
+                account: None,
+                label: None,
+                enabled: Some(false),
+                number: None,
+                snapshot: None,
+                confirm: false,
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.runtime.snapshot(|_| None)["token_quota"]["enabled"],
+            false
+        );
+        assert_eq!(
+            fixture.runtime.snapshot(|_| None)["token_quota"]["state"],
+            "off"
+        );
     }
 
     /// Reads this Mac's real Claude desktop data with the engine's state in a temporary folder.

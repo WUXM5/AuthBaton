@@ -883,6 +883,7 @@ fn config_view(cfg: &Config) -> ConfigView {
 #[serde(default)]
 pub struct ConfigChange {
     pub background: Option<bool>,
+    pub token_quota: Option<bool>,
     pub notify: Option<bool>,
     pub auto_join_new: Option<bool>,
     /// Keep these `<account>` or `<account>/<org>` out of the sync.
@@ -902,6 +903,9 @@ pub fn set_config(ctx: &Ctx, change: &ConfigChange) -> Result<ConfigView, Failur
     let before = cfg.clone();
     if let Some(on) = change.background {
         cfg.background = on;
+    }
+    if let Some(on) = change.token_quota {
+        cfg.token_quota = on;
     }
     if let Some(on) = change.notify {
         cfg.notify = on;
@@ -925,6 +929,11 @@ pub fn set_config(ctx: &Ctx, change: &ConfigChange) -> Result<ConfigView, Failur
 /// Switch the background sync on or off (the service starts or stops [`run_watch`]).
 pub fn set_background(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
     set_config(ctx, &ConfigChange { background: Some(on), ..ConfigChange::default() })
+}
+
+/// Remember whether desktop-only quota reads are on. The keychain key is not written.
+pub fn set_token_quota(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
+    set_config(ctx, &ConfigChange { token_quota: Some(on), ..ConfigChange::default() })
 }
 
 // ------------------------------------------------------------------------ snapshots
