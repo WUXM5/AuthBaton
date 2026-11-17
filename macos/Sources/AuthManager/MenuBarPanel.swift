@@ -203,7 +203,7 @@ struct MenuBarPanel: View {
         let route = directory.switchRoute(for: account)
         let blocked = route == .desktopDisconnected
         let text: String = switch route {
-        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能经过桌面换号，但桌面没连上。桌面里没有任务在运行时，可以让 AuthBaton 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
+        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能通过桌面换号，但桌面没连上。桌面没有任务在运行时，可以让 AuthBaton 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
         case .desktop: "同时更新 Codex 桌面和默认文件。先结束桌面任务，退出独立的 Codex CLI；VS Code 的 Codex 插件在后台运行，要停用它或退出 VS Code。桌面窗口可以开着。"
         case .plain: account.provider == "codex"
             ? "更新 ~/.codex/auth.json。先结束任务，退出 Codex 桌面和 CLI，停用 VS Code 的 Codex 插件或退出 VS Code，换完再打开。"

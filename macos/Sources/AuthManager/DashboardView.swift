@@ -259,7 +259,7 @@ struct ClientsPage: View {
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.horizontal, 3.5).padding(.top, -8)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                ProgressView("正在检查本地认证状态…").frame(maxWidth: .infinity).padding(.vertical, 51)
+                ProgressView("正在检查本地登录状态…").frame(maxWidth: .infinity).padding(.vertical, 51)
             }
             serviceCard
         }
@@ -289,7 +289,7 @@ struct ClientsPage: View {
                     }
                 }
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                .help(provider.expiresAt.map { "本地 access 到期 \(When.exact($0))" } ?? "")
+                .help(provider.expiresAt.map { "本地 Access 到期 \(When.exact($0))" } ?? "")
             }
             Spacer(minLength: 7)
             Text(provider.source.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
