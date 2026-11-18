@@ -14,30 +14,44 @@ struct QuotaFigures<Trailing: View>: View {
     var inlineCaption = false
     // Detail pages add the clock time to "3 小时后回满".
     var exact = false
+    // Claude cards: the window the account waits on below its 见底线 shows when it is back instead of what is left.
+    var refillWhenLow = false
+    // Model or feature windows of their own, as thin bars under the last column.
+    var extras: [AccountQuota] = []
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
         let windows = Array(account.primaryWindows.prefix(2))
+        let waiting = refillWhenLow ? notch.flatMap { windows.indexRefillingLast(below: $0) } : nil
         VStack(alignment: .leading, spacing: 10) {
             if windows.isEmpty {
                 Figure(value: nil, size: size)
                 Text(account.quotaCaption ?? "额度暂不可查").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                 trailingRow(text: nil)
             } else if windows.count == 1 {
-                column(windows[0])
-                trailingRow(text: windows[0].refill(compact: !exact, exact: exact))
+                let due = waiting == 0 ? RefillDue(windows[0]) : nil
+                column(windows[0], due: due)
+                extraRows
+                trailingRow(text: due != nil ? leftText(windows[0]) : windows[0].refill(compact: !exact, exact: exact))
             } else {
                 HStack(alignment: .top, spacing: 20) {
-                    ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                    ForEach(Array(windows.enumerated()), id: \.offset) { index, window in
+                        let due = index == waiting ? RefillDue(window) : nil
                         VStack(alignment: .leading, spacing: 10) {
-                            column(window)
-                            // The clock time goes first when the column is too narrow for both.
-                            ViewThatFits(in: .horizontal) {
-                                Text(window.refill(compact: !exact, exact: exact))
-                                Text(window.refill(compact: !exact))
+                            column(window, due: due)
+                            if due != nil {
+                                Text(leftText(window)).font(.system(size: 12)).foregroundStyle(Palette.ink3).lineLimit(1)
+                                    .help(window.resetDate.map(When.exact) ?? "")
+                            } else {
+                                // The clock time goes first when the column is too narrow for both.
+                                ViewThatFits(in: .horizontal) {
+                                    Text(window.refill(compact: !exact, exact: exact))
+                                    Text(window.refill(compact: !exact))
+                                }
+                                .font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                                .help(window.resetDate.map(When.exact) ?? "")
                             }
-                            .font(.system(size: 12)).foregroundStyle(Palette.ink2)
-                            .help(window.resetDate.map(When.exact) ?? "")
+                            if index == windows.count - 1 { extraRows }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -48,9 +62,22 @@ struct QuotaFigures<Trailing: View>: View {
         }
     }
 
-    private func column(_ window: AccountQuota) -> some View {
+    // "剩 2% · 见底线 4%" under the bar of the window shown as a refill time.
+    private func leftText(_ window: AccountQuota) -> String {
+        "剩 \(window.remaining)%" + (notch.map { " · 见底线 \($0)%" } ?? "")
+    }
+
+    @ViewBuilder private var extraRows: some View {
+        ForEach(Array(extras.enumerated()), id: \.offset) { _, window in
+            ExtraQuotaRow(window: window, notch: window.isFable ? notch : nil)
+        }
+    }
+
+    private func column(_ window: AccountQuota, due: RefillDue? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if inlineCaption {
+            if let due {
+                DueFigure(due: due, size: size)
+            } else if inlineCaption {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Figure(value: window.remaining, size: size)
                     // Two windows side by side at 100% leave no room: the caption shortens to the window's name, never wraps.
@@ -87,6 +114,92 @@ extension QuotaFigures where Trailing == EmptyView {
     init(account: ManagedAccount, notch: Int? = nil, size: CGFloat = 49, inlineCaption: Bool = false, exact: Bool = false) {
         self.init(account: account, notch: notch, size: size, inlineCaption: inlineCaption, exact: exact) { EmptyView() }
     }
+}
+
+extension Array where Element == AccountQuota {
+    // Of the windows at or under the 见底线, the one the account waits on: it is usable again only once
+    // every one of them is back, so the one that refills last (an unknown time counts as last).
+    func indexRefillingLast(below notch: Int) -> Int? {
+        indices.filter { self[$0].remaining <= notch }
+            .max { (self[$0].resetDate ?? .distantFuture) < (self[$1].resetDate ?? .distantFuture) }
+    }
+}
+
+// When a window is back, split for the big figure: "2" "天" "后回满". Whole days, else hours, else
+// minutes, like the compact refill text; nil when the time is unknown or already past.
+struct RefillDue {
+    let number: Int
+    let unit: String
+    let caption: String
+
+    init?(_ window: AccountQuota, now: Date = Date()) {
+        guard let seconds = window.resetDate?.timeIntervalSince(now), seconds > 0 else { return nil }
+        if seconds >= 86400 {
+            number = Int(seconds / 86400); unit = "天"
+        } else if seconds >= 3600 {
+            number = Int(seconds / 3600); unit = "小时"
+        } else {
+            number = max(1, Int(seconds / 60)); unit = "分钟"
+        }
+        caption = "后" + (window.expires == true ? "到期" : "回满")
+    }
+}
+
+// The big figure of the window an account waits on: how long until it is back, not what is left.
+// The unit drops to the size of "%" and then the caption goes when the column is too narrow.
+struct DueFigure: View {
+    let due: RefillDue
+    var size: CGFloat = 36
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            line(unit: size, caption: true)
+            line(unit: size * 0.42, caption: true)
+            line(unit: size * 0.42, caption: false)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(due.number) \(due.unit)\(due.caption)")
+    }
+
+    private func line(unit: CGFloat, caption: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: unit == size ? size * 0.2 : 2) {
+                Text("\(due.number)").font(.system(size: size, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .kerning(-size * 0.02)
+                Text(due.unit).font(.system(size: unit, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(Palette.ink)
+            if caption {
+                Text(due.caption).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.attentionText)
+            }
+        }
+        .lineLimit(1)
+        .fixedSize()
+    }
+}
+
+// A model or feature window of its own as a thin bar. Only Fable carries the 见底线: while Claude Code
+// uses Fable its week counts against the line (v0.26); other windows never decide a switch.
+struct ExtraQuotaRow: View {
+    let window: AccountQuota
+    var notch: Int? = nil
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(window.scope ?? window.shortLabel).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+            QuotaBar(remaining: window.remaining, below: notch, height: 4)
+            Text("\(window.remaining)%").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+                .lineLimit(1).frame(minWidth: 30, alignment: .trailing)
+        }
+        .help(window.isFable
+              ? "Fable 每周额度，\(window.refill())；用 Fable 时也按见底线换号"
+              : "\(window.title)：模型或功能单独的额度，\(window.refill())，不参与自动换号判断")
+    }
+}
+
+extension AccountQuota {
+    // Claude's Fable week, as the service picks it for the Fable line.
+    var isFable: Bool { kind == "model" && scope?.caseInsensitiveCompare("fable") == .orderedSame }
 }
 
 // MARK: 重置卡

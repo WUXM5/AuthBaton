@@ -526,6 +526,7 @@ private struct ClaudeEntryCard: View {
                                 HStack(spacing: 6) {
                                     Text(entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                                     InUsePill(entry: entry, use: use)
+                                    if let cli = entry.cli { LowPill(account: cli, notch: directory.notch(for: cli)) }
                                 }
                                 Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                             }
@@ -538,7 +539,8 @@ private struct ClaudeEntryCard: View {
                     ClaudeEntryMenu(entry: entry, use: use, directory: directory, open: open)
                 }
                 if let cli = entry.cli {
-                    QuotaFigures(account: cli, notch: directory.notch(for: cli), size: 36, inlineCaption: true) {
+                    QuotaFigures(account: cli, notch: directory.notch(for: cli), size: 36, inlineCaption: true,
+                                 refillWhenLow: true, extras: cli.extraWindows) {
                         ChancesTicket(account: cli)
                         if cli.warmup?.enabled == true {
                             HStack(spacing: 4) {
@@ -555,12 +557,6 @@ private struct ClaudeEntryCard: View {
                         }
                     }
                     .padding(.top, 14)
-                    if !cli.extraWindows.isEmpty {
-                        Text("独立额度：" + cli.extraWindows.map { "\($0.scope ?? $0.label) 剩余 \($0.remaining)%" }.joined(separator: "，"))
-                            .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                            .help("模型或功能单独的额度，不参与自动换号判断")
-                            .padding(.top, 9)
-                    }
                 } else if let desk = entry.desk {
                     DeskOnlyQuota(desk: desk, login: { open(.account(.login(provider: "claude", accountID: nil))) }, turnOn: { open(.tokenQuota) })
                         .padding(.top, 14)
@@ -642,6 +638,32 @@ struct InUsePill: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(use == .both ? [code ? "Claude Code" : nil, desk ? "Claude 桌面" : nil].compactMap { $0 }.joined(separator: "和") + "在用" : "在用")
         }
+    }
+}
+
+// 已见底: a main window is at or under the account's 见底线, so the rules will not switch to it.
+struct LowPill: View {
+    let account: ManagedAccount
+    let notch: Int?
+
+    var body: some View {
+        let windows = Array(account.primaryWindows.prefix(2))
+        if let notch, let last = windows.indexRefillingLast(below: notch) {
+            Text("已见底")
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                .padding(.horizontal, 7).frame(height: 17)
+                .background(Palette.attentionFill, in: Capsule())
+                .help(help(windows.filter { $0.remaining <= notch }, waited: windows[last], notch: notch))
+        }
+    }
+
+    private func help(_ low: [AccountQuota], waited: AccountQuota, notch: Int) -> String {
+        let name = { (window: AccountQuota) in window.shortLabel.trimmingCharacters(in: .whitespaces) }
+        if low.count > 1 {
+            return low.map { "\(name($0))剩 \($0.remaining)%" }.joined(separator: "、")
+                + "，都到了见底线 \(notch)%：自动换号不会换到它；两个都回满才能再用，最晚的是\(name(waited))额度，\(waited.refill())。"
+        }
+        return "\(name(waited))剩 \(waited.remaining)%，到了见底线 \(notch)%：自动换号不会换到它，\(waited.refill())。"
     }
 }
 
