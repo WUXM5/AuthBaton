@@ -1432,7 +1432,7 @@ extension NSWindow {
         check.expect(Driver.visible("去桌面登录"), "没在桌面登录过的账号给「去桌面登录」")
         check.expect(Driver.visible("第1位", wait: 0.3) == false, "只用桌面：卡片不写 Claude Code 的顺位")
     }
-    section(28, "只在桌面登录过的账号：打开「经桌面的登录查额度」要先说明并确认，打开后卡片显示额度和来源") {
+    section(28, "只在桌面登录过的账号：打开「用桌面的登录查额度」要先说明并确认，打开后卡片显示额度和来源") {
         Fixture.load("default", into: state)
         select(.claude)
         state.calls.removeAll()
@@ -1446,7 +1446,7 @@ extension NSWindow {
                      "确认后发送 token_quota enabled:true confirm:true")
         Fixture.load("deskquota", into: state)
         select(.claude)
-        check.visible("经Claude桌面的登录查", "work 的卡片显示经桌面登录查到的额度和来源")
+        check.visible("用Claude桌面的登录查", "work 的卡片显示用桌面登录查到的额度和来源")
         check.visible("没有能查额度", "lab 没有能用的令牌时写明原因")
         check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
     }
