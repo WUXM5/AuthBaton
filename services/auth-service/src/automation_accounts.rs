@@ -165,16 +165,19 @@ impl Accounts {
             return Action::None;
         };
         let latch = self.db.automation.latches.get(&current.id);
-        if observation.remaining > f64::from(rule.below)
+        let depleted = observation.remaining <= f64::from(rule.below);
+        if !(depleted || self.fable_low(current))
             || latch.is_some_and(|l| l.kind == LatchKind::Switch)
         {
             return Action::None;
         }
         // A reset is spent once per episode; switching stays open as the fallback when a
-        // newer observation after that reset is still depleted.
-        let reset = (rule.order.resets() && latch.is_none())
+        // newer observation after that reset is still depleted. The Fable line alone never
+        // spends a card: it only moves the default login.
+        let reset = (depleted && rule.order.resets() && latch.is_none())
             .then(|| self.quota.automatic_credit(&current.id, now()))
             .flatten();
+        let fable = self.fable_in_use(current);
         let target = (rule.order.switches() && self.strategy_switch_blocker(current).is_none())
             .then(|| {
                 config
@@ -189,11 +192,42 @@ impl Accounts {
                             return None;
                         }
                         let usage = self.quota.automation_observation(&account.id, now())?;
-                        (usage.remaining > f64::from(r.below)).then(|| account.id.clone())
+                        // While Fable is in use, a target must have its Fable week above its line
+                        // too, or the next check would move the login on again.
+                        let fable_left = !fable
+                            || self
+                                .quota
+                                .fable_remaining(&account.id, now())
+                                .is_none_or(|f| f > f64::from(r.below));
+                        (usage.remaining > f64::from(r.below) && fable_left)
+                            .then(|| account.id.clone())
                     })
             })
             .flatten();
         automation::decide(rule.order, reset, target)
+    }
+    /// A Claude Code session on this account's default login sent a Fable request lately.
+    fn fable_in_use(&self, account: &Account) -> bool {
+        account.provider == "claude" && account.native && self.claude_mod.fable_in_use(now())
+    }
+    /// The current Claude account's Fable week is at or under the account's line while Fable is
+    /// in use. Outside use its Fable week counts for nothing, as other model limits do.
+    fn fable_low(&self, account: &Account) -> bool {
+        let Some(rule) = self
+            .db
+            .automation
+            .config
+            .accounts
+            .iter()
+            .find(|r| r.id == account.id && r.participate)
+        else {
+            return false;
+        };
+        self.fable_in_use(account)
+            && self
+                .quota
+                .fable_remaining(&account.id, now())
+                .is_some_and(|f| f <= f64::from(rule.below))
     }
     /// A card a resetting rule would spend that lapses within 30 minutes. It is spent whatever
     /// the line or episode, since it is lost otherwise, but only once the account has used some
@@ -224,11 +258,12 @@ impl Accounts {
             .iter()
             .find(|r| r.id == account.id)
             .unwrap();
-        if observation.remaining > f64::from(rule.below) {
+        let depleted = observation.remaining <= f64::from(rule.below);
+        if !depleted && !self.fable_low(account) {
             return format!("额度充足，高于见底线 {}%", rule.below);
         }
         let mut reasons = vec![];
-        if rule.order.resets() {
+        if rule.order.resets() && depleted {
             reasons.push(if self.db.automation.latches.contains_key(&account.id) {
                 "这一轮已重置过"
             } else {
@@ -236,15 +271,26 @@ impl Accounts {
             });
         }
         if rule.order.switches() && account.native {
-            reasons.push(
-                self.strategy_switch_blocker(account)
-                    .unwrap_or("没有额度高于各自见底线的候选账号"),
-            );
+            reasons.push(self.strategy_switch_blocker(account).unwrap_or(
+                if self.fable_in_use(account) {
+                    "没有主额度和 Fable 额度都高于各自见底线的候选账号"
+                } else {
+                    "没有额度高于各自见底线的候选账号"
+                },
+            ));
+        }
+        if !depleted && !rule.order.switches() {
+            reasons.push("这个账号只重置，Fable 额度不用重置卡");
         }
         if reasons.is_empty() {
             return "已见底；不是当前账号，只在成为当前账号时换号".into();
         }
-        format!("已见底，暂不处理：{}", reasons.join("；"))
+        let head = if depleted {
+            "已见底"
+        } else {
+            "Fable 额度到了见底线（Claude Code 正在用 Fable）"
+        };
+        format!("{head}，暂不处理：{}", reasons.join("；"))
     }
     pub(super) fn automation_tick(&mut self) {
         if self
@@ -369,7 +415,7 @@ impl Accounts {
                     expiring.is_some(),
                 ),
                 Action::Switch(target) if account.provider == "claude" => {
-                    self.switch_claude(&account, &target)
+                    self.switch_claude(&account, &target, observation.remaining)
                 }
                 Action::Switch(target) => self.prepare_automation(&account, &target),
             };
@@ -501,7 +547,7 @@ impl Accounts {
     }
     /// Claude has no batch to pause or resume: the switch is one locked write of the default
     /// login, after which running sessions move to the target within 30 s.
-    fn switch_claude(&mut self, current: &Account, target_id: &str) -> Result<()> {
+    fn switch_claude(&mut self, current: &Account, target_id: &str, remaining: f64) -> Result<()> {
         let threshold = self
             .db
             .automation
@@ -530,8 +576,13 @@ impl Accounts {
             return Err(message);
         }
         let target = &self.db.accounts[self.index(target_id)?].label;
+        let why = if remaining > f64::from(threshold) {
+            "的 Fable 额度到了见底线"
+        } else {
+            " 已见底"
+        };
         self.automation.message = format!(
-            "{} 已见底，已换到 {target}；运行中的 Claude Code 约 30 秒内改用新账号",
+            "{}{why}，已换到 {target}；运行中的 Claude Code 约 30 秒内改用新账号",
             current.label
         );
         self.db.automation.last_message = self.automation.message.clone();

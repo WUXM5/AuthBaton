@@ -29,6 +29,8 @@ type State = {
   // moves it to each new limit; a plugin prompt does not cancel it. So it is this limit's to drop, once,
   // until a later limit takes it over.
   resumed?: Episode
+  // When each model was last named to AuthManager (v0.26).
+  named: Record<string, number>
 }
 
 async function active(s: State, $: EngineInterface): Promise<boolean> {
@@ -38,7 +40,12 @@ async function active(s: State, $: EngineInterface): Promise<boolean> {
   return s.entry !== undefined && ENTRYPOINTS.includes(s.entry)
 }
 
-async function report(s: State, $: EngineInterface, limited: boolean): Promise<Reply | undefined> {
+async function report(
+  s: State,
+  $: EngineInterface,
+  limited: boolean,
+  model?: string,
+): Promise<Reply | undefined> {
   try {
     const home = await $.env.get('HOME')
     const response = await $.http.fetch('http://authmanager/v1/report', {
@@ -50,6 +57,7 @@ async function report(s: State, $: EngineInterface, limited: boolean): Promise<R
         windows: s.windows
           .filter(w => PRIMARY.includes(w.kind))
           .map(w => ({ kind: w.kind, used: w.percentUsed })),
+        model,
       }),
     })
     return response.ok ? (JSON.parse(response.text) as Reply) : undefined
@@ -122,6 +130,10 @@ const HEARTBEAT_MS = 15_000
 // AuthManager gives up on a switch after 5 minutes; past this the hook stops waiting regardless.
 const MAX_HOLD_MS = 330_000
 const HELD = '切换网络中：这条请求等新网络连上再发…'
+// Fable quota (v0.26): AuthManager holds the default account's Fable week to its line only while a
+// session on that login is using Fable, so each request's model is named to it, once a minute at most
+// per model. The Fable reading itself is AuthManager's: Claude Code's rate limits do not carry it.
+const NAME_EVERY_MS = 60_000
 
 async function network(
   $: EngineInterface,
@@ -145,7 +157,7 @@ async function network(
 }
 
 export const register: Register = on => {
-  const s: State = { entry: null, windows: [] }
+  const s: State = { entry: null, windows: [], named: {} }
 
   on('turn.step', async function* ($, e, next) {
     const session = await $.session.id()
@@ -165,6 +177,13 @@ export const register: Register = on => {
     }
     if (held) {
       $.ui.status(undefined)
+    }
+    if (await active(s, $)) {
+      const now = await $.clock.now()
+      if (now - (s.named[e.model] ?? -Infinity) >= NAME_EVERY_MS) {
+        s.named[e.model] = now
+        void report(s, $, false, e.model)
+      }
     }
     const heartbeat = $.clock.every(HEARTBEAT_MS, () => void network($, 'alive', session, project, request))
     try {

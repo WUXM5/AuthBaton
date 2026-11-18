@@ -248,19 +248,24 @@ describe('authmanager', () => {
 })
 
 // Safe network switching: AuthManager answers each `begin` with whether to hold the request.
-function network(on: On, holds: (boolean | Error)[]) {
+function network(on: On, holds: (boolean | Error)[], entry = 'cli') {
   const seen = {
     events: [] as { socket?: string; body: { session: string; project: string; event: string; request: string } }[],
+    reports: [] as { limited: boolean; windows: unknown[]; model?: string }[],
     status: [] as (string | undefined)[],
     sent: 0,
   }
-  mock.env(on, { CLAUDE_CODE_ENTRYPOINT: 'cli', HOME: '/Users/someone' })
+  mock.env(on, { CLAUDE_CODE_ENTRYPOINT: entry, HOME: '/Users/someone' })
   const clock = mock.clock(on, { now: T0 })
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: '/Users/someone/work/notes' }))
   on('http.fetch', ($, e) => {
     const init = e.init as HttpInit
     const body = JSON.parse(init.body as string)
+    if (e.url === 'http://authmanager/v1/report') {
+      seen.reports.push(body)
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ account: 'A', change: null }) } }
+    }
     seen.events.push({ socket: init.socketPath, body })
     expect(e.url).toBe('http://authmanager/v1/network')
     const hold = body.event === 'begin' ? holds.shift() ?? false : false
@@ -342,5 +347,34 @@ describe('network switching', () => {
     }
     expect(item.value.answer).toBe('hi')
     expect(seen.events.map(e => e.body.event)).toEqual(['begin', 'alive', 'alive', 'end'])
+  })
+})
+
+describe('models in use', () => {
+  test('each model is named to AuthManager once a minute at most', async ($, on) => {
+    const { seen, clock } = network(on, [])
+    const fable = { ...step, model: 'claude-fable-5-2' }
+    await send($, fable)
+    await send($, { ...fable, index: 3 })
+    // A subagent on Opus beside the Fable main loop.
+    await send($, { ...step, agentId: 'a7' })
+    await clock.settle()
+    expect(seen.reports).toEqual([
+      { limited: false, windows: [], model: 'claude-fable-5-2' },
+      { limited: false, windows: [], model: 'opus' },
+    ])
+    await clock.advance(60_000)
+    await send($, { ...fable, index: 4 })
+    await clock.settle()
+    expect(seen.reports.map(r => r.model)).toEqual(['claude-fable-5-2', 'opus', 'claude-fable-5-2'])
+    expect(seen.sent).toBe(4)
+  })
+
+  test("desktop sessions run on the desktop's own login and name nothing", async ($, on) => {
+    const { seen, clock } = network(on, [], 'claude-desktop')
+    await send($, { ...step, model: 'claude-fable-5-2' })
+    await clock.settle()
+    expect(seen.reports).toEqual([])
+    expect(seen.events.map(e => e.body.event)).toEqual(['begin', 'end'])
   })
 })
