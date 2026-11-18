@@ -58,7 +58,7 @@ impl Client {
 pub fn error_message(code: Option<&str>) -> &'static str {
     match code {
         Some("debug_port_unavailable") => "调试端口未监听；请使用调试模式启动 Codex 桌面",
-        Some("port_owner_mismatch") => "调试端口归属无法确认；请检查端口是否由官方 Codex 桌面独占",
+        Some("port_owner_mismatch") => "无法确认调试端口归属，请检查是否由官方 Codex 桌面独占",
         Some("target_unavailable") => "请打开并聚焦 Codex 主窗口，再重新连接",
         Some("bridge_install_failed") => {
             "已找到 Codex 主窗口，但桌面桥初始化失败；请更新 AuthBaton 适配"
@@ -66,18 +66,18 @@ pub fn error_message(code: Option<&str>) -> &'static str {
         Some("rpc_timeout") => "调试端口已连接，但 Codex 账号服务响应超时；请稍后重试",
         Some("rpc_failed") => "调试端口已连接，但 Codex 账号服务拒绝了请求",
         Some("unsupported_auth") => {
-            "桌面尚未提供可用的 ChatGPT 订阅登录；请在 Codex 中确认登录状态"
+            "桌面尚无可用的 ChatGPT 订阅登录，请在 Codex 中确认登录状态"
         }
         Some("task_probe_failed") => "无法确认桌面任务状态；切换尚未开始，请稍后重试",
         Some("tasks_active") => "Codex 桌面仍有运行或等待中的任务，请结束后切换",
         Some("tasks_waiting") => "Codex 桌面有任务正在等待审批或输入；自动切换已延后",
-        Some("tasks_changed") => "任务已由其他操作改变；已停止本次自动切换，请核对会话",
+        Some("tasks_changed") => "任务已被其他操作改变；已停止本次自动切换，请核对会话",
         Some("pause_unconfirmed") => "任务暂停尚未确认；没有继续切换，请核对会话",
         Some("resume_unconfirmed") => "任务接续结果尚未确认；不会重复发送继续指令",
         Some("batch_unavailable" | "batch_busy" | "invalid_batch") => {
             "桌面任务批次已失效；请核对原会话后结束本次流程"
         }
-        Some("identity_changed" | "identity_mismatch") => "桌面账号已由其他操作改变，请重新核对",
+        Some("identity_changed" | "identity_mismatch") => "桌面账号已被其他操作改变，请重新核对",
         Some("refresh_pending") => "桌面正在续期，请稍后切换",
         Some("stale_refresh" | "refresh_unconfirmed") => "桌面续期回送尚未确认，请重新核对连接",
         _ => "桌面连接不可用；请确认调试端口、桌面接口与主窗口",
@@ -109,9 +109,9 @@ pub fn refusal(value: &Value) -> String {
             match task["name"].as_str().filter(|name| !name.is_empty()) {
                 Some(name) => format!("「{}」{state}", name.chars().take(24).collect::<String>()),
                 None => match task["source"].as_str().filter(|source| !source.is_empty()) {
-                    Some("user") => format!("没有标题的对话（{state}）"),
-                    Some(source) => format!("没有标题的任务（{source}，{state}）"),
-                    None => format!("没有标题的任务（{state}）"),
+                    Some("user") => format!("无标题对话（{state}）"),
+                    Some(source) => format!("无标题任务（{source}，{state}）"),
+                    None => format!("无标题任务（{state}）"),
                 },
             }
         })
@@ -334,7 +334,7 @@ pub fn external_auth(bundle: &Bundle) -> Result<Value> {
     if auth["chatgpt_account_id"] != workspace
         || metadata.owner != format!("codex:{user}:{workspace}")
     {
-        return Err("Access token 与保存账号不一致");
+        return Err("Access token 与保存的账号不一致");
     }
     Ok(json!({"accessToken":access,"chatgptAccountId":workspace,"chatgptPlanType":metadata.plan}))
 }
@@ -528,7 +528,7 @@ pub fn relaunch(port: u16) -> Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
         if std::time::Instant::now() > deadline {
-            return Err("桌面已重新启动，但调试端口没有监听");
+            return Err("桌面已重启，但调试端口没有监听");
         }
         std::thread::sleep(Duration::from_millis(500));
     }

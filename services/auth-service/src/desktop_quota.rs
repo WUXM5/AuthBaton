@@ -511,7 +511,7 @@ fn run_job(job: Job, shared: &Shared, fetch: Fetch) {
                 Err(KeyFail::Missing) => {
                     fail_phase(shared, generation, "这台 Mac 上没有 Claude 的钥匙串项")
                 }
-                Err(KeyFail::Error) => fail_phase(shared, generation, "读取钥匙串没有成功"),
+                Err(KeyFail::Error) => fail_phase(shared, generation, "读取钥匙串失败"),
             }
         }
         Job::Query {
@@ -560,7 +560,7 @@ fn run_job(job: Job, shared: &Shared, fetch: Fetch) {
                 }
                 Query::Unauthorized => {
                     row.state = "unauthorized";
-                    row.message = "额度接口没有接受这张访问令牌，没有续期";
+                    row.message = "额度接口没有接受访问令牌，没有续期";
                     row.windows.clear();
                     row.unauthorized = true;
                     row.blocked_hash = hash;
@@ -611,7 +611,7 @@ fn query_file(
         return Query::NoToken;
     };
     if !usage_call_allowed(USAGE_GET) {
-        return Query::Error("拒绝的请求");
+        return Query::Error("不允许的请求");
     }
     fetches.fetch_add(1, Ordering::Relaxed);
     let result = match fetch {

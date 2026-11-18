@@ -171,7 +171,7 @@ impl Platform {
         match status {
             Some(0) => decode_security_value(&bytes).map(Some),
             Some(44) => Ok(None),
-            _ => Err("无法读取原生 Keychain，请检查系统访问权限"),
+            _ => Err("无法读取原生钥匙串，请检查系统访问权限"),
         }
     }
     pub fn native_write_key(&self, service: &str, account: &str, value: &Value) -> Result<()> {
@@ -201,7 +201,7 @@ impl Platform {
             return if self.fixture_read_key(service, account)?.as_ref() == Some(value) {
                 Ok(())
             } else {
-                Err("原生 Keychain 保存后校验失败")
+                Err("原生钥匙串保存后校验失败")
             };
         }
         self.require_unlocked_keychain()?;
@@ -230,7 +230,7 @@ impl Platform {
             }
         }
         if self.native_read_key(service, account)?.as_ref() != Some(value) {
-            return Err("原生 Keychain 保存后校验失败");
+            return Err("原生钥匙串保存后校验失败");
         }
         Ok(())
     }
@@ -244,7 +244,7 @@ impl Platform {
         if matches!(status, Some(0 | 44)) {
             Ok(())
         } else {
-            Err("无法清理临时 Keychain 凭据")
+            Err("无法清理临时钥匙串凭据")
         }
     }
     pub fn vault_read(&self, id: &str) -> Result<Value> {
@@ -304,7 +304,7 @@ impl Platform {
         if output["status"] == "ok" {
             Ok(())
         } else {
-            Err("Keychain 已锁定或不可用；请在系统中解锁后重试")
+            Err("钥匙串已锁定或不可用；请在系统中解锁后重试")
         }
     }
 }
@@ -349,11 +349,11 @@ fn native_write_plan(service: &str, account: &str, value: &Value) -> Result<Nati
         || service.contains(['"', '\\', '\n', '\r', '\0'])
         || account.contains(['"', '\\', '\n', '\r', '\0'])
     {
-        return Err("Keychain 标识无效");
+        return Err("钥匙串标识无效");
     }
     let bytes = serde_json::to_vec(value).map_err(|_| "凭据格式无效")?;
     if bytes.len() > 32 * 1024 {
-        return Err("原生 Keychain 数据超过 32 KB 写入上限；已停止续期，请由官方客户端处理");
+        return Err("原生钥匙串数据超过 32 KB 写入上限；已停止续期，请由官方客户端处理");
     }
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let command = format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X {hex}\n");
@@ -376,7 +376,7 @@ fn decode_security_value(bytes: &[u8]) -> Result<Value> {
             || !bytes.len().is_multiple_of(2)
             || !bytes.iter().all(u8::is_ascii_hexdigit)
         {
-            return Err("原生 Keychain 格式无效");
+            return Err("原生钥匙串格式无效");
         }
         decoded = bytes
             .chunks_exact(2)
@@ -388,9 +388,9 @@ fn decode_security_value(bytes: &[u8]) -> Result<Value> {
             .collect::<Vec<_>>();
         decoded.as_slice()
     };
-    let value: Value = serde_json::from_slice(json).map_err(|_| "原生 Keychain 格式无效")?;
+    let value: Value = serde_json::from_slice(json).map_err(|_| "原生钥匙串格式无效")?;
     if !value.is_object() {
-        return Err("原生 Keychain 格式无效");
+        return Err("原生钥匙串格式无效");
     }
     Ok(value)
 }
@@ -413,7 +413,7 @@ pub fn read_json(path: &Path) -> Result<Option<Value>> {
         .read_to_end(&mut bytes)
         .map_err(|_| "无法读取认证存储")?;
     if bytes.len() > 1024 * 1024 {
-        return Err("认证存储超过允许大小");
+        return Err("认证存储超过大小上限");
     }
     serde_json::from_slice(&bytes)
         .map(Some)

@@ -185,7 +185,7 @@ impl Work {
         if let Ok(updated) = updated {
             if !self.bundle.same_owner(&updated).unwrap_or(false) {
                 outcome.state = "attention".into();
-                outcome.message = "官方检查返回了不同账号，已停止维护".into();
+                outcome.message = "官方检查返回的账号不同，已停止维护".into();
                 return outcome;
             }
             if self.native.is_none()
@@ -303,7 +303,7 @@ impl Work {
                         result.state = "reauth".into();
                         result.message = "Claude 刷新凭据已失效，请重新登录".into();
                     } else {
-                        result.message = "Claude 刷新被拒绝；保留账号，稍后检查".into();
+                        result.message = "Claude 刷新被拒；已保留账号，稍后检查".into();
                     }
                     return result;
                 }
@@ -342,7 +342,7 @@ impl Work {
             .is_some_and(|scopes| scopes.iter().any(|s| s == "user:profile"))
         {
             result.state = "limited".into();
-            result.message = "授权未包含身份查询权限；到期续期仍会按计划进行".into();
+            result.message = "授权缺少身份查询权限；到期仍会按计划续期".into();
             return result;
         }
         let token = current.credential["accessToken"].as_str().unwrap();
@@ -357,7 +357,7 @@ impl Work {
                     || profile["organization"]["uuid"] != current.identity["organizationUuid"]
                 {
                     result.state = "attention".into();
-                    result.message = "Claude 在线身份与保存账号不一致".into();
+                    result.message = "Claude 在线身份与保存的账号不一致".into();
                     return result;
                 }
                 result.online = true;
@@ -371,7 +371,7 @@ impl Work {
             }
             Ok((403, _)) => {
                 result.state = "limited".into();
-                result.message = "在线身份接口无访问权限；未将登录判为失效".into();
+                result.message = "无权访问在线身份接口；未将登录判为失效".into();
                 return result;
             }
             Ok((401, _)) => {
@@ -466,7 +466,7 @@ pub fn merge_refresh(bundle: &Bundle, response: &Value, time: u64) -> Result<Bun
     let expires = response["expires_in"]
         .as_u64()
         .filter(|n| *n > 0 && *n < 366 * 86400)
-        .ok_or("刷新响应缺少有效期限")?;
+        .ok_or("刷新响应缺少有效期")?;
     let mut result = bundle.clone();
     let value = result
         .credential
@@ -527,7 +527,7 @@ pub fn http(
     let reset_metadata = url == crate::claude_resets::USAGE_URL && usage;
     if reset_metadata {
         if body.is_some() {
-            return Err("额度重置信息只允许只读查询");
+            return Err("额度重置信息仅限只读查询");
         }
         config.push_str("header = \"x-app: cli\"\n");
     }

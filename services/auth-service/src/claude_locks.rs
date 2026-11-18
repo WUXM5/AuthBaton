@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const BUSY: &str = "Claude 正在由其他客户端维护，稍后自动重试";
+pub const BUSY: &str = "其他客户端正在维护 Claude，稍后自动重试";
 pub const LOST: &str = "Claude 协调锁已失效，已停止提交凭据";
 
 struct Owned {

@@ -68,7 +68,7 @@ fn parse_system(text: &str) -> Result<Vec<(String, String)>> {
     if scalar("ProxyAutoConfigEnable") == Some("1")
         || scalar("ProxyAutoDiscoveryEnable") == Some("1")
     {
-        return Err("当前系统使用自动代理；请配置显式代理环境或手动系统代理");
+        return Err("当前系统使用自动代理；请配置显式代理环境或改用手动代理");
     }
     let mut env = vec![];
     for (prefix, key, scheme) in [
@@ -148,7 +148,7 @@ pub fn curl(args: &[&str], input: &[u8], timeout: Duration) -> Result<Vec<u8>> {
 pub const NOT_SENT: &str = "网络未连通，请求未发出；稍后自动重试";
 /// Proxy settings that no request can use. As with `NOT_SENT`, nothing left this machine.
 pub const PROXY_NOT_SENT: &str =
-    "系统代理设置无法使用（如自动代理），请求未发出；改用手动代理或代理环境变量后自动重试";
+    "系统代理不可用（如自动代理），请求未发出；改用手动代理或代理环境变量后自动重试";
 pub fn not_sent(message: &str) -> bool {
     matches!(message, NOT_SENT | PROXY_NOT_SENT)
 }

@@ -66,7 +66,7 @@ impl Config {
             switch_below: u8,
             accounts: Vec<LegacyRule>,
         }
-        const INVALID: &str = "旧版额度策略格式无效，未覆盖其内容";
+        const INVALID: &str = "旧版额度策略格式无效，未覆盖原内容";
         let old: LegacyConfig = serde_json::from_value(value).map_err(|_| INVALID)?;
         let (global, switch_below) = (old.order, old.switch_below);
         let accounts = old

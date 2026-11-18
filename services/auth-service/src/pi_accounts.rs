@@ -23,7 +23,7 @@ impl Accounts {
             return Err("账号存储故障；请在 AuthBaton 修复后重试");
         }
         if self.db.switch.is_some() {
-            return Err("账号切换尚未确认；请先在 AuthBaton 恢复当前状态");
+            return Err("账号切换还没确认，请先在 AuthBaton 恢复当前状态");
         }
         let id = match requested {
             Some(id) => id.to_owned(),
@@ -35,9 +35,9 @@ impl Accounts {
                     .filter(|a| a.provider == "codex" && a.native);
                 let account = current
                     .next()
-                    .ok_or("尚未选择全局 Codex 当前账号，请在 AuthBaton 设为当前")?;
+                    .ok_or("还没选全局在用的 Codex 账号，请在 AuthBaton 换上")?;
                 if current.next().is_some() {
-                    return Err("全局当前账号不唯一，请在 AuthBaton 核对");
+                    return Err("全局有多个在用账号，请在 AuthBaton 核对");
                 }
                 account.id.clone()
             }
@@ -80,7 +80,7 @@ impl Accounts {
         if *owner != format!("codex:{user}:{workspace}") {
             return Err("Access token 与登记账号身份不一致，未向 pi 提供凭据");
         }
-        let expires = access["exp"].as_u64().ok_or("Access token 缺少有效期限")?;
+        let expires = access["exp"].as_u64().ok_or("Access token 缺少有效期")?;
         if token.chars().any(char::is_control) {
             return Err("Access token 格式无效");
         }
@@ -95,11 +95,11 @@ impl Accounts {
         }
         if account.native && !self.desktop_owns(&id) && (self.client_running)("codex") {
             return Err(
-                "当前账号由官方 Codex 客户端续期；请等待其更新，或在 AuthBaton 接管桌面维护",
+                "当前账号由官方 Codex 客户端续期；请等它更新，或在 AuthBaton 接管桌面维护",
             );
         }
         if account.state == "retry" && account.next_check > now() {
-            return Err("认证续期正在退避等待，请在 AuthBaton 查看维护状态");
+            return Err("认证续期正在等待重试，请在 AuthBaton 查看维护状态");
         }
         if self.job.is_none() && self.check_queue.is_empty() && self.reset_job.is_none() {
             // Use the existing owner-aware, persisted maintenance path, not a pi refresh grant.

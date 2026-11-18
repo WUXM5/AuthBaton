@@ -191,7 +191,7 @@ fn response(
             "ping" => json!({"service_version":env!("CARGO_PKG_VERSION")}),
             "snapshot" => serde_json::to_value(status::snapshot(sources)).unwrap(),
             "login.status" => json!({"attempt":login.state}),
-            "login.start" => return Err("请使用账号列表的添加或重新登录入口"),
+            "login.start" => return Err("请从账号列表添加或重新登录"),
             method if method.starts_with("accounts.") => {
                 let manager = accounts.as_mut().ok_or("账号存储服务不可用")?;
                 let params: AccountParams = if request.params.is_null() {
@@ -388,7 +388,7 @@ fn bind_socket(path: &Path) -> Result<(UnixListener, SocketOwner), &'static str>
         .open(parent.join("service.lockfile"))
         .map_err(|_| "无法打开服务锁")?;
     lock.try_lock()
-        .map_err(|_| "认证服务已经运行，或服务锁不可用")?;
+        .map_err(|_| "认证服务已在运行，或服务锁不可用")?;
     // Only the lock owner may retire a socket left by an earlier process.
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_socket() => {

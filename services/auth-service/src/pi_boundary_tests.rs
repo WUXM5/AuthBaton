@@ -123,7 +123,7 @@ fn pi_respects_official_refresh_owner_pause_and_retry_backoff() {
     manager.db.accounts[0].automatic = true;
     manager.db.accounts[0].state = "retry".into();
     manager.db.accounts[0].next_check = now() + 300;
-    assert!(manager.pi_access(Some("a")).unwrap_err().contains("退避"));
+    assert!(manager.pi_access(Some("a")).unwrap_err().contains("等待重试"));
     assert!(manager.job.is_none());
 }
 #[test]

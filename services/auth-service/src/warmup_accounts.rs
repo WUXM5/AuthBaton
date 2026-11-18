@@ -40,7 +40,7 @@ impl Accounts {
     pub fn warmup_now(&mut self, id: &str) -> Result<()> {
         if self.quota_paused().is_some() {
             return Err(
-                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号流程），暂不能预热",
+                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号），暂不能预热",
             );
         }
         let index = self.index(id)?;

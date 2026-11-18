@@ -26,7 +26,7 @@ fn required<'a>(value: &'a Value, path: &str) -> Result<&'a str> {
         .pointer(path)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or("账号认证材料不完整")
+        .ok_or("账号认证信息不完整")
 }
 pub fn claims(token: &str) -> Result<Value> {
     let payload = token.split('.').nth(1).ok_or("账号 token 格式无效")?;
@@ -49,7 +49,7 @@ impl Bundle {
         if self.credential.pointer("/tokens/refresh_token").is_some()
             || self.credential.get("refreshToken").is_some()
         {
-            return Err("云端消费凭据不得包含刷新令牌");
+            return Err("云端消费凭据不能包含刷新令牌");
         }
         self.metadata_kind(false)
     }
@@ -62,7 +62,7 @@ impl Bundle {
                     .as_str()
                     .is_some_and(|s| s != "chatgpt" && (managed || s != "chatgptAuthTokens"))
             {
-                return Err("此入口仅纳管 ChatGPT 订阅登录");
+                return Err("此入口仅支持 ChatGPT 订阅登录");
             }
             let token = claims(required(&self.credential, "/tokens/id_token")?)?;
             let access = claims(required(&self.credential, "/tokens/access_token")?)?;
@@ -205,7 +205,7 @@ impl NativeStore {
             .or_else(|| directory.map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_default();
         if !string.is_ascii() {
-            return Err("此版本尚未验证非 ASCII Claude 配置目录的 Keychain 定位");
+            return Err("此版本尚未验证非 ASCII Claude 配置目录的钥匙串定位");
         }
         let suffix = if string.is_empty() {
             String::new()
@@ -283,7 +283,7 @@ impl NativeStore {
             if let Some(file) = read_json(&self.file())?
                 && file != key
             {
-                return Err("Keychain 与认证文件不一致，请先在官方客户端确认认证来源");
+                return Err("钥匙串与认证文件不一致，请先在官方客户端确认认证来源");
             }
             Ok((key, true))
         } else if self.mode == "auto" {
@@ -291,7 +291,7 @@ impl NativeStore {
                 .map(|v| (v, false))
                 .ok_or("原生凭据不存在")
         } else {
-            Err("原生 Keychain 凭据不存在")
+            Err("原生钥匙串凭据不存在")
         }
     }
     pub fn read(&self, platform: &Platform) -> Result<Bundle> {
@@ -303,7 +303,7 @@ impl NativeStore {
     /// Claude store that was signed out or cleared.
     pub fn login(&self, platform: &Platform) -> Result<Option<Bundle>> {
         match self.payload(platform) {
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => Ok(None),
+            Err("原生凭据不存在" | "原生钥匙串凭据不存在") => Ok(None),
             Ok((payload, _)) if self.provider == "claude" && claude_signed_out(&payload) => {
                 Ok(None)
             }
@@ -344,7 +344,7 @@ impl NativeStore {
                 }
                 Ok(Some(b))
             }
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => Ok(None),
+            Err("原生凭据不存在" | "原生钥匙串凭据不存在") => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -663,7 +663,7 @@ impl NativeStore {
     }
     pub fn initialize(&self, platform: &Platform, target: &Bundle) -> Result<()> {
         let base = match self.payload(platform) {
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => {
+            Err("原生凭据不存在" | "原生钥匙串凭据不存在") => {
                 serde_json::json!({})
             }
             Ok((payload, _)) if self.provider == "claude" && claude_signed_out(&payload) => payload,
@@ -685,7 +685,7 @@ impl NativeStore {
             write_json(&self.config, &merge_claude_config(base, &target.identity)?)?;
         }
         if self.read(platform)? != *target {
-            return Err("首次默认登录保存后校验失败");
+            return Err("首次保存默认登录后校验失败");
         }
         Ok(())
     }
@@ -702,7 +702,7 @@ impl NativeStore {
     ) -> Result<Option<Bundle>> {
         let payload = match self.payload(platform) {
             Ok((payload, _)) => payload,
-            Err("原生凭据不存在" | "原生 Keychain 凭据不存在") => return Ok(None),
+            Err("原生凭据不存在" | "原生钥匙串凭据不存在") => return Ok(None),
             Err(message) => return Err(message),
         };
         let credential = if self.provider == "codex" {
@@ -766,7 +766,7 @@ impl NativeStore {
         identity: &Value,
     ) -> Result<Bundle> {
         if self.read_bundle(platform)?.credential != *credential {
-            return Err("默认登录在核对期间发生变化；下次检查再核对");
+            return Err("核对期间默认登录已变化，下次检查再核对");
         }
         let config = read_json(&self.config)?.ok_or("Claude 身份配置不存在")?;
         write_json(&self.config, &merge_claude_config(config, identity)?)?;

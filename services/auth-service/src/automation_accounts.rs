@@ -51,7 +51,7 @@ impl Accounts {
             || self.job.is_some()
             || self.reset_job.is_some()
         {
-            return Err("请等待在途操作结束后再核对清理");
+            return Err("请等待当前操作结束后再核对清理");
         }
         let run = self
             .db
@@ -67,7 +67,7 @@ impl Accounts {
         self.db.automation.run = None;
         self.db.automation.config.enabled = false;
         self.db.automation.last_message =
-            "已按确认清除自动流程记录；会话由用户核对，认证切换恢复记录仍保留".into();
+            "已按确认清除自动流程记录；会话请自行核对，认证切换恢复记录仍保留".into();
         self.automation.message.clear();
         self.save()
     }
@@ -141,13 +141,13 @@ impl Accounts {
             return None;
         }
         if !self.db.desktop.enabled || !self.desktop.connected {
-            return Some("换号等待桌面连接恢复，重置不受连接影响");
+            return Some("换号需等桌面连接恢复，重置不受连接影响");
         }
         if account.metadata.as_ref().map(|m| &m.owner) != self.desktop.owner.as_ref() {
             return Some("桌面与默认账号尚未确认一致，暂不换号");
         }
         if (self.desktop.other_clients)() {
-            return Some("检测到 VS Code 的 Codex 插件或独立 Codex CLI，暂不进行桌面换号");
+            return Some("检测到 VS Code 的 Codex 插件或独立 Codex CLI，桌面暂不换号");
         }
         None
     }
@@ -283,7 +283,7 @@ impl Accounts {
             reasons.push("这个账号只重置，Fable 额度不用重置卡");
         }
         if reasons.is_empty() {
-            return "已见底；不是当前账号，只在成为当前账号时换号".into();
+            return "已见底；不是在用账号，在用时才换号".into();
         }
         let head = if depleted {
             "已见底"
@@ -303,7 +303,7 @@ impl Accounts {
             let result = job
                 .handle
                 .join()
-                .unwrap_or(Err("自动任务操作中断，请核对桌面会话"));
+                .unwrap_or(Err("自动操作中断，请核对桌面会话"));
             if let Err(message) = self.finish_automation(job.stage, result) {
                 self.automation_attention(message);
             }
@@ -325,7 +325,7 @@ impl Accounts {
         }
         self.automation.next_check = now() + 5;
         if self.cloud.config.mode != "local" {
-            self.automation.message = "本地额度策略在云端模式暂停".into();
+            self.automation.message = "云端模式下，本地额度策略暂停".into();
             return;
         }
         let ids: Vec<_> = self
@@ -372,7 +372,7 @@ impl Accounts {
             let Some(observation) = self.strategy_observation(&account) else {
                 self.automation
                     .account_messages
-                    .insert(id, "等待新鲜额度或重置后的新查询".into());
+                    .insert(id, "等待最新额度或重置后重新查询".into());
                 continue;
             };
             let expiring = self.expiring_credit(&account, &observation);
@@ -393,7 +393,7 @@ impl Accounts {
                 } else if latch.kind == LatchKind::Reset && !newer {
                     self.automation
                         .account_messages
-                        .insert(id, "已重置，等待重置后的新额度".into());
+                        .insert(id, "已重置，等待新额度".into());
                     continue;
                 }
             }
@@ -782,12 +782,12 @@ impl Accounts {
                 }
             }
             Phase::Verifying => {
-                self.automation.message = "正在核对所有受影响会话已停止".into();
+                self.automation.message = "正在确认受影响会话已全部停止".into();
                 self.automation_call("verify", "auto_verify", None)?;
             }
             Phase::Switching => {
                 if self.db.switch.is_some() {
-                    return Err("认证切换尚未完成；请停止自动流程并恢复当前登录状态");
+                    return Err("认证切换还没完成；请停止自动流程并恢复当前登录");
                 }
                 if self.desktop.owner.as_deref() != Some(&run.target_owner)
                     || !self
@@ -859,7 +859,7 @@ impl Accounts {
             let _ = job.handle.join();
         }
         if self.db.automation.run.is_some() {
-            self.automation_attention("自动流程因退出而停止；重开后请核对桌面会话，不会重放操作");
+            self.automation_attention("退出时自动流程已停止；重开后请核对桌面会话，不会重复执行");
         }
     }
 }
@@ -882,7 +882,7 @@ fn decode_tasks(value: &Value) -> Result<Vec<Task>> {
                 )
         })
     {
-        return Err("桌面任务列表包含无效或重复记录");
+        return Err("桌面任务列表有无效或重复记录");
     }
     Ok(tasks)
 }

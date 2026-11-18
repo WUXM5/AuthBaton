@@ -248,7 +248,7 @@ fn claude_windows(value: &Value) -> Result<Vec<Window>> {
             .filter(|n| n.is_finite() && *n >= 0.0)
     {
         result.push(Window {
-            label: "月度额外用量".into(),
+            label: "每月额外用量".into(),
             scope: Some("额外消费".into()),
             kind: Some("feature".into()),
             used_percent: used,
@@ -290,7 +290,7 @@ fn query_claude(
     if access.expires_at.is_some_and(|expiry| expiry <= time) {
         return Outcome::failure(
             "expired",
-            "Access 已到期，等待认证维护更新后重查；额度查询不会续期",
+            "Access 已到期，等认证更新后再查；额度查询不会续期",
         );
     }
     match transport(
@@ -308,16 +308,16 @@ fn query_claude(
                 reset_credits: None,
                 claude_resets: Some(crate::claude_resets::parse(&body)),
             },
-            Err(_) => Outcome::failure("unavailable", "未返回有效额度；未将缺失窗口解释为零用量"),
+            Err(_) => Outcome::failure("unavailable", "未返回有效额度，缺失窗口不算零用量"),
         },
         Ok((401, _)) => Outcome::failure(
             "unauthorized",
-            "额度查询未接受现有凭据；请检查认证，本次查询未续期",
+            "额度接口未接受现有凭据；请检查认证，本次未续期",
         ),
         Ok((403, _)) => Outcome::failure("forbidden", "额度接口无访问权限；未将登录判为失效"),
         Ok((429, _)) => Outcome {
             delay: 900,
-            ..Outcome::failure("rate_limited", "额度查询受到限流，稍后自动重试")
+            ..Outcome::failure("rate_limited", "额度查询被限流，稍后自动重试")
         },
         _ => Outcome::failure("retry", "额度服务暂不可用，稍后重试"),
     }
@@ -326,7 +326,7 @@ fn query(access: Access, transport: Transport, time: u64) -> Outcome {
     if access.expired(time) {
         return Outcome::failure(
             "expired",
-            "Access 已到期，等待认证维护更新后重查；额度查询不会续期",
+            "Access 已到期，等认证更新后再查；额度查询不会续期",
         );
     }
     match transport(&access, &Request::Usage) {
@@ -349,7 +349,7 @@ fn query(access: Access, transport: Transport, time: u64) -> Outcome {
                     },
                     Err(_) => Outcome::failure(
                         "unavailable",
-                        "额度响应缺少有效窗口，未将未知额度当作可用",
+                        "额度响应缺少有效窗口，未知额度不当作可用",
                     ),
                 }
             }
@@ -360,11 +360,11 @@ fn query(access: Access, transport: Transport, time: u64) -> Outcome {
             403 => Outcome::failure("forbidden", "额度接口暂不允许访问，未将账号判为失效"),
             429 => Outcome {
                 delay: response.retry_after.unwrap_or(900).max(900),
-                ..Outcome::failure("rate_limited", "额度查询受到限流，稍后自动重试")
+                ..Outcome::failure("rate_limited", "额度查询被限流，稍后自动重试")
             },
             _ => Outcome::failure("retry", "额度服务暂不可用，稍后自动重试"),
         },
-        Err(_) => Outcome::failure("retry", "额度查询网络失败或超时，稍后自动重试"),
+        Err(_) => Outcome::failure("retry", "额度查询网络异常或超时，稍后自动重试"),
     }
 }
 
@@ -623,7 +623,7 @@ impl Runtime {
             Err(_) => {
                 self.complete(
                     id,
-                    Outcome::failure("unavailable", "无法读取匹配账号的凭据，请核对本地认证状态"),
+                    Outcome::failure("unavailable", "无法读取对应账号的凭据，请核对本地认证状态"),
                     time,
                 );
                 return;
@@ -657,7 +657,7 @@ impl Runtime {
             Err(_) => {
                 self.complete(
                     id,
-                    Outcome::failure("unavailable", "无法读取匹配账号的凭据，请核对本地认证状态"),
+                    Outcome::failure("unavailable", "无法读取对应账号的凭据，请核对本地认证状态"),
                     time,
                 );
                 return;

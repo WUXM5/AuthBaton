@@ -166,14 +166,14 @@ pub fn codex_status(path: &Path, checked_at: u64) -> ProviderStatus {
             }
             .into(),
         );
-        status.details.push("JWT 到期信息未作远端或签名验证".into());
+        status.details.push("JWT 到期信息未经远端或签名验证".into());
     } else if matches!(mode, None | Some("apikey")) && present(&auth, "/OPENAI_API_KEY") {
         status.auth_kind = "API key".into();
         status.state = "configured";
         status.summary = "已检测到 API key；未验证远端有效性".into();
     } else {
         status.state = "issue";
-        status.summary = "认证模式不在本版检查范围内".into();
+        status.summary = "本版不检查这种认证模式".into();
     }
     status
 }
@@ -186,10 +186,10 @@ pub fn pi_status(path: &Path, checked_at: u64) -> ProviderStatus {
     {
         status.state = "configured";
         status.auth_kind = "AuthBaton 本机服务".into();
-        status.summary = "已安装统一账号插件；在 pi 选择 AuthManager Codex provider 使用".into();
+        status.summary = "已安装统一账号插件；可在 pi 中选择 AuthManager Codex provider".into();
         status
             .details
-            .push("共享账号管理中的 Codex 账号；默认跟随全局当前，任务进行中固定身份".into());
+            .push("共享账号管理中的 Codex 账号；默认跟随全局当前账号，任务中固定身份".into());
         status
             .details
             .push("pi 按需取得 access token；认证检查与续期仍由 AuthBaton 协调".into());
@@ -203,7 +203,7 @@ pub fn pi_status(path: &Path, checked_at: u64) -> ProviderStatus {
         status.summary = "尚未配置 openai-codex provider".into();
         status
             .details
-            .push("其他 provider 的凭据未纳入本页检查".into());
+            .push("本页不检查其他 provider 的凭据".into());
         return status;
     };
     status.auth_kind = "ChatGPT OAuth".into();
@@ -276,7 +276,7 @@ fn claude_payload(value: &Value, binary: &Path) -> ProviderStatus {
     match value.get("loggedIn").and_then(Value::as_bool) {
         Some(true) => {
             status.state = "configured";
-            status.summary = "Claude CLI 报告已登录".into();
+            status.summary = "Claude CLI 显示已登录".into();
             status.auth_kind = match value.get("authMethod").and_then(Value::as_str) {
                 Some("claude.ai") => "Claude 订阅",
                 Some("api_key") => "API key",
@@ -290,9 +290,9 @@ fn claude_payload(value: &Value, binary: &Path) -> ProviderStatus {
             }
             status
                 .details
-                .push("原生登录由 Claude Code 管理；未读取 Keychain 内容".into());
+                .push("原生登录由 Claude Code 管理；未读取钥匙串内容".into());
         }
-        Some(false) => status.summary = "Claude CLI 报告尚未登录".into(),
+        Some(false) => status.summary = "Claude CLI 显示未登录".into(),
         None => {
             status.state = "issue";
             status.summary = "Claude CLI 状态缺少登录标识".into();

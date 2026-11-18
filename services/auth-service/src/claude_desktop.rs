@@ -232,7 +232,7 @@ impl Runtime {
             }
             "token_quota_retry" => {
                 if !shared.ctx.config().token_quota {
-                    return Err("先打开用桌面登录查额度");
+                    return Err("先打开「用桌面登录查额度」");
                 }
                 self.quota.retry();
             }
@@ -458,7 +458,7 @@ impl Runtime {
         } else if restart_needed {
             Some("要重启一次 Claude")
         } else if !ov.symlinked_folders.is_empty() || broken {
-            Some("有会话文件夹 Claude 存不进去")
+            Some("Claude 存不进部分会话文件夹")
         } else {
             None
         };
@@ -478,7 +478,7 @@ impl Runtime {
                 .is_none_or(|l| l["at"].as_f64().unwrap_or(0.0) < pass.at as f64)
         {
             last_sync = Some(
-                json!({"at":pass.at,"ok":false,"message":"后台同步这一轮没做成；详情在 claude-desktop/engine.log"}),
+                json!({"at":pass.at,"ok":false,"message":"后台同步这一轮没成功；详情在 claude-desktop/engine.log"}),
             );
         }
         let accounts: Vec<Value> = ov
@@ -618,22 +618,22 @@ fn step_of(progress: &SwitchProgress) -> &'static str {
 fn finished(end: &SwitchProgress, target: &str) -> (&'static str, Option<String>, Option<bool>) {
     let bypass = match end.bypass {
         Carried::Nothing => "",
-        Carried::TurnedOn => "。这个账号原先没开 Bypass 权限模式，已替它打开",
+        Carried::TurnedOn => "。这个账号原先没开 Bypass 权限模式，已顺带打开",
         Carried::Failed => {
-            "。这个账号没开 Bypass 权限模式，这次没能替它打开；要用就在 Claude 的设置里打开"
+            "。这个账号没开 Bypass 权限模式，这次没能打开；要用就在 Claude 设置里开启"
         }
     };
     let message = match end.stage {
         SwitchStage::Done if end.adding => {
-            "在 Claude 的登录页登录新账号；登录后会自动加进列表".to_string()
+            "在 Claude 登录页登录新账号；成功后会自动加进列表".to_string()
         }
-        SwitchStage::Done if end.already => "Claude 已经登录着这个账号，什么都没改".to_string(),
+        SwitchStage::Done if end.already => "Claude 已登录这个账号，什么都没改".to_string(),
         SwitchStage::Done if end.launched => {
             format!("已换上 {target}，Claude 已重新打开{bypass}")
         }
         SwitchStage::Done => format!("已换上 {target}；Claude 下次打开就是这个账号{bypass}"),
         SwitchStage::Stopped if end.after_work => {
-            "Claude 会在手上的事做完后自己退出；这次没换号".to_string()
+            "Claude 会在手头的事做完后自己退出；这次没换号".to_string()
         }
         SwitchStage::Stopped => "已停止等待，什么都没改".to_string(),
         _ => end
@@ -677,20 +677,20 @@ fn failure_text(failure: &Failure) -> &'static str {
         FailureReason::Busy => "正在同步或换号，稍后再试",
         FailureReason::NotFound | FailureReason::Ambiguous => "找不到这个 Claude 桌面账号",
         FailureReason::NotInList | FailureReason::NothingSaved => {
-            "这个账号没保存登录；在 Claude 里登录它一次就会保存"
+            "这个账号没保存登录；在 Claude 里登录一次就会保存"
         }
         FailureReason::NoOther => "没有别的保存了登录、参与「下一个」的账号",
         FailureReason::Unsupported => "这台 Mac 上不能切换 Claude 桌面账号",
         FailureReason::StillOpen => "Claude 没有退出，什么都没改",
-        FailureReason::Updating => "Claude 正在更新，过一会儿再试",
+        FailureReason::Updating => "Claude 正在更新，稍后再试",
         FailureReason::Stopped => "已停止等待，什么都没改",
-        FailureReason::SignedIn => "Claude 正登录着这个账号，不能移除",
-        FailureReason::BadAlias => "名字只能用小写字母、数字和 - _ .，最多 24 个字，不能全是数字",
+        FailureReason::SignedIn => "Claude 正在用这个账号，不能移除",
+        FailureReason::BadAlias => "名字只能用小写字母、数字和 - _ .，最多 24 个字符，不能全是数字",
         FailureReason::AliasTaken => "别的账号已经叫这个名字了",
         FailureReason::BadNumber => "编号从 1 开始",
         FailureReason::Organization => "你的组织设定了对话原文的保留期，这里改不了",
         FailureReason::NoSuchSnapshot => "找不到这张快照",
-        FailureReason::Error => "没做成；详情在 claude-desktop/engine.log",
+        FailureReason::Error => "没成功；详情在 claude-desktop/engine.log",
     }
 }
 
@@ -984,7 +984,7 @@ mod tests {
         });
         assert_eq!(
             refused,
-            Err("名字只能用小写字母、数字和 - _ .，最多 24 个字，不能全是数字")
+            Err("名字只能用小写字母、数字和 - _ .，最多 24 个字符，不能全是数字")
         );
         assert_eq!(
             fixture.command("alias", Some("000000000000"), false),
@@ -1287,7 +1287,7 @@ mod tests {
             finished(&progress(SwitchStage::Done, false, true, false), "#2 work")
                 .1
                 .unwrap(),
-            "Claude 已经登录着这个账号，什么都没改"
+            "Claude 已登录这个账号，什么都没改"
         );
         let carried = |bypass, launched| SwitchProgress {
             bypass,
@@ -1297,12 +1297,12 @@ mod tests {
             finished(&carried(Carried::TurnedOn, true), "#2 work")
                 .1
                 .unwrap(),
-            "已换上 #2 work，Claude 已重新打开。这个账号原先没开 Bypass 权限模式，已替它打开"
+            "已换上 #2 work，Claude 已重新打开。这个账号原先没开 Bypass 权限模式，已顺带打开"
         );
         let not_carried = finished(&carried(Carried::Failed, false), "#2 work");
         assert_eq!(
             not_carried.1.unwrap(),
-            "已换上 #2 work；Claude 下次打开就是这个账号。这个账号没开 Bypass 权限模式，这次没能替它打开；要用就在 Claude 的设置里打开"
+            "已换上 #2 work；Claude 下次打开就是这个账号。这个账号没开 Bypass 权限模式，这次没能打开；要用就在 Claude 设置里开启"
         );
         assert_eq!(not_carried.2, Some(true));
         let added = finished(&progress(SwitchStage::Done, true, false, true), "");

@@ -122,7 +122,7 @@ impl<'a> Coordinator<'a> {
         };
         let expected = Bundle::decode(record["expected"].clone())?;
         if !self.owner.same_owner(&expected)? {
-            return Err("待恢复续期属于其他身份，未修改原生登录");
+            return Err("待恢复的续期属于其他身份，没改原生登录");
         }
         let mut next = if record["next"].is_null() {
             None
@@ -291,7 +291,7 @@ pub fn prepare(work: &Work, force_refresh: bool) -> Outcome {
                     return Err("Claude 刷新凭据已失效，请重新登录");
                 }
                 outcome.state = "retry".into();
-                return Err("Claude 刷新被拒绝；保留账号，稍后检查");
+                return Err("Claude 刷新被拒；已保留账号，稍后检查");
             }
             Err(message) if crate::network::not_sent(message) => {
                 coordinator.clear()?;
@@ -320,7 +320,7 @@ pub fn prepare(work: &Work, force_refresh: bool) -> Outcome {
             outcome.state = "uncertain".into();
         }
         outcome.message = if outcome.state == "unsaved" && outcome.pending.is_some() {
-            format!("续期已返回新凭据，写回尚未完成；会自动重试写回。{message}")
+            format!("续期已返回新凭据，但还没写回；会自动重试。{message}")
         } else {
             message.into()
         };

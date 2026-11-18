@@ -110,7 +110,7 @@ fn reason(value: &Value) -> String {
         Some("surface" | "mobile") => "当前使用端不适用",
         Some("cli_version") => "当前客户端版本不适用",
         Some("tenure") => "账号尚未满足开放条件",
-        Some("config_off" | "no_grant" | "other_experiment") => "当前账号暂未提供此类重置",
+        Some("config_off" | "no_grant" | "other_experiment") => "当前账号暂无此类重置",
         Some("not_at_wall") => "达到会话额度上限后才可用",
         Some("weekly_limit") => "每周额度已达上限",
         Some("no_weekly_limit") => "当前账号没有对应的每周额度",

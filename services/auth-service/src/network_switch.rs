@@ -352,7 +352,7 @@ impl Runtime {
         if let Some(password) = &password
             && (password.len() < 8 || password.len() > 63)
         {
-            return Err("Wi-Fi 密码应为 8 到 63 个字符");
+            return Err("Wi-Fi 密码要 8 到 63 个字符");
         }
         let mut state = self.shared.state.lock().unwrap();
         let device = state.device.clone().ok_or("这台 Mac 没有 Wi-Fi")?;
@@ -708,7 +708,7 @@ fn run_switch(
         Join::Joined => {}
         Join::NotFound => {
             let message = match &target {
-                Target::Phone(_) => "iPhone 的热点没出现，网络没动",
+                Target::Phone(_) => "iPhone 热点没出现，网络没动",
                 Target::Wifi(_) => "附近找不到这个 Wi-Fi，网络没动",
             };
             return finish(shared, "not_found", false, Some(message), None);
@@ -1307,15 +1307,15 @@ impl Sys for RealSys {
             None,
             &[],
         )
-        .map_err(|_| "打不开 iPhone 的热点")?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| "打不开 iPhone 的热点")?;
+        .map_err(|_| "打不开 iPhone 热点")?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| "打不开 iPhone 热点")?;
         match (status, value["ssid"].as_str(), value["password"].as_str()) {
             (Some(0), Some(ssid), Some(password)) if !ssid.is_empty() && !password.is_empty() => {
                 Ok((ssid.to_owned(), password.to_owned()))
             }
             _ => Err(match value["error"].as_str() {
                 Some("not_found") => "附近没找到这台 iPhone（蓝牙关着或离得太远）",
-                _ => "iPhone 没有打开热点",
+                _ => "iPhone 没开热点",
             }),
         }
     }
@@ -1774,7 +1774,7 @@ mod tests {
         );
         assert_eq!(
             switch(&mut rt, None, Some("Home"), Some("short")),
-            Err("Wi-Fi 密码应为 8 到 63 个字符")
+            Err("Wi-Fi 密码要 8 到 63 个字符")
         );
         assert!(rt.snapshot()["operation"].is_null());
     }
