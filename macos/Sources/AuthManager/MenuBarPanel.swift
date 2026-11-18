@@ -379,7 +379,7 @@ struct MenuBarPanel: View {
                     Button("下一个") { expanded = confirming ? nil : "claude_desktop" }
                         .buttonStyle(.pill(.secondary, height: 20))
                         .disabled(desktop.busy || service.accountBusy)
-                        .help("换到 \(next.title)")
+                        .help("换上 \(next.title)")
                 }
             }
             .padding(.horizontal, 7).frame(minHeight: 32)
@@ -391,7 +391,7 @@ struct MenuBarPanel: View {
             if confirming, let next {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("换上 \(next.title)？Claude 桌面会退出再打开；还有任务在跑的话，Claude 会先问你。"
-                         + (desktop.turnsOnBypass(next) ? "这个账号还没开 Bypass 权限模式，换上时会替它打开。" : ""))
+                         + (desktop.turnsOnBypass(next) ? "这个账号还没开 Bypass 权限模式，换上时会顺带打开。" : ""))
                         .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 5) {
                         Spacer()
@@ -464,7 +464,7 @@ private struct SwitchRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityLabel("换到 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? ""))
+        .accessibilityLabel("换上 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? ""))
     }
 }
 
@@ -508,6 +508,6 @@ struct MenuBarLabel: View {
             Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))
             if let lowest { Text("\(lowest)%").monospacedDigit() }
         }
-        .accessibilityLabel(offline ? "AuthBaton，后台服务未连接" : urgent ? "AuthBaton，有需要处理的事项" : "AuthBaton")
+        .accessibilityLabel(offline ? "AuthBaton，后台服务未连接" : urgent ? "AuthBaton，有待处理的事项" : "AuthBaton")
     }
 }

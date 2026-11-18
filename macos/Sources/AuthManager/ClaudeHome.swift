@@ -281,7 +281,7 @@ struct ClaudeHomePage: View {
             .contentShape(Capsule())
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .help("只用一边时，页面只放那一边的东西；两边都用时，换上可以一起换或只换一边")
+        .help("只用一边时，页面只显示那一边；两边都用时，换上可以一起换或只换一边")
         .accessibilityLabel("使用方式：\(use.menuTitle)")
     }
 
@@ -324,7 +324,7 @@ struct ClaudeHomePage: View {
         case .desktop:
             Button { sheet = .desktop(.add) } label: { label }
                 .buttonStyle(.pill(.primary, height: 27)).disabled(deskLocked)
-                .help("Claude 桌面会退出并打开登录页，现在的登录先存好")
+                .help("Claude 桌面会退出并打开登录页，当前登录会先存好")
         case .both:
             Menu {
                 Button("登录到 AuthBaton（Claude Code 用）…") { sheet = .account(.login(provider: "claude", accountID: nil)) }.disabled(codeLocked)
@@ -374,7 +374,7 @@ struct ClaudeHomePage: View {
             }
             if use.desk, let feature = status?.tokenQuota, feature.enabled {
                 HStack(spacing: 5) {
-                    Text("只在桌面登录过的账号经 Claude 桌面的登录查额度。")
+                    Text("只在桌面登录过的账号用 Claude 桌面的登录查额度。")
                     Button("关掉") { Task { await service.claudeDesktop("token_quota", enabled: false) } }.buttonStyle(.pill(.link))
                 }
             }
@@ -421,8 +421,8 @@ struct DesktopNotices: View {
             Banner(glyph: .info, text: "这一版 Claude 桌面不能在 AuthBaton 里换号；会话同步照常。")
         }
         if let retention = status.retention, retention.atRisk {
-            Banner(glyph: .clock, text: retention.days.map { "Claude Code 会在 \($0) 天后清掉桌面会话的对话原文，清掉后打开是空的。" }
-                   ?? "Claude Code 会定期清掉桌面会话的对话原文，清掉后打开是空的。") {
+            Banner(glyph: .clock, text: retention.days.map { "Claude Code 会在 \($0) 天后清掉桌面会话的对话原文，清掉的会话打开是空的。" }
+                   ?? "Claude Code 会定期清掉桌面会话的对话原文，清掉的会话打开是空的。") {
                 if retention.canKeep {
                     Button("一直保留") { Task { await service.claudeDesktop("retention_keep") } }
                         .buttonStyle(.pill(.onAttention)).disabled(locked)
@@ -679,7 +679,7 @@ struct DeskNumber: View {
             .padding(.horizontal, 5).frame(minWidth: 19, minHeight: 19)
             .background { if desk.participates { shape.fill(Palette.chip) } }
             .overlay { if !desk.participates { shape.strokeBorder(Palette.dashStrong, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) } }
-            .help(desk.participates ? "Claude 桌面的「下一个账号」按这个编号轮" : "不参与「下一个」，仍可直接换上")
+            .help(desk.participates ? "Claude 桌面的「下一个账号」按这个编号轮换" : "不参与「下一个」，仍可直接换上")
     }
 }
 
@@ -722,7 +722,7 @@ struct DeskOnlyQuota: View {
             }
             HStack(spacing: 6) {
                 Icon(.desktop, size: 11, color: Palette.ink3)
-                Text("经 Claude 桌面的登录查" + (quota.checkedAt.map { " · \(When.text($0))" } ?? ""))
+                Text("用 Claude 桌面的登录查" + (quota.checkedAt.map { " · \(When.text($0))" } ?? ""))
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                     .help(quota.message)
                 Spacer(minLength: 6)
@@ -746,7 +746,7 @@ struct DeskOnlyQuota: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if !enabled {
                 Button("用桌面登录查", action: turnOn).buttonStyle(.pill(.secondary))
-                    .help("读 Claude 桌面的登录来查这个账号的额度；打开前会说明会做什么")
+                    .help("用 Claude 桌面的登录查这个账号的额度；打开前会说明做什么")
             } else if stuck {
                 Button("重试") { Task { await service.claudeDesktop("token_quota_retry") } }.buttonStyle(.pill(.secondary))
             }
@@ -969,7 +969,7 @@ struct ClaudeSwitchSheet: View {
                 }
                 if moves.code && moves.desk { Rectangle().fill(Palette.divider).frame(height: 1) }
                 if moves.desk {
-                    impact(.desktop, "Claude 桌面", from: deskFrom, to: name, note: "会退出再打开 Claude 桌面；有任务在跑时 Claude 会先问你。现在的登录原样存好，随时能换回来。")
+                    impact(.desktop, "Claude 桌面", from: deskFrom, to: name, note: "会退出再打开 Claude 桌面；有任务在跑时 Claude 会先问你。现在的登录会原样存好，随时能换回来。")
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 12)

@@ -249,7 +249,7 @@ struct LoginView: View {
                     Spacer()
                     Button("在后台等待") { dismiss() }
                         .buttonStyle(.pill(.secondary, height: 27))
-                        .help("关掉窗口，登录照常进行；之后可以在账号页重新打开进度")
+                        .help("关掉窗口不影响登录；之后可以在账号页重新打开进度")
                 } else {
                     Button("重试") { service.clearLogin() }.buttonStyle(.pill(.secondary, height: 27))
                     Spacer()

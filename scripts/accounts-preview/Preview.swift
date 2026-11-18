@@ -1389,7 +1389,7 @@ extension NSWindow {
         check.expect(Driver.visible("在用 #2 work") && Driver.visible("会话一致"), "菜单栏写桌面在用的账号和同步状态")
         Driver.press("下一个", .exact)
         check.visible("换上 #1 nova@example", "菜单栏「下一个」先在行内确认")
-        check.visible("换上时会替它打开", "菜单栏的确认同样写明会替它打开 Bypass")
+        check.visible("换上时会顺带打开", "菜单栏的确认同样写明会顺带打开 Bypass")
         state.calls.removeAll()
         Driver.press("换上", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"account\":\"h-nova\"") == true, "菜单栏确认后按 handle 换上")

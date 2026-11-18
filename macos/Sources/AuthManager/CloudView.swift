@@ -157,7 +157,7 @@ struct CloudConnectionView: View {
             Text("两种模式").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .top, spacing: 14) {
                 mode("本地", "沿用这台 Mac 上的登录和维护，账号不离开本机。")
-                mode("云端", "只用你主动导入的账号。本机应用退出后认证中心也能续期；同步凭据给本机客户端仍需运行 AuthBaton。")
+                mode("云端", "只用你主动导入的账号。本机应用退出后认证中心也能续期；向本机客户端同步凭据仍需运行 AuthBaton。")
             }
         }
         .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 17)
@@ -218,8 +218,8 @@ struct CloudAccountsView: View {
         } else {
             HStack(spacing: 7) {
                 Menu {
-                    Button("先登录 Codex，再从已保存账号导入") { service.clearLogin(); loginCloudAccountID = nil; loginProvider = "codex" }
-                    Button("先登录 Claude，再从已保存账号导入") { service.clearLogin(); loginCloudAccountID = nil; loginProvider = "claude" }
+                    Button("先登录 Codex，再导入已保存账号") { service.clearLogin(); loginCloudAccountID = nil; loginProvider = "codex" }
+                    Button("先登录 Claude，再导入已保存账号") { service.clearLogin(); loginCloudAccountID = nil; loginProvider = "claude" }
                     Divider()
                     Button("导入本机当前 Codex 登录") { intent = CloudIntent(action: "import_current", id: "codex", label: "本机当前 Codex 登录") }
                     Button("导入本机当前 Claude 登录") { intent = CloudIntent(action: "import_current", id: "claude", label: "本机当前 Claude 登录") }
