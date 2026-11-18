@@ -292,7 +292,7 @@ enum Fixture {
             rows[1]["token_quota"] = ["state": "ready", "message": "额度已更新", "checked_at": now - 90,
                                       "windows": [["label": "5 小时窗口", "used_percent": 41, "resets_at_iso": iso(2.2 * 3600)],
                                                   ["label": "7 天窗口", "used_percent": 63, "resets_at_iso": iso(3.4 * 86400)]]]
-            rows[2]["token_quota"] = ["state": "no_token", "message": "Claude 桌面里没有能查额度的令牌", "checked_at": NSNull(), "windows": []]
+            rows[2]["token_quota"] = ["state": "no_token", "message": "这个账号还没在 Claude 桌面用过 Code 模式", "checked_at": NSNull(), "windows": []]
             desktop["accounts"] = rows
             data["claude_desktop"] = desktop
         case "claudeboth":
@@ -1447,7 +1447,8 @@ extension NSWindow {
         Fixture.load("deskquota", into: state)
         select(.claude)
         check.visible("用Claude桌面的登录查", "work 的卡片显示用桌面登录查到的额度和来源")
-        check.visible("没有能查额度", "lab 没有能用的令牌时写明原因")
+        check.visible("还没在Claude桌面用过Code模式", "lab 没有 Claude Code 登录时写明原因")
+        check.visible("用Code模式聊一次", "并提示去 Code 模式聊一次，之后自动刷新")
         check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
     }
     section(29, "Claude 卡见底：见底那栏的大数字换成多久后回满，条下写剩余和见底线，名字旁「已见底」；两个都见底只放大最晚回满的；独立额度是小进度条") {
