@@ -55,7 +55,7 @@ pub fn login_notice(provider: &str, metadata: Option<&Metadata>, time: u64) -> O
     };
     let Some(expiry) = metadata.refresh_expires_at else {
         return Some(
-            json!({"state":"unknown","message":"官方存储未提供登录续期期限；不推算固定登录周期"}),
+            json!({"state":"unknown","message":"官方存储未提供登录期限，不推算固定登录周期"}),
         );
     };
     // Match installed Claude's suppression for access material that outlives the recorded deadline.
@@ -76,12 +76,12 @@ pub fn login_notice(provider: &str, metadata: Option<&Metadata>, time: u64) -> O
         "normal"
     };
     let message = match state {
-        "expired" => "记录的登录续期期限已过；请检查认证，可能需要重新登录".into(),
+        "expired" => "记录的登录期限已过；请检查认证，可能需要重新登录".into(),
         "soon" => format!(
-            "登录续期期限剩余约 {} 天，建议提前重新登录",
+            "登录期限还剩约 {} 天，建议提前重新登录",
             remaining.div_ceil(86400)
         ),
-        _ => "当前不在重新登录提醒窗口内".into(),
+        _ => "当前不在重新登录提醒时段内".into(),
     };
     Some(
         json!({"state":state,"expires_at":expiry,"message":message,"source":"本机登录记录；可能由官方客户端在登录时推算，不是订阅到期日"}),

@@ -203,7 +203,7 @@ struct MenuBarPanel: View {
         let route = directory.switchRoute(for: account)
         let blocked = route == .desktopDisconnected
         let text: String = switch route {
-        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能经过桌面换号，但桌面没连上。桌面里没有任务在运行时，可以让 AuthBaton 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
+        case .desktopDisconnected: "现在换不过去：热切换开着，Codex 只能通过桌面换号，但桌面没连上。桌面没有任务在运行时，可以让 AuthBaton 以调试模式重启桌面并直接换上；或者到窗口里关闭热切换。"
         case .desktop: "同时更新 Codex 桌面和默认文件。先结束桌面任务，退出独立的 Codex CLI；VS Code 的 Codex 插件在后台运行，要停用它或退出 VS Code。桌面窗口可以开着。"
         case .plain: account.provider == "codex"
             ? "更新 ~/.codex/auth.json。先结束任务，退出 Codex 桌面和 CLI，停用 VS Code 的 Codex 插件或退出 VS Code，换完再打开。"
@@ -379,7 +379,7 @@ struct MenuBarPanel: View {
                     Button("下一个") { expanded = confirming ? nil : "claude_desktop" }
                         .buttonStyle(.pill(.secondary, height: 20))
                         .disabled(desktop.busy || service.accountBusy)
-                        .help("换到 \(next.title)")
+                        .help("换上 \(next.title)")
                 }
             }
             .padding(.horizontal, 7).frame(minHeight: 32)
@@ -391,7 +391,7 @@ struct MenuBarPanel: View {
             if confirming, let next {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("换上 \(next.title)？Claude 桌面会退出再打开；还有任务在跑的话，Claude 会先问你。"
-                         + (desktop.turnsOnBypass(next) ? "这个账号还没开 Bypass 权限模式，换上时会替它打开。" : ""))
+                         + (desktop.turnsOnBypass(next) ? "这个账号还没开 Bypass 权限模式，换上时会顺带打开。" : ""))
                         .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 5) {
                         Spacer()
@@ -464,7 +464,7 @@ private struct SwitchRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityLabel("换到 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? ""))
+        .accessibilityLabel("换上 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? ""))
     }
 }
 
@@ -508,6 +508,6 @@ struct MenuBarLabel: View {
             Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))
             if let lowest { Text("\(lowest)%").monospacedDigit() }
         }
-        .accessibilityLabel(offline ? "AuthBaton，后台服务未连接" : urgent ? "AuthBaton，有需要处理的事项" : "AuthBaton")
+        .accessibilityLabel(offline ? "AuthBaton，后台服务未连接" : urgent ? "AuthBaton，有待处理的事项" : "AuthBaton")
     }
 }

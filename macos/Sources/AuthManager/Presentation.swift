@@ -216,7 +216,7 @@ struct ExpiryReminder: Identifiable {
 
     static let window: TimeInterval = 7 * 86400
 
-    var title: String { "\(accountName) 有 \(count) 张重置卡 7 天内到期" }
+    var title: String { "\(accountName) 有 \(count) 张重置卡，7 天内到期" }
     var detail: String {
         let when = When.countdown(to: earliest).map { "（\($0)）" } ?? ""
         return "\(count > 1 ? "最早 " : "")\(When.text(earliest)) 到期\(when)"

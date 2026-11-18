@@ -267,7 +267,7 @@ impl Runtime {
             return None;
         }
         let (id, day, job) = self.job.take()?;
-        let result = job.join().unwrap_or(Err(Failure::Failed("预热进程中断")));
+        let result = job.join().unwrap_or(Err(Failure::Failed("预热中断")));
         self.tried.insert(id.clone(), time);
         let used = self.failures.get(&id).map_or(0, |f| f.0);
         let (ok, message) = match (day, result) {
@@ -376,7 +376,7 @@ pub fn run(binary: &Path, dir: &Path, token: &str) -> Sent {
     // Stdin gets no input and closes at once, which `claude -p` reads as an empty addition.
     let result = crate::platform::pipe_status_of(command, &[], TIMEOUT, None);
     drop(read);
-    match result.map_err(|_| Failure::Failed("无法启动 Claude CLI 或读取它的结果"))? {
+    match result.map_err(|_| Failure::Failed("无法启动 Claude CLI 或读取结果"))? {
         (Some(0), _) => Ok(()),
         (None, _) => Err(Failure::Failed("Claude CLI 超时未完成")),
         (Some(_), output) => Err(failure(&String::from_utf8_lossy(&output))),

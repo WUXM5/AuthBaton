@@ -127,7 +127,7 @@ enum ServiceError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .connection: "无法连接本地认证服务。请重新打开应用后重试。"
+        case .connection: "无法连接本地认证服务。请重新打开应用再试。"
         case .invalidResponse: "认证服务返回了无法识别的状态。"
         case .pathTooLong: "本地服务目录路径过长。"
         case .missingExecutable: "应用中缺少后台服务，请使用完整的 AuthManager.app。"

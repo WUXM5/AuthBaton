@@ -122,7 +122,7 @@ impl Accounts {
     ) -> Result<Self> {
         private_dir(root)?;
         let bundled = std::env::current_exe()
-            .map_err(|_| "无法定位原生存储工具")?
+            .map_err(|_| "找不到原生存储工具")?
             .with_file_name("credential-store");
         let platform = Platform {
             helper: crate::platform::install_helper(root, &bundled)?,
@@ -155,7 +155,7 @@ impl Accounts {
             Some(mut value) => {
                 let version = value["version"].as_u64().ok_or("账号数据库格式无效")?;
                 if !(1..=8).contains(&version) {
-                    return Err("账号数据库版本不受支持，未覆盖其内容");
+                    return Err("账号数据库版本不受支持，未覆盖原内容");
                 }
                 if version <= 7
                     && let Some(config) = value.pointer_mut("/automation/config")
@@ -255,7 +255,7 @@ impl Accounts {
                     "saved"
                 }
                 .into();
-                account.message = "原生账号已支持协同维护；按自动维护开关执行".into();
+                account.message = "原生账号已支持协同维护；由自动维护开关决定".into();
                 account.next_check = now() + 1;
             }
             // An interrupted Claude check, or a result that only lived in memory, may have consumed
@@ -276,7 +276,7 @@ impl Accounts {
             manager.db.switch = None;
         }
         if manager.db.switch.is_some() {
-            manager.notice = Some("上次切换尚未确认，请结束任务后重试上次切换".into());
+            manager.notice = Some("上次切换尚未确认，请结束任务后重试".into());
         }
         // No login survives a restart: keep a staged result that can still be saved, drop the rest.
         let pending: Vec<String> = manager
@@ -290,7 +290,7 @@ impl Accounts {
             if matches!(manager.staged_login(&id), Ok(Some(_))) {
                 let a = manager.db.accounts.iter_mut().find(|a| a.id == id).unwrap();
                 a.state = "attention".into();
-                a.message = "上次登录已完成但尚未保存；请点「本地检查」完成保存".into();
+                a.message = "上次登录已完成但未保存，请点「本地检查」保存".into();
             } else if let Err(message) = manager.discard_login(&id, None) {
                 manager.notice = Some(message.into());
             }
@@ -309,7 +309,7 @@ impl Accounts {
     }
     fn index(&self, id: &str) -> Result<usize> {
         if self.cloud.config.bindings.contains_key(id) {
-            return Err("此账号正在交接或已由云端维护，请使用云端模式操作");
+            return Err("此账号正在交接或已由云端维护，请改用云端模式");
         }
         self.db
             .accounts
@@ -326,7 +326,7 @@ impl Accounts {
     }
     fn ensure_check_admission(&self) -> Result<()> {
         if self.automation.job.is_some() || self.db.automation.run.is_some() {
-            return Err("自动额度流程正在处理或待核对；请先停止并核对该流程");
+            return Err("自动额度流程正在处理或待核对；请先停止并核对");
         }
         if self.cloud.job.is_some() {
             return Err("云端操作正在进行，请稍后重试");
@@ -343,7 +343,7 @@ impl Accounts {
             return Err("已有账号操作正在进行，请稍后重试");
         }
         if self.db.switch.is_some() {
-            return Err("请先恢复上次切换的当前登录状态");
+            return Err("请先恢复上次切换的登录状态");
         }
         Ok(())
     }
@@ -681,7 +681,7 @@ impl Accounts {
             } else if self.db.accounts.iter().any(|a| a.id == id && a.native) {
                 "当前账号已重新登录并完成存储校验，请重新打开官方客户端。"
             } else {
-                "账号已独立保存，未替换当前默认登录。可在账号列表中选择切换。"
+                "账号已独立保存，未替换当前默认登录。可在账号列表中切换。"
             }
             .into();
         }
@@ -726,7 +726,7 @@ impl Accounts {
                             == Some(cloud_id)
                     })
         }) {
-            return Err("该身份已在列表中，请使用原账号的重新登录操作");
+            return Err("该身份已在列表中，请在原账号上重新登录");
         }
         Ok(Some(bundle))
     }
@@ -735,13 +735,13 @@ impl Accounts {
         let account = self.db.accounts[index].clone();
         let bundle = self
             .staged_login(id)?
-            .ok_or("官方登录没有完成，未取得新授权")?;
+            .ok_or("官方登录未完成，未取得新授权")?;
         let metadata = bundle.metadata()?;
         let native = self.staging(&account.provider, account.pending_profile.as_ref().unwrap())?;
         let mut backup = None;
         let replacing = if account.native {
             if (self.client_running)(&account.provider) {
-                return Err("新授权暂存成功；请退出官方客户端后点本地检查完成保存");
+                return Err("新授权已暂存，请退出官方客户端后点「本地检查」保存");
             }
             let target = self.native(&account.provider)?;
             let old = target.login(&self.platform)?;
@@ -892,15 +892,15 @@ impl Accounts {
             .iter()
             .any(|attempt| attempt.account_id == id && attempt.outcome.unresolved())
         {
-            return Err("此账号有结果待确认的额度重置，请先重试上次操作确认结果");
+            return Err("此账号的额度重置结果待确认，请先重试上次操作");
         }
         self.quota.poll(now());
         if self.quota.is_running(id) {
-            return Err("此账号正在查询额度，请在查询结束后移除");
+            return Err("此账号正在查询额度，请等查完再移除");
         }
         self.warmup_finish();
         if self.warmup.running(id) {
-            return Err("此账号正在发送预热，请在发送结束后移除");
+            return Err("此账号正在发送预热，请等发完再移除");
         }
         // Keep the durable account ID until all owned secrets are gone. Missing Vault items
         // are already a successful delete, so a partial removal can be retried after restart.
@@ -928,7 +928,7 @@ impl Accounts {
         if self.save().is_err() {
             self.db.accounts.insert(index, account);
             self.db.reset_attempts = reset_attempts;
-            return Err("凭据已清理，但账号目录保存失败；修复存储并重新连接服务后，再次移除此账号");
+            return Err("凭据已清理，但账号目录保存失败；请修复存储并重连服务后，再移除此账号");
         }
         self.unsaved.remove(id);
         self.quota.forget(id);
@@ -982,7 +982,7 @@ impl Accounts {
                         && (!manual || client_running(&account.provider))
                     {
                         let message = if manual {
-                            "认证检查可能续期，请退出官方客户端后操作；查看额度请使用“检查用量”"
+                            "认证检查可能续期，请先退出官方客户端；查额度请用「检查用量」"
                         } else {
                             "当前默认账号由官方客户端续期；额度可独立查询，无需退出客户端"
                         };
@@ -1025,7 +1025,7 @@ impl Accounts {
         }
         switch_target_ready(&target)?;
         if target.provider != "claude" && (self.client_running)(&target.provider) {
-            return Err("检测到官方客户端仍在运行，请先退出后再切换");
+            return Err("官方客户端仍在运行，请退出后再切换");
         }
         if target.provider == "claude" {
             for current in self
@@ -1171,15 +1171,15 @@ impl Accounts {
                 let current = self.bundle(account)?;
                 let profile = self.root.join("profiles").join(format!("check-{id}"));
                 let next = crate::maintenance::codex_leftover(&profile, &current)
-                    .ok_or("未保留可恢复的新凭据；请重新登录此账号")?;
+                    .ok_or("没有可恢复的新凭据，请重新登录此账号")?;
                 (current, next)
             }
-            None => return Err("未保留可恢复的新凭据；请重新登录此账号"),
+            None => return Err("没有可恢复的新凭据，请重新登录此账号"),
         };
         let current = self.bundle(&self.db.accounts[index])?;
         if current != next {
             if current != previous {
-                return Err("账号凭据已由其他操作更新，未覆盖其内容");
+                return Err("账号凭据已被其他操作更新，未覆盖其内容");
             }
             if self.db.accounts[index].native {
                 self.native(&next.provider)?
@@ -1254,7 +1254,7 @@ impl Accounts {
             return;
         }
         if let Err(message) = self.platform.vault_write(&account.id, &bundle.encoded()) {
-            self.notice = Some(format!("未能保存官方客户端续期后的 Codex 凭据：{message}"));
+            self.notice = Some(format!("官方客户端续期后的 Codex 凭据保存失败：{message}"));
         }
     }
     fn finish_recover(&mut self, found: Result<Option<Bundle>>) -> Result<()> {
@@ -1570,7 +1570,7 @@ impl Accounts {
         }
         if self.quota_paused().is_some() {
             return Err(
-                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号流程），暂不能查询额度",
+                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号），暂不能查询额度",
             );
         }
         self.quota.request(id, now());
@@ -1674,7 +1674,7 @@ mod reset_accounts;
 #[path = "warmup_accounts.rs"]
 mod warmup_accounts;
 const IDENTITY_CHANGED: &str = "原生登录身份已变化，请重新纳管当前登录";
-const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面版会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
+const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
 /// `lookup` is the profile request an authentication check may make; a local check reads only.
 fn read_account_bundle(
     platform: &Platform,
@@ -1742,7 +1742,7 @@ fn switch_target_ready(account: &Account) -> Result<()> {
         return Err("目标账号的登录尚未完成");
     }
     if matches!(account.state.as_str(), "reauth" | "unsaved" | "uncertain") {
-        return Err("请先处理目标账号的登录或凭据保存状态");
+        return Err("请先完成目标账号的登录或凭据保存");
     }
     Ok(())
 }

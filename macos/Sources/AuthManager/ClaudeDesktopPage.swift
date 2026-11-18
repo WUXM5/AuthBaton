@@ -146,7 +146,7 @@ struct DesktopSheetView: View {
         let items = status?.snapshots ?? []
         return SheetScaffold(title: restoring == nil ? "快照与恢复" : "恢复到 \(restoring.map { When.text($0.at) } ?? "")？",
                              lead: restoring == nil
-                                ? "第一次改动前拍一张（一直保留），之后最多每小时一张、留最近 20 张。删掉和被替换的文件在回收站留 30 天。"
+                                ? "第一次改动前拍一张（一直保留），之后最多每小时一张，留最近 20 张。删掉和被替换的文件在回收站留 30 天。"
                                 : "每个账号的会话列表回到那时的样子。需要先退出 Claude；恢复前会再拍一张，随时能恢复回来。",
                              width: 578) {
             if restoring == nil {
@@ -172,7 +172,7 @@ struct DesktopSheetView: View {
                 }
                 .frame(maxHeight: 280)
             } else if status?.running == true {
-                Banner(text: "Claude 桌面还开着。先在 Claude 里退出（⌘Q），再恢复。")
+                Banner(text: "Claude 桌面还开着。先退出 Claude（⌘Q），再恢复。")
             }
             errorLine
         } actions: {
@@ -206,7 +206,7 @@ struct DesktopSheetView: View {
     private func confirmRemove(_ handle: String) -> some View {
         let target = account(handle)
         return SheetScaffold(title: "从列表移除 \(target?.title ?? "这个账号")？",
-                             lead: "AuthBaton 会忘掉它存好的 Claude 桌面登录。它的会话还在，其他账号照常同步。") {
+                             lead: "AuthBaton 会忘掉存好的 Claude 桌面登录。账号的会话还在，其他账号照常同步。") {
             errorLine
         } actions: {
             Button("取消", action: close).keyboardShortcut(.cancelAction).buttonStyle(.pill(.secondary, height: 27))
@@ -224,7 +224,7 @@ struct DesktopSheetView: View {
     private func rename(_ handle: String) -> some View {
         let target = account(handle)
         return SheetScaffold(title: "给 \(target?.email ?? target?.display ?? "这个账号") 起个名字",
-                             lead: "列表里显示这个名字。小写字母、数字和 - _ .，最多 24 个字；留空就显示邮箱。") {
+                             lead: "列表里显示这个名字。小写字母、数字和 - _ .，最多 24 个字符；留空就显示邮箱。") {
             TextField("例如 work", text: $alias)
                 .textFieldStyle(.roundedBorder)
                 .onAppear { alias = target?.alias ?? "" }

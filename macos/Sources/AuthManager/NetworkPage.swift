@@ -98,7 +98,7 @@ struct NetworkPage: View {
                         .padding(.top, 7)
                     } else if status.safe {
                         Text("可以切").font(.system(size: 28, weight: .bold)).kerning(-0.3)
-                        Text("没有回复在传输，现在切会马上切。").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                        Text("没有回复在传输，现在切马上生效。").font(.system(size: 12)).foregroundStyle(Palette.ink2)
                     } else {
                         figure("\(status.live.count)", unit: "个回复在传输")
                         Text("现在切会把它们截断。点了切换，Claude Code 先暂停发新请求，都传完就切，最多等 5 分钟。")
@@ -388,7 +388,7 @@ struct NetworkSwitchSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "切换网络", lead: "等回复都传完再切。Claude Code 会先暂停发新请求；5 分钟内等不到就不切。") {
+        SheetScaffold(title: "切换网络", lead: "等回复都传完再切。Claude Code 会先暂停发新请求；5 分钟内没传完就不切。") {
             VStack(alignment: .leading, spacing: 2) {
                 Text("切到").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3).padding(.bottom, 3)
                 ScrollView {
@@ -512,7 +512,7 @@ struct NetworkProgressSheet: View {
                 stepRow(5, "Claude Code 恢复发请求", detail: nil, step: step)
             }
             if step == "wrong_password", op?.running == false {
-                Text("密码改了的话，在切换网络里重新输入就行。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text("密码改了的话，去「切换网络」重新输入就行。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             HStack(spacing: 9) {
                 Spacer(minLength: 0)

@@ -70,7 +70,7 @@ impl Accounts {
             "refresh" => self.cloud.start(self.platform.clone(), cloud::directory),
             "import" | "resume_import" => {
                 if !confirm {
-                    return Err("请确认将所选账号的维护交给个人云端");
+                    return Err("请确认将所选账号交给个人云端维护");
                 }
                 if !self.cloud.config.paired {
                     return Err("请先完成设备配对");
@@ -84,7 +84,7 @@ impl Accounts {
                     .ok_or("本机账号不存在")?;
                 let a = self.db.accounts[i].clone();
                 if a.native && (self.client_running)(&a.provider) {
-                    return Err("请结束任务并退出此提供方的原生客户端后再交接；不需要重新登录");
+                    return Err("请先结束任务并退出对应原生客户端，再交接；无需重新登录");
                 }
                 if matches!(
                     a.state.as_str(),
@@ -100,7 +100,7 @@ impl Accounts {
                         cloud::Binding {
                             operation: random_id()?,
                             cloud_id: None,
-                            owner: a.metadata.as_ref().ok_or("账号身份尚未取得")?.owner.clone(),
+                            owner: a.metadata.as_ref().ok_or("尚未获取账号身份")?.owner.clone(),
                             provider: a.provider.clone(),
                             native: a.native,
                             phase: "prepared".into(),
@@ -171,7 +171,7 @@ impl Accounts {
                     return Err("云端已接管，不能恢复旧刷新凭据");
                 }
                 if b.native && (self.client_running)(&b.provider) {
-                    return Err("请先退出此提供方的客户端再取消交接");
+                    return Err("请先退出对应客户端再取消交接");
                 }
                 let native = b.native.then(|| self.native(&b.provider)).transpose()?;
                 self.cloud
@@ -193,7 +193,7 @@ impl Accounts {
                     .ok_or("云端账号不存在")?;
                 let provider = a["provider"].as_str().ok_or("账号类型无效")?.to_string();
                 if (self.client_running)(&provider) {
-                    return Err("请结束任务并退出此提供方客户端后再切换；不会自动退出客户端");
+                    return Err("请结束任务并退出对应客户端后再切换；不会自动退出客户端");
                 }
                 if self.db.desktop.enabled && provider == "codex" {
                     return Err("请先关闭本地桌面实验接管，再启用云端原生同步");
@@ -239,7 +239,7 @@ impl Accounts {
                         cloud::action(cfg, p, path, action, body)
                     })
             }
-            _ => Err("云端操作不受支持"),
+            _ => Err("不支持此云端操作"),
         }
     }
     pub fn cloud_pi_accounts(&self) -> Value {

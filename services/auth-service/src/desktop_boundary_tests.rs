@@ -455,9 +455,9 @@ fn untitled_busy_threads_are_described_by_source_and_logged_by_id() {
         "{message}"
     );
     for part in [
-        "没有标题的对话（运行中）",
-        "没有标题的任务（automation，等待审批）",
-        "没有标题的任务（运行中）",
+        "无标题对话（运行中）",
+        "无标题任务（automation，等待审批）",
+        "无标题任务（运行中）",
     ] {
         assert!(message.contains(part), "{message}");
     }
@@ -747,7 +747,7 @@ fn a_failed_restart_is_not_retried() {
         manager
             .desktop
             .message
-            .starts_with("Codex 桌面未能以调试模式重新启动")
+            .starts_with("Codex 桌面未能以调试模式重启")
     );
     manager.desktop.undebugged = |_| Ok(Some((4343, 2)));
     manager.desktop.last_watch = 0;

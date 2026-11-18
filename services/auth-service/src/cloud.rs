@@ -118,7 +118,7 @@ impl Runtime {
                 && (self.config.paired || !self.config.bindings.is_empty())
             {
                 self.config = old;
-                return Err("已配对或存在交接记录，不能直接更换认证中心");
+                return Err("已配对或有交接记录，不能直接更换认证中心");
             }
             self.config.endpoint = url;
         }
@@ -209,8 +209,8 @@ pub fn validate_endpoint(value: &str) -> Result<String> {
 #[cfg(not(test))]
 fn safe_error(code: &str) -> &'static str {
     match code {
-        "deployment_not_configured" => "云端配置尚未完成，请先在 Cloudflare 配置存储密钥和管理登录",
-        "device_unauthorized" => "设备尚未授权或已撤销，请重新配对",
+        "deployment_not_configured" => "云端还没配好，请先在 Cloudflare 配置存储密钥和管理登录",
+        "device_unauthorized" => "设备未授权或已撤销，请重新配对",
         "pair_expired" => "配对已过期，请重新发起",
         "account_already_registered" => "云端已登记此账号，请使用已有账号或先处理原授权",
         "source_access_expired" => "本机 Access 已到期，请先在本地完成认证检查再导入",
@@ -218,10 +218,10 @@ fn safe_error(code: &str) -> &'static str {
         "issuer_unauthorized" => "官方接口拒绝当前凭据，请检查登录状态",
         "refresh_outcome_unknown" => "云端续期没有收到回应；稍后自动用同一凭据重新确认",
         "refresh_rejected" | "reauthorization_required" => {
-            "官方已拒绝此续期凭据，请重新授权此云端账号"
+            "官方已拒绝续期凭据，请重新授权此云端账号"
         }
         "issuer_rate_limited" | "retry_later" => "官方接口限流，稍后重试",
-        "maintenance_disabled" => "此云端账号自动维护已关闭",
+        "maintenance_disabled" => "此云端账号已关闭自动维护",
         "usage_credential_unavailable" => "当前凭据暂不可查询用量；查询不会触发续期",
         "identity_mismatch" => "账号身份不一致，已停止操作",
         _ => "云端请求未完成，请检查网络、配置和账号状态",
@@ -326,7 +326,7 @@ fn done(config: Config) -> Update {
 }
 pub fn pair(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<Update> {
     if cfg.paired {
-        return Err("设备已经配对");
+        return Err("设备已配对");
     }
     let proof = format!("{}{}", random_id()?, random_id()?);
     platform.vault_write(
@@ -491,7 +491,7 @@ pub fn transfer(
             Bundle::decode(platform.vault_read(&local_id)?)?
         };
         if b.metadata()?.owner != binding.owner {
-            return Err("导入来源身份已改变");
+            return Err("导入来源身份已变化");
         }
         platform.vault_write(&key, &b.encoded())?;
         b
@@ -508,7 +508,7 @@ pub fn transfer(
     persist(&cfg, &path)?;
     if let Some(n) = &native {
         if client_running(&bundle.provider) {
-            return Err("请先结束相关任务并退出该提供方的原生客户端，再恢复云端交接；无需重新登录");
+            return Err("请先结束任务并退出对应原生客户端，再恢复云端交接；无需重新登录");
         }
         let target = projection(&bundle);
         if n.cloud_read(&platform).ok().as_ref() != Some(&target) {
@@ -554,7 +554,7 @@ pub fn cancel_transfer(
     if let (Some(native), Some(saved)) = (native, platform.vault_read_optional(&key)?) {
         let original = Bundle::decode(saved)?;
         if client_running(&original.provider) {
-            return Err("请先退出此提供方客户端再恢复本地维护");
+            return Err("请先退出对应客户端再恢复本地维护");
         }
         if let Ok(current) = native.cloud_read(&platform) {
             if current != projection(&original) {
@@ -562,7 +562,7 @@ pub fn cancel_transfer(
             }
             native.cloud_restore(&platform, &current, &original)?;
         } else if native.read(&platform)?.metadata()?.owner != binding.owner {
-            return Err("本机身份已经改变，请核对后恢复");
+            return Err("本机身份已变化，请核对后恢复");
         }
     }
     cfg.bindings.remove(&local_id);
@@ -640,7 +640,7 @@ pub fn native_sync(
     }
     let expected = if activate {
         if client_running(&target.provider) {
-            return Err("请先结束任务并退出该提供方客户端，再设为云端当前账号");
+            return Err("请先结束任务并退出对应客户端，再设为云端当前账号");
         }
         native.cloud_existing(&platform)?
     } else {

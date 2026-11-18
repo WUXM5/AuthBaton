@@ -134,7 +134,7 @@ struct SwitchSheet: View {
     private var blocked: some View {
         let desktop = directory?.desktop
         return SheetScaffold(title: "现在还换不到「\(account.displayName)」",
-                             lead: "热切换开着，Codex 只能经过桌面换号；桌面现在没连上，这次不会开始。") {
+                             lead: "热切换开着，Codex 只能通过桌面换号；桌面现在没连上，这次不会开始。") {
             Handoff(from: from, to: account, blocked: attempt?.message ?? desktop?.message ?? "桌面没连上")
             VStack(alignment: .leading, spacing: 9) {
                 VStack(alignment: .leading, spacing: 3.5) {
@@ -347,7 +347,7 @@ struct RemoveSheet: View {
     let close: () -> Void
 
     var body: some View {
-        SheetScaffold(title: "从 AuthBaton 移除「\(account.displayName)」？", lead: "以后再用，需要重新导入或登录。") {
+        SheetScaffold(title: "从 AuthBaton 移除「\(account.displayName)」？", lead: "以后再用时要重新导入或登录。") {
             VStack(alignment: .leading, spacing: 9) {
                 CheckItem(kind: .you, text: "删除 AuthBaton 保存的记录、凭据和额度缓存，停止后台查询和维护。")
                 CheckItem(kind: .system, text: "原来的认证文件和官方客户端登录不变，不会注销订阅账号。")
@@ -376,7 +376,7 @@ struct RecoverSaveSheet: View {
 
     var body: some View {
         SheetScaffold(title: claudeNative ? "恢复「\(account.displayName)」的续期同步？" : "重试保存「\(account.displayName)」的续期结果？",
-                      lead: claudeNative ? "重新读取 Claude CLI 在钥匙串里的最新登录，核对是同一个账号后，重写 AuthBaton 自己的备份。"
+                      lead: claudeNative ? "重新读取 Claude CLI 在钥匙串里的最新登录，确认是同一个账号后，重写 AuthBaton 自己的备份。"
                                          : "按已保存的续期结果重试写回；不会重复发送续期请求。") {
             VStack(alignment: .leading, spacing: 9) {
                 if claudeNative {

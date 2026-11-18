@@ -637,7 +637,7 @@ fn removal_waits_for_a_running_warmup_and_leaves_nothing_behind() {
     assert!(manager.warmup.running("a"));
     assert_eq!(
         manager.remove("a", true),
-        Err("此账号正在发送预热，请在发送结束后移除")
+        Err("此账号正在发送预热，请等发完再移除")
     );
     settle(&mut manager);
     manager.remove("a", true).unwrap();

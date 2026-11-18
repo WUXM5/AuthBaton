@@ -60,7 +60,7 @@ import Vision
     func checkQuota(id: String? = nil) async { calls.append("accounts.quota \(id ?? "all")") }
     func refreshQuotaIfNeeded() async {}
     func resetHistory(accountID: String?, before: String? = nil) async throws -> ResetHistoryPage {
-        try Fixture.decoder.decode(ResetHistoryPage.self, from: Data(#"{"entries":[{"id":"s-3:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"automatic","started_at":1790265600,"finished_at":1790265602,"outcome":"reset","message":"已用 1 张重置卡；用量和剩余张数将重新查询","trigger":{"remaining_percent":63.0,"threshold_percent":2,"expiring":true},"retry":false},{"id":"s-1:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"automatic","started_at":1790179200,"finished_at":1790179202,"outcome":"reset","message":"已用 1 张重置卡；用量和剩余张数将重新查询","trigger":{"remaining_percent":1.2,"threshold_percent":2},"retry":false},{"id":"s-2:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"legacy","started_at":1790089000,"finished_at":null,"outcome":"reset","message":"旧版本的记录没保存来源和结果时间","trigger":null,"retry":false}],"next_cursor":null,"total":3}"#.utf8))
+        try Fixture.decoder.decode(ResetHistoryPage.self, from: Data(#"{"entries":[{"id":"s-3:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"automatic","started_at":1790265600,"finished_at":1790265602,"outcome":"reset","message":"已用 1 张重置卡，将重新查询用量和剩余张数","trigger":{"remaining_percent":63.0,"threshold_percent":2,"expiring":true},"retry":false},{"id":"s-1:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"automatic","started_at":1790179200,"finished_at":1790179202,"outcome":"reset","message":"已用 1 张重置卡，将重新查询用量和剩余张数","trigger":{"remaining_percent":1.2,"threshold_percent":2},"retry":false},{"id":"s-2:0","account_id":"synthetic-p","account_label":"Codex · 个人","source":"legacy","started_at":1790089000,"finished_at":null,"outcome":"reset","message":"旧版本的记录没保存来源和结果时间","trigger":null,"retry":false}],"next_cursor":null,"total":3}"#.utf8))
     }
     func clearLogin() {}
     func cancelLogin() async {}
@@ -168,7 +168,7 @@ enum Fixture {
              "expires_at": now - 6.3 * 86400, "refresh_expires_at": now + 6.7 * 86400, "next_check": now - 6.4 * 86400, "quota": [],
              "renewal_mode": "claude_coordinated",
              "warmup": ["enabled": true, "hour": 6, "running": false, "last": ["at": now - 3.2 * 3600, "ok": true, "message": "已发送，5 小时窗口开始计时"], "next": now + 1.8 * 3600],
-             "login_notice": ["state": "normal", "expires_at": now + 6.7 * 86400, "message": "当前不在重新登录提醒窗口内", "source": "本机登录记录"],
+             "login_notice": ["state": "normal", "expires_at": now + 6.7 * 86400, "message": "当前不在重新登录提醒时段内", "source": "本机登录记录"],
              "usage": ["state": "ready", "message": "额度已检查", "checked_at": now - 200, "attempted_at": now - 201, "next_update": now + 100, "refreshing": false,
                        "windows": [["label": "5 小时窗口", "used_percent": 14, "resets_at_iso": iso(3.7 * 3600)],
                                    ["label": "独立窗口", "used_percent": 0, "scope": "feature_x", "kind": "feature"],
@@ -184,7 +184,7 @@ enum Fixture {
                                                     ["kind": "full", "limits": ["5 小时额度", "每周额度"], "remaining": 1, "ends_at": iso(24 * 86400)]]]]],
         ]
         accounts[1]["reset"] = ["request_id": "synthetic-req", "credit_id": "synthetic-used", "expires_at": iso(20 * 86400), "outcome": "reset",
-                                "message": "已用 1 张重置卡；用量和剩余张数将重新查询", "unresolved": false, "started_at": now - 5 * 86400]
+                                "message": "已用 1 张重置卡，将重新查询用量和剩余张数", "unresolved": false, "started_at": now - 5 * 86400]
         var data: [String: Any] = [
             "accounts": accounts, "busy": false, "checks_blocked": false, "recovery_needed": false, "maintenance_running": true, "notice": NSNull(),
             "desktop": ["enabled": true, "port": 9522, "connected": false, "managed": false, "busy": false, "message": "调试端口未监听；请使用调试模式启动 Codex 桌面"],
@@ -376,7 +376,7 @@ enum Fixture {
         }
         return data
     }
-    static let snapshot = #"{"checked_at":1790649075,"service_version":"0.15.0","verification":"仅检查本地凭据和 Claude CLI 登录状态，未请求模型，也未验证刷新能力。","providers":[{"id":"codex","name":"Codex","state":"configured","auth_kind":"ChatGPT OAuth","summary":"本地 access token 尚未到期","source":"~/.codex/auth.json","expires_at":1790778068,"details":[]},{"id":"claude","name":"Claude Code","state":"configured","auth_kind":"Claude 订阅","summary":"Claude CLI 报告已登录","source":"/opt/homebrew/bin/claude","expires_at":null,"details":[]},{"id":"pi","name":"pi · OpenAI Codex","state":"configured","auth_kind":"AuthBaton 本机服务","summary":"已安装统一账号插件","source":"~/.pi/agent/auth.json","expires_at":null,"details":[]}]}"#
+    static let snapshot = #"{"checked_at":1790649075,"service_version":"0.15.0","verification":"仅检查本地凭据和 Claude CLI 登录状态，未请求模型，也未验证刷新能力。","providers":[{"id":"codex","name":"Codex","state":"configured","auth_kind":"ChatGPT OAuth","summary":"本地 access token 尚未到期","source":"~/.codex/auth.json","expires_at":1790778068,"details":[]},{"id":"claude","name":"Claude Code","state":"configured","auth_kind":"Claude 订阅","summary":"Claude CLI 显示已登录","source":"/opt/homebrew/bin/claude","expires_at":null,"details":[]},{"id":"pi","name":"pi · OpenAI Codex","state":"configured","auth_kind":"AuthBaton 本机服务","summary":"已安装统一账号插件","source":"~/.pi/agent/auth.json","expires_at":null,"details":[]}]}"#
 
     // `action` is the desktop's report on the latest switch attempt, as the service publishes it.
     @MainActor static func load(_ scenario: String, into state: ServiceController, action: [String: Any]? = nil) {
@@ -1389,7 +1389,7 @@ extension NSWindow {
         check.expect(Driver.visible("在用 #2 work") && Driver.visible("会话一致"), "菜单栏写桌面在用的账号和同步状态")
         Driver.press("下一个", .exact)
         check.visible("换上 #1 nova@example", "菜单栏「下一个」先在行内确认")
-        check.visible("换上时会替它打开", "菜单栏的确认同样写明会替它打开 Bypass")
+        check.visible("换上时会顺带打开", "菜单栏的确认同样写明会顺带打开 Bypass")
         state.calls.removeAll()
         Driver.press("换上", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"account\":\"h-nova\"") == true, "菜单栏确认后按 handle 换上")

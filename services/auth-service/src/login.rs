@@ -205,13 +205,13 @@ impl LoginManager {
         {
             Ok(())
         } else {
-            Err("登录已经结束或已被新的尝试替代，请刷新状态")
+            Err("登录已结束或已被新登录替代，请刷新状态")
         }
     }
 
     pub fn cancel(&mut self, id: &str) -> Result<(), &'static str> {
         self.check_attempt(id)?;
-        let attempt = self.running.as_mut().ok_or("没有运行中的登录")?;
+        let attempt = self.running.as_mut().ok_or("没有进行中的登录")?;
         if attempt.cancelling {
             return Ok(());
         }
@@ -230,7 +230,7 @@ impl LoginManager {
         }
         self.finish(
             "stopped",
-            "本次登录进程已停止；若授权刚刚完成，请刷新本地状态确认。停止不会撤销已保存的登录。",
+            "本次登录已停止。若刚完成授权，请刷新本地状态确认。停止不会撤销已保存的登录。",
         );
         Ok(())
     }
@@ -243,15 +243,15 @@ impl LoginManager {
             || !code.is_ascii()
             || code.chars().any(char::is_whitespace)
         {
-            return Err("请输入官方页面提供的完整授权代码");
+            return Err("请输入官方页面提供的完整授权码");
         }
-        let attempt = self.running.as_mut().ok_or("没有运行中的登录")?;
+        let attempt = self.running.as_mut().ok_or("没有进行中的登录")?;
         attempt
             .input
             .write_all(code.as_bytes())
             .and_then(|_| attempt.input.write_all(b"\n"))
             .and_then(|_| attempt.input.flush())
-            .map_err(|_| "无法提交授权代码")?;
+            .map_err(|_| "无法提交授权码")?;
         self.state.as_mut().unwrap().message = "已交给官方 CLI，正在等待登录结果…".into();
         Ok(())
     }
@@ -296,14 +296,14 @@ impl LoginManager {
         if Instant::now() >= attempt.deadline {
             self.finish(
                 "stopped",
-                "登录等待已结束；请刷新本地状态后重试。停止不会撤销已保存的登录。",
+                "等待登录已结束，请刷新本地状态后重试。停止不会撤销已保存的登录。",
             );
         } else if output_closed && let Ok(Some(status)) = attempt.child.try_wait() {
             // Completion notifications are authoritative; drain stdout through EOF first.
             if self.state.as_ref().unwrap().provider == "claude" && status.success() {
                 self.finish("succeeded", "官方 Claude CLI 已完成登录并保存凭据。");
             } else if attempt.cancelling {
-                self.finish("stopped", "登录进程已停止；请刷新本地状态确认最终结果。");
+                self.finish("stopped", "登录已停止，请刷新本地状态确认结果。");
             } else {
                 self.finish(
                     "failed",
@@ -350,7 +350,7 @@ impl LoginManager {
                     attempt.deadline = Instant::now() + Duration::from_secs(900);
                     let state = self.state.as_mut().unwrap();
                     state.phase = "waiting".into();
-                    state.message = "在官方页面输入授权码，确认你希望在本机使用的账号。".into();
+                    state.message = "在官方页面输入授权码，确认要在本机使用的账号。".into();
                     state.verification_url = Some("https://auth.openai.com/codex/device".into());
                     state.user_code = Some(code.into());
                 } else {
@@ -362,20 +362,20 @@ impl LoginManager {
             }
             Some(3) if value["result"]["status"] == "canceled" => self.finish(
                 "cancelled",
-                "官方工具已取消本次授权等待；已保存的登录不会被撤销。",
+                "官方工具已取消等待授权，不会撤销已保存的登录。",
             ),
-            Some(3) => self.finish("stopped", "授权等待已结束；请刷新本地状态确认最终结果。"),
+            Some(3) => self.finish("stopped", "等待授权已结束，请刷新本地状态确认结果。"),
             _ if value["method"] == "account/login/completed" => {
                 let params = &value["params"];
                 if params["loginId"].as_str() == attempt.login_id.as_deref()
                     && attempt.login_id.is_some()
                 {
                     if params["success"] == true {
-                        self.finish("succeeded", "官方 Codex 已完成登录并保存凭据。请在桌面 App 中确认账号；必要时重新启动桌面 App。");
+                        self.finish("succeeded", "官方 Codex 已完成登录并保存凭据。请在桌面 App 中确认账号，必要时重启。");
                     } else if attempt.cancelling {
                         self.finish(
                             "cancelled",
-                            "官方工具已取消本次授权等待；已保存的登录不会被撤销。",
+                            "官方工具已取消等待授权，不会撤销已保存的登录。",
                         );
                     } else {
                         self.finish("failed", "本次授权未完成。请检查官方页面并重试。");

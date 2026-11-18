@@ -396,7 +396,7 @@ private struct ClaudeSide: View {
             .font(.system(size: 11))
             .padding(.top, 10)
             HStack(spacing: 7) {
-                Button("本地检查") { check(online: false) }.buttonStyle(.pill(.secondary)).help("只读本机凭据，不联网")
+                Button("本地检查") { check(online: false) }.buttonStyle(.pill(.secondary)).help("只查本机凭据，不联网")
                     .disabled(checkDisabled)
                 Button("认证检查") { check(online: true) }.buttonStyle(.pill(.secondary)).help("联网验证，必要时和官方客户端协同续期")
                     .disabled(checkDisabled || account.state == "unsaved")
@@ -441,7 +441,7 @@ private struct ClaudeSide: View {
                         Text(message).font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
-                    Text("还没有这个账号的规则；到「换号与重置」保存一次就会加入。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Text("这个账号还没有规则，到「换号与重置」保存一次就会加入。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
                 if !strategy.config.enabled {
                     Text("自动换号与重置现在关着。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -498,7 +498,7 @@ private struct NextToggle: View {
             .labelsHidden().toggleStyle(.switch).controlSize(.small)
             .disabled(service.accountBusy || service.directory?.claudeDesktop?.busy == true)
         }
-        .help("Claude 桌面的「下一个账号」按编号轮；关掉后跳过这个账号，仍可直接换上")
+        .help("Claude 桌面的「下一个账号」按编号轮换；关掉后跳过这个账号，仍可直接换上")
     }
 }
 

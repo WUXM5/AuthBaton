@@ -30,7 +30,7 @@ impl Accounts {
     /// the person chose, or without a choice the official next grant, as a rule would.
     pub fn next_grant(&self, id: &str, kind: Option<&str>) -> Result<String> {
         if self.db.accounts[self.index(id)?].provider != "claude" {
-            return Err("只有 Claude 账号按官方的下一张使用重置卡");
+            return Err("只有 Claude 账号能用官方的下一张重置卡");
         }
         match kind {
             None => self.quota.automatic_credit(id, now()),
@@ -69,7 +69,7 @@ impl Accounts {
             || account.pending_profile.is_some()
             || matches!(account.state.as_str(), "unsaved" | "uncertain")
         {
-            return Err("请先完成此账号的认证保存");
+            return Err("请先保存此账号的认证");
         }
         self.quota.poll(now());
         if self.quota.is_running(id) {

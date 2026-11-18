@@ -12,7 +12,7 @@ impl Accounts {
                 && self.db.desktop.selected.is_some()
                 && (self.client_running)("codex")
             {
-                return Err("更改已接管桌面的端口前，请先退出 Codex 桌面");
+                return Err("要改已接管桌面的端口，请先退出 Codex 桌面");
             }
         }
         if enabled == Some(false)
@@ -111,7 +111,7 @@ impl Accounts {
     // it: it starts once they finish instead of being refused.
     pub(super) fn request_desktop_switch(&mut self, id: &str) -> Result<()> {
         if self.automation.job.is_some() || self.db.automation.run.is_some() {
-            return Err("自动额度流程正在处理或待核对；请先停止并核对该流程");
+            return Err("自动额度流程正在处理或待核对；请先停止并核对");
         }
         if self.storage_fault.get() {
             return Err("账号数据库不可写，已停止切换");
@@ -120,7 +120,7 @@ impl Accounts {
             return Err("登录或云端操作正在进行，请完成后再切换");
         }
         if self.db.switch.is_some() {
-            return Err("请先恢复上次切换的当前登录状态");
+            return Err("请先恢复上次切换的登录状态");
         }
         if self.desktop.switching().is_some() {
             return Err("正在切换账号，请等这次切换结束");
@@ -212,7 +212,7 @@ impl Accounts {
         }
         if (self.desktop.other_clients)() {
             return Err(
-                "VS Code 的 Codex 插件或独立 Codex CLI 正在运行；请在 VS Code 里停用该插件（或退出 VS Code）并退出 CLI 后再切换",
+                "VS Code 的 Codex 插件或独立 Codex CLI 正在运行；请停用插件（或退出 VS Code）并退出 CLI 后再切换",
             );
         }
         let index = self.index(id)?;
@@ -256,7 +256,7 @@ impl Accounts {
         let previous_bundle = Bundle::decode(self.platform.vault_read(&previous)?)?;
         let old_owner = previous_bundle.metadata()?.owner;
         if !old.same_owner(&previous_bundle)? && !old.same_owner(&target)? {
-            return Err("原生账号已由其他操作改变，未覆盖登录");
+            return Err("原生账号已被其他操作改变，未覆盖登录");
         }
         self.save()?;
         let logged_in =
@@ -302,7 +302,7 @@ impl Accounts {
                     return Err("默认文件在切换中被其他程序改动；桌面已是新账号，稍后重新核对");
                 }
                 if native.read(&platform)? != committed {
-                    return Err("默认文件写入没有通过读回核对；稍后重新核对");
+                    return Err("默认文件写入后读回核对未通过；稍后重新核对");
                 }
                 value["metadata"] = serde_json::to_value(committed.metadata()?).unwrap();
                 Ok(value)
@@ -382,7 +382,7 @@ impl Accounts {
                                 a.automatic = true;
                                 a.next_check = now() + 60;
                                 a.message =
-                                    "桌面与全局默认已切换；由 AuthBaton 维护桌面凭据".into();
+                                    "桌面与全局默认已切换；桌面凭据由 AuthBaton 维护".into();
                                 a.state = "saved".into();
                             }
                             self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();
@@ -489,7 +489,7 @@ impl Accounts {
                         self.desktop.connected = false;
                         self.desktop.pending_switch = Some((id.clone(), now() + 60));
                         self.desktop.last_poll = 0;
-                        self.desktop.message = "桌面已以调试模式重启，正在连接后切换".into();
+                        self.desktop.message = "桌面已以调试模式重启，正在连接并切换".into();
                         self.desktop.action_feedback(&id, "relaunching");
                     }
                     Err(message) => {
@@ -501,14 +501,14 @@ impl Accounts {
                     Ok(()) => {
                         self.desktop.target = None;
                         self.desktop.last_poll = 0;
-                        self.desktop.message = "Codex 桌面已以调试模式重新启动".into();
+                        self.desktop.message = "Codex 桌面已以调试模式重启".into();
                     }
                     Err(message) => {
                         self.desktop_log("restart_failed", None, message);
                         // Never retry in a loop: the person restarts it once instead.
                         self.desktop.restart_failed = true;
                         self.desktop.message =
-                            format!("Codex 桌面未能以调试模式重新启动：{message}");
+                            format!("Codex 桌面未能以调试模式重启：{message}");
                     }
                 },
                 Ok(Completion::Reply(result)) => {
@@ -601,7 +601,7 @@ impl Accounts {
             if now() >= deadline {
                 self.desktop.pending_switch = None;
                 self.desktop.message = if self.desktop.connected {
-                    "等其他检查结束超时；切换未开始，可以再试一次".into()
+                    "等待其他检查结束超时；切换未开始，可以再试一次".into()
                 } else {
                     format!("桌面没有连上：{}；切换未开始", self.desktop.message)
                 };
@@ -703,7 +703,7 @@ impl Accounts {
             None,
             "桌面没带调试端口，启动完成且没有任务，以调试模式重开",
         );
-        self.desktop.message = "Codex 桌面没有开启热切换，正在以调试模式重新启动".into();
+        self.desktop.message = "Codex 桌面没有开启热切换，正在以调试模式重启".into();
         self.desktop.job = Some(std::thread::spawn(move || {
             Completion::Restart(relaunch(port))
         }));
@@ -712,7 +712,7 @@ impl Accounts {
     fn start_desktop_refresh(&mut self, id: &str) {
         let result = (|| -> Result<()> {
             if !self.desktop_owns(id) {
-                return Err("当前登录由其他 Codex 客户端占用，桌面续期已延后");
+                return Err("当前登录被其他 Codex 客户端占用，桌面续期已延后");
             }
             let index = self.index(id)?;
             if matches!(
@@ -793,7 +793,7 @@ impl Accounts {
 fn validate_applied(value: &Value, owner: &str) -> Result<()> {
     if value["confirmed"] != true || value["owner"] != owner || value["mode"] != "chatgptAuthTokens"
     {
-        return Err("桌面凭据可能已应用，但登录完成尚未确认");
+        return Err("桌面凭据可能已应用，但尚未确认登录完成");
     }
     Ok(())
 }
