@@ -486,6 +486,25 @@ impl Runtime {
         };
         observation.fresh(time).then_some(observation)
     }
+    /// Remaining percent of a Claude account's Fable week, from a successful query no older than
+    /// the strategy's own readings (300 s). None where the account reports no Fable limit.
+    pub fn fable_remaining(&self, id: &str, time: u64) -> Option<f64> {
+        let entry = self.entries.get(id).filter(|e| e.state == "ready")?;
+        entry
+            .checked_at
+            .filter(|&at| at <= time && time - at <= 300)?;
+        entry
+            .windows
+            .iter()
+            .filter(|w| {
+                w.kind.as_deref() == Some("model")
+                    && w.scope
+                        .as_deref()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("fable"))
+            })
+            .map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0))
+            .reduce(f64::min)
+    }
     /// A successful query of the last interval that nothing is refreshing.
     fn fresh(&self, id: &str, time: u64) -> Option<&Snapshot> {
         self.entries.get(id).filter(|entry| {

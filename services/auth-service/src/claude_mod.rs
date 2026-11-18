@@ -28,6 +28,10 @@ pub struct Report {
     pub limited: bool,
     #[serde(default)]
     pub windows: Vec<Window>,
+    /// The model a request of the session named (v0.26), repeated at most once a minute while it
+    /// stays the same. Only whether it is a Fable model is kept.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 #[derive(Deserialize)]
 pub struct Window {
@@ -43,7 +47,17 @@ impl Report {
             .map(|w| w.used)
             .fold(0.0, f64::max)
     }
+    /// The request named a Fable model (`claude-fable-5-2`, or the alias `fable`).
+    pub fn fable(&self) -> bool {
+        self.model
+            .as_deref()
+            .is_some_and(|m| m.len() <= 128 && m.to_ascii_lowercase().contains("fable"))
+    }
 }
+
+/// How long after its last Fable request a Claude Code session on the default login still counts
+/// as using Fable: the session reports each model at least once a minute while it sends requests.
+pub const FABLE_RECENT: u64 = 600;
 
 /// The last change of the default Claude login that running sessions will pick up.
 #[derive(Clone, Serialize)]
@@ -57,10 +71,18 @@ pub struct Runtime {
     pub change: Option<Change>,
     pub last_query: u64,
     pub last_report: Option<u64>,
+    /// When a Claude Code session on the default login last sent a request naming Fable.
+    pub fable_at: Option<u64>,
 }
 impl Runtime {
     pub fn snapshot(&self) -> Value {
-        json!({"last_report_at": self.last_report, "change": self.change})
+        json!({"last_report_at": self.last_report, "change": self.change, "fable_at": self.fable_at})
+    }
+    /// A Claude Code session on the default login is using Fable: while it is, the strategy holds
+    /// the default account's Fable quota to its line as well.
+    pub fn fable_in_use(&self, time: u64) -> bool {
+        self.fable_at
+            .is_some_and(|at| at <= time && time - at <= FABLE_RECENT)
     }
 }
 

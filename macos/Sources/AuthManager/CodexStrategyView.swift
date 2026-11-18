@@ -57,7 +57,7 @@ struct AutomationPage: View {
                     }
                     limitNotice
                     ForEach(["codex", "claude"], id: \.self) { provider in lane(provider, status: status) }
-                    Text("只看 5 分钟内成功查到的主额度（Claude 是 5 小时和 7 天额度）；独立额度和查询失败都不算见底。每轮见底最多重置一次，换号后这一轮就结束；额度回到见底线以上，才开始下一轮。重置卡离到期不到 30 分钟时，只要额度用过就自动用掉，不等见底（只换号的账号除外）。完全退出应用后停止。")
+                    Text("只看 5 分钟内成功查到的主额度（Claude 是 5 小时和 7 天额度）；独立额度和查询失败都不算见底，只有 Claude 的 Fable 额度例外：Claude Code 正在用 Fable 时，它到了见底线也换号，但不用重置卡。每轮见底最多重置一次，换号后这一轮就结束；额度回到见底线以上，才开始下一轮。重置卡离到期不到 30 分钟时，只要额度用过就自动用掉，不等见底（只换号的账号除外）。完全退出应用后停止。")
                         .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 3.5)
                 }
@@ -102,6 +102,8 @@ struct AutomationPage: View {
             + (draft.accounts.contains { $0.participate && $0.order.resets }
                ? "设成先重置、先换号或只重置的账号见底时，或者重置卡离到期不到 30 分钟时，会自动用掉重置卡，不逐次弹窗。\n\n" : "没有账号会自动用重置卡。\n\n")
             + (draft.accounts.contains { $0.participate && tool(of: $0.id) == "claude" } ? "参与的 Claude 账号会用掉官方给的重置卡。\n\n" : "")
+            + (draft.accounts.contains { $0.participate && $0.order.switches && tool(of: $0.id) == "claude" }
+               ? "Claude Code 正在用 Fable 时，当前 Claude 账号的 Fable 额度到了见底线也会换号，只换到 Fable 额度也高于见底线的账号。\n\n" : "")
             + "结果不明确时会停下并留下记录；随时可以关闭。"
     }
 

@@ -1521,6 +1521,12 @@ impl Accounts {
     pub fn mod_report(&mut self, report: crate::claude_mod::Report) -> Value {
         let time = now();
         self.claude_mod.last_report = Some(time);
+        // Fable use that starts after a quiet spell is looked at at once: the last reading may
+        // already have the account's Fable quota at its line, which only counts while in use.
+        let fable_started = report.fable() && !self.claude_mod.fable_in_use(time);
+        if report.fable() {
+            self.claude_mod.fable_at = Some(time);
+        }
         let current = self
             .db
             .accounts
@@ -1536,7 +1542,9 @@ impl Accounts {
                 .accounts
                 .iter()
                 .find(|r| r.id == *id && r.participate)
-            && (report.limited || report.primary_used() >= 100.0 - f64::from(rule.below))
+            && (report.limited
+                || report.primary_used() >= 100.0 - f64::from(rule.below)
+                || (fable_started && rule.order.switches()))
             && time >= self.claude_mod.last_query + 30
         {
             self.claude_mod.last_query = time;

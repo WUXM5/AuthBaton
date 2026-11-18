@@ -421,12 +421,12 @@ fn account_group_changes_do_not_reorder_global_candidate_priority() {
     let usage = m.quota.automation_observation("a", now()).unwrap();
     assert_eq!(
         m.strategy_action(&m.db.accounts[0], &usage),
-        Action::Switch("c".into())
+        crate::automation::Action::Switch("c".into())
     );
     m.db.automation.config.accounts[1].order = Order::SwitchFirst;
     assert_eq!(
         m.strategy_action(&m.db.accounts[0], &usage),
-        Action::Switch("c".into())
+        crate::automation::Action::Switch("c".into())
     );
     m.db.automation.config.accounts.swap(1, 2);
     assert_eq!(
@@ -1334,6 +1334,7 @@ fn depleted_claude_switches_in_place_beside_running_clients() {
             kind: "five_hour".into(),
             used,
         }],
+        model: None,
     };
     let reply = m.mod_report(report(false, 97.0));
     assert_eq!(m.claude_mod.last_query, 0);
@@ -1375,6 +1376,146 @@ fn depleted_claude_switches_in_place_beside_running_clients() {
     m.automation_tick();
     assert!(native.read(&f.platform).unwrap() == d);
     assert!(m.automation.account_messages["c"].contains("已换走"));
+}
+
+// The real shape of November 2026: the Fable week is a model-scoped weekly limit.
+fn fable_usage(week_used: u64, fable_used: u64) -> Value {
+    let mut usage = claude_usage(week_used);
+    usage["limits"] = json!([{"group":"weekly","percent":fable_used,"resets_at":"2099-01-03T00:00:00Z",
+        "scope":{"model":{"display_name":"Fable"}}}]);
+    usage
+}
+fn fable_spent(_: &str, _: Option<&str>, body: Option<&Value>, _: bool) -> Result<(u16, Value)> {
+    assert!(body.is_none(), "quota polling must never claim");
+    Ok((200, fable_usage(40, 98)))
+}
+fn fable_also_spent(_: &str, _: Option<&str>, _: Option<&Value>, _: bool) -> Result<(u16, Value)> {
+    Ok((200, fable_usage(10, 99)))
+}
+fn fable_left(_: &str, _: Option<&str>, _: Option<&Value>, _: bool) -> Result<(u16, Value)> {
+    Ok((200, fable_usage(10, 50)))
+}
+
+#[test]
+fn the_fable_week_moves_the_claude_login_only_while_claude_code_uses_fable() {
+    fn no_claim(
+        _: &crate::claude_resets::Access,
+        _: &crate::claude_resets::Request,
+    ) -> Result<(u16, Value)> {
+        panic!("the Fable line must never spend a reset card")
+    }
+    let f = Fixture::new();
+    let mut m = f.manager();
+    let native = f.native();
+    let mut bundles = vec![];
+    for id in ["c", "d", "e"] {
+        let mut bundle = claude(id, &format!("SYNTHETIC_REFRESH_{id}"));
+        bundle.credential["expiresAt"] = json!((now() + 3600) * 1000);
+        f.platform.vault_write(id, &bundle.encoded()).unwrap();
+        m.db.accounts.push(account(id, &bundle, id == "c"));
+        bundles.push(bundle);
+    }
+    native.initialize(&f.platform, &bundles[0]).unwrap();
+    m.native_override = Some(native.clone());
+    m.client_running = |_| true;
+    m.desktop.connected = false;
+    m.claude_reset_transport = Some(no_claim);
+    m.save().unwrap();
+    let transports: [crate::maintenance::Transport; 3] = [fable_spent, fable_also_spent, fable_left];
+    let load = |m: &mut Accounts| {
+        for ((id, bundle), transport) in ["c", "d", "e"].iter().zip(&bundles).zip(transports) {
+            m.quota.claude_transport = Some(transport);
+            m.quota.start_claude(id, crate::quota::ClaudeAccess::from_bundle(bundle), None, now());
+            m.quota.stop(now());
+        }
+    };
+    load(&mut m);
+    assert_eq!(m.quota.fable_remaining("c", now()), Some(2.0));
+    assert_eq!(m.quota.fable_remaining("e", now()), Some(50.0));
+    // c resets first: a card is usable, its main quota is 60% left, its Fable week 2%.
+    let rule = |id: &str, order| Rule {
+        id: id.into(),
+        order,
+        participate: true,
+        below: 3,
+    };
+    m.configure_strategy(
+        Config {
+            enabled: true,
+            accounts: vec![
+                rule("c", Order::ResetFirst),
+                rule("d", Order::SwitchOnly),
+                rule("e", Order::SwitchOnly),
+            ],
+        },
+        true,
+    )
+    .unwrap();
+    let tick = |m: &mut Accounts| {
+        m.automation.next_check = 0;
+        m.automation_tick();
+    };
+    // No session has named Fable yet, then only Opus: the Fable week counts for nothing.
+    tick(&mut m);
+    assert!(native.read(&f.platform).unwrap() == bundles[0]);
+    assert!(m.automation.account_messages["c"].contains("额度充足"));
+    let report = |model: &str| crate::claude_mod::Report {
+        limited: false,
+        windows: vec![],
+        model: Some(model.into()),
+    };
+    m.mod_report(report("claude-opus-5-5"));
+    assert!(m.claude_mod.fable_at.is_none() && m.claude_mod.last_query == 0);
+    tick(&mut m);
+    assert!(native.read(&f.platform).unwrap() == bundles[0]);
+    // A reset-only rule never moves the login for Fable, and Fable never spends its card.
+    m.db.automation.config.accounts[0].order = Order::ResetOnly;
+    m.mod_report(report("claude-fable-5-2"));
+    let asked = m.claude_mod.last_query;
+    assert!(m.claude_mod.fable_at.is_some() && asked == 0, "a reset-only rule has nothing to look at");
+    tick(&mut m);
+    assert!(native.read(&f.platform).unwrap() == bundles[0]);
+    assert!(m.automation.account_messages["c"].contains("只重置"));
+    // Fable use that has gone quiet for over ten minutes no longer counts.
+    m.db.automation.config.accounts[0].order = Order::ResetFirst;
+    m.claude_mod.fable_at = Some(now() - crate::claude_mod::FABLE_RECENT - 1);
+    tick(&mut m);
+    assert!(native.read(&f.platform).unwrap() == bundles[0]);
+    assert!(m.automation.account_messages["c"].contains("额度充足"));
+    // A session starts on Fable again: the GET comes forward once, and the next check moves the
+    // login past d (its Fable week is under its own line) to e, spending no card.
+    m.mod_report(report("fable"));
+    let asked = m.claude_mod.last_query;
+    assert!(asked > 0);
+    m.mod_report(report("claude-fable-5-2"));
+    assert_eq!(m.claude_mod.last_query, asked, "Fable use already known brings nothing forward");
+    load(&mut m);
+    tick(&mut m);
+    assert!(native.read(&f.platform).unwrap() == bundles[2]);
+    assert!(m.db.accounts[2].native && !m.db.accounts[0].native);
+    assert!(m.db.reset_attempts.is_empty() && m.reset_job.is_none());
+    assert_eq!(m.db.automation.latches["c"].kind, LatchKind::Switch);
+    assert!(m.automation.account_messages["c"].contains("Fable 额度到了见底线"));
+    assert!(m.automation.account_messages["c"].contains("30 秒内"));
+    // c's main quota is above the line, so the next reading ends its episode; with Fable still in
+    // use it is no target for e either way.
+    load(&mut m);
+    tick(&mut m);
+    assert!(!m.db.automation.latches.contains_key("c"));
+    assert!(native.read(&f.platform).unwrap() == bundles[2]);
+    // With main quota under the line, Fable in use rules out d and c; without it d is next.
+    let depleted = crate::automation::Observation {
+        remaining: 1.0,
+        checked_at: now(),
+        expires_at: now() + 3600,
+    };
+    assert_eq!(m.strategy_action(&m.db.accounts[2], &depleted), crate::automation::Action::None);
+    assert!(m.automation.account_messages["e"].contains("额度充足"));
+    m.claude_mod.fable_at = None;
+    assert_eq!(
+        m.strategy_action(&m.db.accounts[2], &depleted),
+        crate::automation::Action::Switch("c".into())
+    );
 }
 
 #[test]
