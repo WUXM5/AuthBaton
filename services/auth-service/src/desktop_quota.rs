@@ -24,6 +24,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CLAUDE_CODE_CLIENT: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const BASE_SCOPE: &str = "user:inference user:file_upload user:profile";
+/// The Code tab's Claude Code login adds this to the base scope. A new account gets it from its first
+/// Code-mode conversation; the base-scope one may never come, and Claude 桌面 itself falls back to it
+/// for the same usage read.
+const SESSIONS_SCOPE: &str = "user:sessions:claude_code";
 /// Do not send an access token that is about to expire; the query does not refresh it.
 const MIN_REMAINING: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(300);
@@ -552,7 +556,7 @@ fn run_job(job: Job, shared: &Shared, fetch: Fetch) {
                 }
                 Query::NoToken => {
                     row.state = "no_token";
-                    row.message = "这个桌面登录里没有还能用的 Claude Code 访问令牌";
+                    row.message = "这个账号还没在 Claude 桌面用过 Code 模式";
                     row.windows.clear();
                     row.unauthorized = false;
                     row.retry_at = None;
@@ -653,7 +657,7 @@ fn access_from_file(key: &KeyMaterial, file: &Path, account: &str) -> Option<Str
         return None;
     }
     let now = unix_millis();
-    let mut best: Option<(u64, String)> = None;
+    let mut best: Option<(Rank, String)> = None;
     for name in ["oauth:tokenCacheV2", "oauth:tokenCache"] {
         let Some(encoded) = value.get(name).and_then(Value::as_str) else {
             continue;
@@ -671,32 +675,53 @@ fn access_from_file(key: &KeyMaterial, file: &Path, account: &str) -> Option<Str
             continue;
         };
         for (cache_key, entry) in object {
-            let Some(exp) = candidate_expiry(&cache_key, &entry, account, now) else {
+            let Some(rank) = candidate(&cache_key, &entry, account, now) else {
                 continue;
             };
             let Some(token) = entry.get("token").and_then(Value::as_str) else {
                 continue;
             };
-            if best.as_ref().is_none_or(|(best_exp, _)| exp > *best_exp) {
-                best = Some((exp, token.to_string()));
+            if best.as_ref().is_none_or(|(have, _)| rank > *have) {
+                best = Some((rank, token.to_string()));
             }
         }
     }
     best.map(|(_, token)| token)
 }
 
-fn candidate_expiry(key: &str, entry: &Value, account: &str, now: u64) -> Option<u64> {
+/// How a usable access compares: a base-scope one before a Code tab one, as Claude 桌面 picks
+/// for its own usage read, then the later expiry.
+type Rank = (bool, u64);
+
+fn candidate(key: &str, entry: &Value, account: &str, now: u64) -> Option<Rank> {
     let (client, scope, owner) = parse_cache_key(key)?;
-    if client != CLAUDE_CODE_CLIENT || scope != BASE_SCOPE {
+    if client != CLAUDE_CODE_CLIENT {
         return None;
     }
+    let base = code_scope(scope)?;
     if let Some(owner) = owner
         && owner != account
     {
         return None;
     }
     let exp = as_millis(entry.get("expiresAt").or_else(|| entry.get("expires_at"))?)?;
-    (exp > now.saturating_add(MIN_REMAINING.as_millis() as u64)).then_some(exp)
+    (exp > now.saturating_add(MIN_REMAINING.as_millis() as u64)).then_some((base, exp))
+}
+
+/// Claude Code's base scope (true) or the Code tab's, base plus sessions (false). Compared as sets:
+/// Claude 桌面 writes the same words in different orders for different uses.
+fn code_scope(scope: &str) -> Option<bool> {
+    let words = |text: &str| {
+        let mut list: Vec<String> = text.split(' ').filter(|w| !w.is_empty()).map(str::to_owned).collect();
+        list.sort_unstable();
+        list.dedup();
+        list
+    };
+    let have = words(scope);
+    if have == words(BASE_SCOPE) {
+        return Some(true);
+    }
+    (have == words(&format!("{BASE_SCOPE} {SESSIONS_SCOPE}"))).then_some(false)
 }
 
 fn parse_cache_key(key: &str) -> Option<(&str, &str, Option<&str>)> {
@@ -1193,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_keeps_only_a_fresh_base_scope_access() {
+    fn selection_keeps_a_fresh_claude_code_access_base_scope_first() {
         let account = "aaaaaaaa-0000-4000-8000-000000000001";
         let now = 1_700_000_000_000u64;
         let fresh = now + 120_000;
@@ -1201,33 +1226,44 @@ mod tests {
         let key = format!(
             "acct:{account}|{CLAUDE_CODE_CLIENT}:org:https://api.anthropic.com:{BASE_SCOPE}"
         );
-        let sessions = format!("{key} user:sessions:claude_code");
+        let sessions = format!("{key} {SESSIONS_SCOPE}");
+        let desktop = "acct:aaaaaaaa-0000-4000-8000-000000000001|89355bc3-cbfd-4382-905b-976645cad410:org:https://api.anthropic.com:user:inference";
         let body = json!({
             &key: {"token": "keep-me", "expiresAt": fresh},
             &sessions: {"token": "sessions", "expiresAt": fresh + 1},
             "acct:other-account|9d1c250a-e61b-44d9-88ed-5944d1962f5e:org:https://api.anthropic.com:user:inference user:file_upload user:profile": {
                 "token": "other", "expiresAt": fresh
             },
-            "acct:aaaaaaaa-0000-4000-8000-000000000001|89355bc3-cbfd-4382-905b-976645cad410:org:https://api.anthropic.com:user:inference": {
-                "token": "desktop", "expiresAt": fresh
-            }
+            desktop: {"token": "desktop", "expiresAt": fresh}
         });
+        // The base scope wins over a later-expiring Code tab one; another account's and Claude 桌面's own never count.
         assert_eq!(chosen(&body, account, now).as_deref(), Some("keep-me"));
         let expiring = json!({&key: {"token": "soon", "expiresAt": soon}});
         assert!(chosen(&expiring, account, now).is_none());
+        // A new account after its first Code-mode conversation: only the Code tab's, in any word order.
         let only_sessions = json!({&sessions: {"token": "sessions", "expiresAt": fresh}});
-        assert!(chosen(&only_sessions, account, now).is_none());
+        assert_eq!(chosen(&only_sessions, account, now).as_deref(), Some("sessions"));
+        let reordered = format!(
+            "acct:{account}|{CLAUDE_CODE_CLIENT}:org:https://api.anthropic.com:{SESSIONS_SCOPE} user:profile user:inference user:file_upload"
+        );
+        let shuffled = json!({&reordered: {"token": "shuffled", "expiresAt": fresh}});
+        assert_eq!(chosen(&shuffled, account, now).as_deref(), Some("shuffled"));
+        // A chat-only account: only Claude 桌面's own login, so nothing to read with.
+        let chat_only = json!({desktop: {"token": "desktop", "expiresAt": fresh}});
+        assert!(chosen(&chat_only, account, now).is_none());
+        let wider = format!("{key} {SESSIONS_SCOPE} user:office");
+        assert!(chosen(&json!({&wider: {"token": "wider", "expiresAt": fresh}}), account, now).is_none());
     }
 
     fn chosen(body: &Value, account: &str, now: u64) -> Option<String> {
         let mut best = None;
         for (key, entry) in body.as_object().unwrap() {
-            let Some(exp) = candidate_expiry(key, entry, account, now) else {
+            let Some(rank) = candidate(key, entry, account, now) else {
                 continue;
             };
             let token = entry["token"].as_str().unwrap().to_string();
-            if best.as_ref().is_none_or(|(have, _)| exp > *have) {
-                best = Some((exp, token));
+            if best.as_ref().is_none_or(|(have, _)| rank > *have) {
+                best = Some((rank, token));
             }
         }
         best.map(|(_, token)| token)

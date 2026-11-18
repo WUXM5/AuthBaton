@@ -740,8 +740,20 @@ struct DeskOnlyQuota: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(message ?? seen ?? "只在桌面登录过，读不到额度").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(enabled ? "补登一次就能用重置卡和预热" : "用桌面登录查，或补登")
-                    .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Group {
+                    if enabled && desk.tokenQuota?.state == "no_token" {
+                        // A new account has no Claude Code login in Claude 桌面 until its first Code-mode
+                        // conversation; the service reads again every 5 minutes. Too narrow for one line, it
+                        // breaks at the comma rather than leaving 刷新 alone.
+                        ViewThatFits(in: .horizontal) {
+                            Text("去 Claude 桌面用 Code 模式聊一次，5 分钟内自动刷新")
+                            Text("去 Claude 桌面用 Code 模式聊一次，\n5 分钟内自动刷新")
+                        }
+                    } else {
+                        Text(enabled ? "补登一次就能用重置卡和预热" : "用桌面登录查，或补登")
+                    }
+                }
+                .font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if !enabled {
