@@ -309,6 +309,39 @@ enum Fixture {
             rows[0]["linked_account"] = "synthetic-claude-b"
             desktop["accounts"] = rows
             data["claude_desktop"] = desktop
+        case "claudelow", "claudelow5", "claudelowboth":
+            // Two Claude accounts under rules with a 4% line, each with a Fable week. Claude 备用 is at the line
+            // on its 7-day window (claudelow), its 5-hour window (claudelow5) or both (claudelowboth);
+            // in claudelow the current account's Fable week is at the line too.
+            func windows(five: Double, fiveIn: Double, week: Double, weekIn: Double, fable: Double) -> [[String: Any]] {
+                [["label": "5 小时窗口", "used_percent": five, "resets_at_iso": iso(fiveIn)],
+                 ["label": "7 天窗口", "used_percent": week, "resets_at_iso": iso(weekIn)],
+                 ["label": "7 天窗口", "used_percent": fable, "scope": "Fable", "kind": "model", "resets_at_iso": iso(weekIn)]]
+            }
+            var list = data["accounts"] as! [[String: Any]]
+            let index = list.firstIndex { $0["id"] as? String == "synthetic-claude" }!
+            var first = list[index]
+            var usage = first["usage"] as! [String: Any]
+            usage["windows"] = windows(five: 38, fiveIn: 2.1 * 3600, week: 60, weekIn: 3.2 * 86400, fable: scenario == "claudelow" ? 97 : 41)
+            first["usage"] = usage
+            list[index] = first
+            var second = first
+            second["id"] = "synthetic-claude-b"; second["label"] = "Claude 备用"; second["identity"] = "b***@example.invalid"
+            second["native"] = false; second["state"] = "healthy"; second["message"] = ""; second["expires_at"] = now + 3600
+            second["warmup"] = ["enabled": false, "hour": 9, "running": false]
+            usage["windows"] = scenario == "claudelow" ? windows(five: 10, fiveIn: 4.4 * 3600, week: 98, weekIn: 2.2 * 86400, fable: 12)
+                : scenario == "claudelow5" ? windows(five: 100, fiveIn: 2.3 * 3600, week: 39, weekIn: 4.1 * 86400, fable: 12)
+                : windows(five: 100, fiveIn: 2.3 * 3600, week: 99, weekIn: 2.2 * 86400, fable: 12)
+            second["usage"] = usage
+            list.append(second)
+            data["accounts"] = list
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            config["accounts"] = (config["accounts"] as! [[String: Any]])
+                + [["id": "synthetic-claude", "order": "switch_first", "participate": true, "below": 4],
+                   ["id": "synthetic-claude-b", "order": "switch_first", "participate": true, "below": 4]]
+            strategy["config"] = config
+            data["strategy"] = strategy
         case "switchblock":
             // Saved logins a switch must not use yet: one needs a new login, one an unsaved renewal,
             // one a renewal whose reply was lost.
@@ -1417,6 +1450,26 @@ extension NSWindow {
         check.visible("没有能查额度", "lab 没有能用的令牌时写明原因")
         check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
     }
+    section(29, "Claude 卡见底：见底那栏的大数字换成多久后回满，条下写剩余和见底线，名字旁「已见底」；两个都见底只放大最晚回满的；独立额度是小进度条") {
+        Fixture.load("claudelow", into: state)
+        select(.claude)
+        check.visible("已见底", "7 天见底的账号名字旁写「已见底」")
+        check.visible("后回满", "见底那栏的大数字换成多久后回满")
+        check.visible("剩2%·见底线4%", "条下面写剩余和见底线")
+        check.expect(Driver.hits("Fable", .exact).count == 2 && Driver.visible("88%"), "两张卡的 Fable 都是一行小进度条，带百分比")
+        check.expect(!Driver.visible("独立额度"), "卡片上不再写「独立额度：…」")
+        Fixture.load("claudelow5", into: state)
+        select(.claude)
+        check.visible("剩0%·见底线4%", "只有 5 小时见底时换的是 5 小时那栏")
+        check.visible("4天后回满", "7 天那栏照常写回满时间")
+        Fixture.load("claudelowboth", into: state)
+        select(.claude)
+        check.visible("剩1%·见底线4%", "两个都见底：放大的是回满最晚的 7 天")
+        check.visible("2小时后回满", "两个都见底：5 小时那栏照常小字写回满时间")
+        Fixture.load("default", into: state)
+        select(.claude)
+        check.expect(Driver.hits("已见底").isEmpty, "没有规则盯着的账号不写「已见底」")
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -1523,6 +1576,7 @@ extension NSWindow {
                 ("claude-desktop", "claude2", .claude, nil), ("claude-account", "default", .claude, "synthetic-claude"),
                 ("claude2", "claude2", .claude, "synthetic-claude-b"), ("claude-lab", "default", .claude, "h-lab"),
                 ("claude-switchblock", "switchblock", .claude, "synthetic-claude-b"),
+                ("claude-low", "claudelow", .claude, nil), ("claude-low5", "claudelow5", .claude, nil), ("claude-lowboth", "claudelowboth", .claude, nil),
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),

@@ -164,7 +164,7 @@ private struct ClaudeMain: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
                 Text("独立额度").font(.system(size: 13, weight: .semibold))
-                Icon(.info, size: 12, color: Palette.ink3).help("模型或功能单独的额度，不参与自动换号判断")
+                Icon(.info, size: 12, color: Palette.ink3).help("模型或功能单独的额度，不参与自动换号判断；Fable 例外：Claude Code 正在用 Fable 时，它也按见底线换号")
             }
             .padding(.bottom, 3.5)
             ForEach(Array(account.extraWindows.enumerated()), id: \.offset) { index, window in
