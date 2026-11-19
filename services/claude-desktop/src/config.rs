@@ -23,9 +23,6 @@ pub struct Config {
     /// AuthManager: read quota for desktop-only accounts from the desktop token cache.
     /// Off unless the person turns it on. The keychain key is not stored here.
     pub token_quota: bool,
-    /// AuthManager: relay Claude Desktop Code tab /v1/messages over a local Unix socket for
-    /// same-Team seamless account switching. Off unless the person confirms and enables it.
-    pub code_relay: bool,
     /// `<account>` or `<account>/<org>` entries that stay separate.
     pub exclude: Vec<String>,
     /// Accounts and orgs that appear later join automatically.
@@ -50,7 +47,6 @@ impl Default for Config {
         Config {
             background: false,
             token_quota: false,
-            code_relay: false,
             exclude: Vec::new(),
             auto_join_new: true,
             keep_snapshots: 20,

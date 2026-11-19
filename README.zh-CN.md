@@ -19,7 +19,6 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - **Codex 桌面（实验）**：经本机调试端口连接官方桌面，不退出就能换号，可暂停并在换号后接续运行中的会话。
 - **Claude**：不退出客户端换号（运行中的会话约 30 秒内生效）；可选的 5 小时窗口预热，每天定点用官方 CLI 发一条 Haiku 消息，默认关闭。
 - **Claude 桌面**：Claude 桌面版每个账号、每个组织的本地 Code 会话列表保持一致，换号后侧栏不再是空的（对话原文本来就在 `~/.claude/projects` 共用）。不退出登录切换桌面账号（macOS）：Claude 退出，现在的登录原样存好、换上另一个，再打开 Claude。快照和留 30 天的回收站让每次改动都能撤回。移植自 [cc-same](https://github.com/songkeys/cc-same)（MIT）。后台同步默认关闭。Claude Code 和桌面版共用一个「Claude」页：额度和重置卡跟着账号走（经它在 AuthBaton 里的登录查），换号可以只换 Claude Code、只换桌面或一起换；只用一边时页面只放那一边。
-- **Claude 桌面 Code 无感换号（macOS，可选）**：适用于同一个 Team 组织里的账号。Claude 桌面版的 Code 标签跟着你给 Claude Code 换上的账号走，对话进行中也能换，不用重启桌面：它的模型请求经本机的 AuthBaton、用那个账号发出。因额度被拒（429）的请求，会在桌面收到之前换同 Team 的下一个账号重发。开启时会为 Claude Code 装一个托管插件，需要输入一次管理员密码。默认关闭，可以在 Claude 页关闭或卸载。
 - **安全切换网络（macOS）**：切 Wi-Fi 会切断所有正在传输的模型回复，而 Claude Code 不会续写已经开始输出的回复。选好下一个网络（Wi-Fi 或你的 iPhone 热点），AuthBaton 只在没有回复在传输时才切：期间 Claude Code 插件暂停发新请求，其他客户端（Codex、Claude 桌面版、浏览器）经 mihomo 控制接口或 `nettop` 观察，只能等它们传完。5 分钟等不到就放弃，网络不动。iPhone 热点经接力远程打开，不用碰手机。Wi-Fi 密码第一次切换时输入，连上后记住，直到它不能用为止。
 - **集成**：pi 扩展按账号取用 access token，并给 Codex 模型提供 Codex 自己的联网搜索（`web_run`）；Claude Code 配套插件上报额度，被额度打断的一轮在换号后自动续跑，切网期间新的模型请求会等新网络连上再发。
 - **个人云端（可选）**：部署到你自己 Cloudflare 账户的 Worker 集中续期，多台设备共用同一批账号，见 [`cloud/`](cloud/README.zh-CN.md)。
@@ -33,10 +32,9 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - 命令行参数只有一个例外：写入 Claude 或 Codex 官方 Keychain 条目时，如果内容超出 `security -i` 的 4096 字节单行上限，会改作 `/usr/bin/security` 的命令行参数传入。写入的那一刻，同一 macOS 用户下的进程能在进程列表里看到它。
 - 开启 Codex 桌面热切换后，AuthBaton 运行期间会在登录会话环境里设置 `CODEX_ELECTRON_DISABLE_QUIT_CONFIRMATION=1`（`launchctl setenv`），关闭热切换或退出 AuthBaton 时清除。这样从 Dock 打开或更新后重启的桌面被自动以调试模式重启时，不会停在退出确认上；AuthBaton 自己打开的桌面传入 `=0`，退出时照常确认。重启前会在 Codex 桌面自己的日志（`~/Library/Logs/com.openai.codex/`）里查找该进程「启动完成」的那一行，启动完成前不会让它退出；只读这一行，不保存日志内容。
 - Claude 桌面：换号时把桌面版整套登录（`Cookies`、`Local Storage`、`Session Storage`、`IndexedDB`、`WebStorage` 和 `config.json` 里的三个键）在 Claude 退出后移进 `~/Library/Application Support/AuthManager/claude-desktop/logins/<账号>`，再把另一个移回来，同一块盘上改名完成。这些文件由 Claude 用它自己的 Keychain 密钥加密，AuthBaton 不解密、不读、不续期、不外传，只有一个由你自己打开的例外：对只在桌面登录过、没有 AuthBaton 登录的账号，可以让 AuthBaton 经桌面的登录查额度。这时 macOS 会在 AuthBaton 每次启动后问一次能否使用「Claude Safe Storage」密钥，密钥只放在内存里；AuthBaton 只解密 Claude `config.json` 里的 OAuth 令牌缓存（不解密 Cookies），只用未过期的 access 发额度请求（`GET /api/oauth/usage`），不续期、不用它领重置卡、不发模型请求、不写 Claude 的文件。默认关闭，可以在 Claude 页底部关掉。会话列表只复制、不做链接（Claude 遇到软链文件夹会存不住会话）。Claude 桌面版按账号记着能不能用 Bypass 权限模式（`claude_desktop_config.json` 的 `preferences.bypassPermissionsGateByAccount`）。从开着它的账号换到没开的账号时，AuthBaton 会替换上的账号打开，并在确认框和结果里写明；只开不关，这个文件里别的内容不动。不这样做的话，在新账号下启动的会话会退出 Bypass 模式，收不到子会话发来的消息。AuthBaton 用空环境启动 Claude。
-- Claude 桌面 Code 无感换号（默认关闭）：开启时经一次 macOS 管理员授权，把插件装进 `/Library/Application Support/ClaudeCode/authbaton-desktop-relay/`，并登记到同一目录的 `managed-settings.json`（保留你原有的键，写入 `"parentSettingsBehavior": "merge"`）；卸载时同样授权一次，两样都删掉。`~/.claude/remote-settings.json` 不是空的就不安装：组织下发的设置优先。插件只在桌面的 Code 标签里起作用（`CLAUDE_CODE_ENTRYPOINT=claude-desktop`），不存任何凭据；它去掉桌面自己的 `Authorization` 头，只把 `POST /v1/messages`（不含 `count_tokens`）交给 `~/Library/Application Support/AuthManager/claude-desktop-relay.sock`（0600，只接受同一 macOS 用户）。服务核对账号和桌面登录属于同一个组织，用该账号的 access token 把请求发给 `api.anthropic.com`（令牌经标准输入交给 `/usr/bin/curl`，不进命令行参数、环境变量或磁盘），把 `metadata.user_id` 改成该账号，再把回复边收边传回去。AuthBaton 没在运行、开关关着或组织不一致时，插件退回桌面自己的直连。`claude-desktop/relay.log`（0600，满 256 KB 轮换）不含凭据，也不含账号或组织 ID。
 - 切换网络：在切换框里输入的 Wi-Fi 密码从界面单向传给服务一次（不会再回到界面），加入成功前只在内存里，成功后存进 Vault，加入被拒就丢掉。加入用 `/usr/sbin/networksetup -setairportnetwork`，它只接受命令行参数形式的密码：它运行的几秒内，同一 macOS 用户下的进程能在进程列表里看到。iPhone 热点的密码由手机经 Sharing.framework 的私有接口 `SFRemoteHotspotSession`（热点组件）给出，不保存。只有你发起后才会改 Mac 的 Wi-Fi。切完的核对是一个不带认证的 `api.anthropic.com` 请求，不是模型请求。`network-log.jsonl`（0600）只记时间、网络名和结果。
 - 界面进程拿不到凭据（你输入的 Wi-Fi 密码除外）；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
-- 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。开启 Claude 桌面 Code 无感换号后，它会按上面说的方式转发 Code 标签自己的请求。
+- 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。桌面操作记录 `desktop-log.jsonl`（0600，超过 512 KB 轮换一次）只记时间、对 Codex 桌面做的操作、账号 ID 和固定原因，不含凭据。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。
 
 ## 对照 Anthropic 条款
@@ -47,7 +45,7 @@ Claude Code 的[法律与合规页](https://code.claude.com/docs/en/legal-and-co
 |---|---|
 | 登录 Claude 账号必须走 Anthropic 自己的流程；第三方不能在自己的应用里提供 Claude.ai 登录。 | 符合。添加账号、重新登录都是在隔离目录里运行官方的 `claude auth login --claudeai`，在 Anthropic 的页面上登录。AuthBaton 只把登录链接交给你，你可以直接打开，也可以复制到想用的浏览器里；它没有自己的登录。 |
 | 开发者不能收集、存储或中转 Claude.ai 凭据或会话令牌。 | **不符合。** 当前账号以外的账号，令牌存在 AuthBaton 的 Keychain Vault 里，由 AuthBaton 用 Claude Code 的 OAuth 客户端自己续期；开启个人云端后，由你自己 Cloudflare 账户里的 Worker 保存和续期。Claude 桌面版为换号存起来的登录，是 Claude 自己写的加密文件，原样放在本机；只有你打开「经桌面的登录查额度」时，AuthBaton 才会打开它们，而且只用来发上面说的只读额度请求。令牌只在你的 Mac 和你自己的 Cloudflare 账户里。 |
-| 不能用订阅凭据替用户转发请求。 | **开启桌面 Code 无感换号后部分符合。** AuthBaton 没有服务器，不替任何人发模型请求，也不共享账号；对话由未经修改的 Claude Code 直接发给 Anthropic。AuthBaton 唯一发起的模型请求是可选的预热，也经官方 CLI 发出。开启桌面 Code 无感换号后，Code 标签的请求经本机的 AuthBaton，用你自己同一 Team 里的另一个账号发给 Anthropic。pi 扩展只拿 Codex 的令牌，拿不到 Claude 的。 |
+| 不能用订阅凭据替用户转发请求。 | 符合。AuthBaton 没有服务器，不替任何人发模型请求，也不共享账号；对话由未经修改的 Claude Code 直接发给 Anthropic。AuthBaton 唯一发起的模型请求是可选的预热，也经官方 CLI 发出。pi 扩展只拿 Codex 的令牌，拿不到 Claude 的。 |
 | OAuth 用于订阅用户正常使用 Claude Code 和 Anthropic 自己的应用；用自己的订阅登录未经修改的 Claude Code 不受限制。 | **部分符合。** Claude Code 没有被修改。但 AuthBaton 自己也会拿令牌调用 Anthropic 的账号接口：续期、查额度和账号资料、使用你选定的重置卡。这些都不是模型请求。 |
 | Pro、Max、Ultra 套餐公布的用量上限以个人正常使用为前提。 | **由你决定。** 所有账号都应当是你自己的。见底自动换号默认关闭；开启后，工作会换到你的另一个订阅上继续。 |
 

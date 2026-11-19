@@ -884,7 +884,6 @@ fn config_view(cfg: &Config) -> ConfigView {
 pub struct ConfigChange {
     pub background: Option<bool>,
     pub token_quota: Option<bool>,
-    pub code_relay: Option<bool>,
     pub notify: Option<bool>,
     pub auto_join_new: Option<bool>,
     /// Keep these `<account>` or `<account>/<org>` out of the sync.
@@ -907,9 +906,6 @@ pub fn set_config(ctx: &Ctx, change: &ConfigChange) -> Result<ConfigView, Failur
     }
     if let Some(on) = change.token_quota {
         cfg.token_quota = on;
-    }
-    if let Some(on) = change.code_relay {
-        cfg.code_relay = on;
     }
     if let Some(on) = change.notify {
         cfg.notify = on;
@@ -938,11 +934,6 @@ pub fn set_background(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
 /// Remember whether desktop-only quota reads are on. The keychain key is not written.
 pub fn set_token_quota(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
     set_config(ctx, &ConfigChange { token_quota: Some(on), ..ConfigChange::default() })
-}
-
-/// Remember whether Claude Desktop Code tab seamless same-Team relay is on.
-pub fn set_code_relay(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
-    set_config(ctx, &ConfigChange { code_relay: Some(on), ..ConfigChange::default() })
 }
 
 // ------------------------------------------------------------------------ snapshots

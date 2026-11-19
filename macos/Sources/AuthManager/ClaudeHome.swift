@@ -122,8 +122,6 @@ enum ClaudeSheet: Identifiable {
     case desktop(DesktopSheet)
     case switching(ClaudeSwitchRequest)
     case tokenQuota
-    case codeRelay
-    case codeRelayUninstall
 
     var id: String {
         switch self {
@@ -131,8 +129,6 @@ enum ClaudeSheet: Identifiable {
         case .desktop(let sheet): "desktop-\(sheet.id)"
         case .switching(let request): "switch-\(request.id)"
         case .tokenQuota: "token-quota"
-        case .codeRelay: "code-relay"
-        case .codeRelayUninstall: "code-relay-uninstall"
         }
     }
 }
@@ -173,8 +169,6 @@ struct ClaudeHomePage: View {
                 case .desktop(let sheet): DesktopSheetView(item: sheet, close: { self.sheet = nil })
                 case .switching(let request): ClaudeSwitchSheet(request: request, close: { self.sheet = nil })
                 case .tokenQuota: TokenQuotaSheet(close: { self.sheet = nil })
-                case .codeRelay: CodeRelaySheet(close: { self.sheet = nil })
-                case .codeRelayUninstall: CodeRelayUninstallSheet(close: { self.sheet = nil })
                 }
             }
             .environmentObject(service)
@@ -227,7 +221,7 @@ struct ClaudeHomePage: View {
             if let error = service.accountError, service.accountErrorID == nil {
                 Banner(text: error) { Button("知道了") { service.clearAccountError() }.buttonStyle(.pill(.onAttention)) }
             }
-            if use == .both, scope == .both, status?.codeRelay?.enabled != true, let code = codeNow, let desk = deskNow, code.id != desk.id,
+            if use == .both, scope == .both, let code = codeNow, let desk = deskNow, code.id != desk.id,
                ClaudeSwitchPlan(code, use: use, directory: directory, service: service).canDesk, driftDismissed != "\(code.id)|\(desk.id)" {
                 Banner(glyph: .relay, text: "Claude Code 在用 \(code.name)，Claude 桌面还在用 \(desk.name)。") {
                     Button("桌面也换上") { sheet = .switching(ClaudeSwitchRequest(entryID: code.id, code: false, desk: true, choice: false)) }
@@ -238,9 +232,6 @@ struct ClaudeHomePage: View {
             if use.desk, let status, !starting {
                 DesktopNotices(status: status, locked: deskLocked(status)) { sheet = .desktop($0) }
                 SyncStrip(status: status, locked: deskLocked(status)) { sheet = .desktop($0) }
-                if let relay = status.codeRelay, status.installed {
-                    CodeRelayStrip(relay: relay, locked: deskLocked(status) || relay.busy) { sheet = $0 }
-                }
             }
             if starting {
                 ClaudeStarter(directory: directory, open: { sheet = .account($0) }, addDesktop: { sheet = .desktop(.add) },
@@ -402,13 +393,6 @@ struct ClaudeHomePage: View {
                     Button("关掉") { Task { await service.claudeDesktop("token_quota", enabled: false) } }.buttonStyle(.pill(.link))
                 }
             }
-            if use.desk, let relay = status?.codeRelay, relay.isInstalled {
-                HStack(spacing: 5) {
-                    Text("Claude 桌面 Code 无感换号已安装系统插件。")
-                    Button("卸载插件…") { sheet = .codeRelayUninstall }.buttonStyle(.pill(.link))
-                        .disabled(relay.busy || service.accountBusy)
-                }
-            }
             if use.desk {
                 if let retention = status?.retention, retention.kept {
                     HStack(spacing: 5) {
@@ -528,91 +512,6 @@ private struct SyncStrip: View {
                 }
             } else {
                 Text("还没同步过").foregroundStyle(Palette.ink3)
-            }
-        }
-        .font(.system(size: 12)).lineLimit(1)
-    }
-}
-
-// Claude Desktop Code tab seamless same-Team account switching, folded to one quiet row beside SyncStrip.
-private struct CodeRelayStrip: View {
-    @EnvironmentObject private var service: ServiceController
-    let relay: ClaudeDesktopStatus.CodeRelayStatus
-    let locked: Bool
-    let open: (ClaudeSheet) -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(relay.state == "active" ? Palette.wash : Palette.chip)
-                    .frame(width: 28, height: 28)
-                Icon(.relay, size: 14, color: relay.state == "active" ? Palette.brand : Palette.ink3, weight: 2)
-            }
-            .accessibilityHidden(true)
-            Text("Code 无感换号")
-                .font(.system(size: 13, weight: .semibold))
-                .fixedSize()
-            stateLine.frame(maxWidth: .infinity, alignment: .leading)
-            if relay.enabled && relay.installState == "needs_update" {
-                Button("更新插件") {
-                    Task { await service.claudeDesktop("code_relay_install", confirm: true) }
-                }
-                .buttonStyle(.pill(.secondary))
-                .disabled(locked)
-            }
-            if relay.installState == "blocked_remote" {
-                Text("组织策略限制").font(.system(size: 11)).foregroundStyle(Palette.ink3)
-            } else if relay.enabled {
-                Toggle("Code 无感换号", isOn: Binding(get: { relay.enabled }, set: { value in
-                    if !value {
-                        Task { await service.claudeDesktop("code_relay", enabled: false) }
-                    }
-                }))
-                .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                .disabled(locked)
-                .help("关闭后立即回退为 Claude 桌面官方直连")
-            } else if relay.installState == "installed" {
-                Toggle("Code 无感换号", isOn: Binding(get: { relay.enabled }, set: { value in
-                    if value {
-                        Task { await service.claudeDesktop("code_relay", enabled: true, confirm: true) }
-                    }
-                }))
-                .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                .disabled(locked)
-                .help("在同 Team 账号间无感切换，不重启 Claude 桌面、不中断 Code 对话")
-            } else {
-                Button("开启…") { open(.codeRelay) }
-                    .buttonStyle(.pill(.secondary))
-                    .disabled(locked)
-                    .help("首次开启会说明原理并请求一次系统管理员授权")
-            }
-        }
-        .padding(.horizontal, 16).frame(minHeight: 52)
-        .loopCard()
-    }
-
-    @ViewBuilder private var stateLine: some View {
-        Group {
-            if relay.state == "installing" {
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.mini)
-                    Text("正在安装系统插件，请在弹窗输入管理员密码…")
-                }.foregroundStyle(Palette.ink2)
-            } else if relay.state == "uninstalling" {
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.mini)
-                    Text("正在卸载系统插件…")
-                }.foregroundStyle(Palette.ink2)
-            } else if relay.state == "active" {
-                let countNote = relay.relayedCount > 0 ? " · 已接力 \(relay.relayedCount) 次" : ""
-                Text("当前账号 \(relay.activeLabel ?? "—")\(countNote)")
-                    .foregroundStyle(Palette.ink2)
-                    .help("在上方切 Claude Code 账号时，桌面 Code 对话会立即切过去，无需重启桌面")
-            } else if ["team_mismatch", "blocked_remote", "error"].contains(relay.state) {
-                Text(relay.message).foregroundStyle(Palette.attentionText).help(relay.message)
-            } else {
-                Text(relay.message).foregroundStyle(Palette.ink3).help(relay.message)
             }
         }
         .font(.system(size: 12)).lineLimit(1)
@@ -927,80 +826,6 @@ struct TokenQuotaSheet: View {
     }
 }
 
-// Turning on Claude Desktop Code tab seamless same-Team switching: clear explanation of admin prompt,
-// normal managed-policy notice, zero token in Mod, and automatic Fail-Open.
-struct CodeRelaySheet: View {
-    @EnvironmentObject private var service: ServiceController
-    let close: () -> Void
-    @State private var working = false
-
-    private var relay: ClaudeDesktopStatus.CodeRelayStatus? { service.directory?.claudeDesktop?.codeRelay }
-    private var needsAdmin: Bool { relay?.installState != "installed" }
-
-    var body: some View {
-        SheetScaffold(title: "开启 Claude 桌面 Code 无感换号？",
-                      lead: "在同一个 Team 的账号之间切换，不用重启 Claude 桌面，正在进行的 Code 对话也不会中断。",
-                      width: 468) {
-            VStack(alignment: .leading, spacing: 8) {
-                CheckItem(kind: .you, text: "首次开启会弹出一次 macOS 管理员密码框，用来在系统目录登记 AuthBaton 插件（只作用于 Claude 桌面 Code 标签）")
-                CheckItem(kind: .info, text: "开启后 Claude 桌面可能提示「已加载托管策略/本机托管配置」，这是系统级插件生效后的正常提示，不影响日常使用，也不会覆盖你的其他设置")
-                CheckItem(kind: .system, text: "插件本身不存任何令牌；只把 Code 对话经本机私密通道交给 AuthBaton 转发。切账号后下一轮立即生效，遇到限流还可自动无感切到下一个同 Team 账号继续回复")
-                CheckItem(kind: .info, text: "仅限同 Team 账号；跨 Team 或 AuthBaton 退出时自动回退官方直连，随时可在页面底部一键关闭或完整卸载")
-            }
-            if let error = service.accountError {
-                Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
-            }
-        } actions: {
-            Button("取消", action: close).keyboardShortcut(.cancelAction).buttonStyle(.pill(.secondary, height: 27))
-            Button(working ? "正在开启…" : needsAdmin ? "授权并开启" : "开启") {
-                working = true
-                Task {
-                    await service.claudeDesktop("code_relay", enabled: true, confirm: true)
-                    working = false
-                    if service.accountError == nil { close() }
-                }
-            }
-            .keyboardShortcut(.defaultAction).buttonStyle(.pill(.primary, height: 27))
-            .disabled(working || service.accountBusy)
-        }
-        .onAppear { service.clearAccountError() }
-    }
-}
-
-struct CodeRelayUninstallSheet: View {
-    @EnvironmentObject private var service: ServiceController
-    let close: () -> Void
-    @State private var working = false
-
-    var body: some View {
-        SheetScaffold(title: "卸载 Code 无感换号插件？",
-                      lead: "会关闭无感换号，并清除 AuthBaton 写入系统目录的插件与登记项。",
-                      width: 442) {
-            VStack(alignment: .leading, spacing: 7) {
-                CheckItem(kind: .you, text: "会弹出一次 macOS 管理员密码框，用来清理 /Library/Application Support/ClaudeCode/ 里的 AuthBaton 插件")
-                CheckItem(kind: .info, text: "managed-settings.json 里你自己的其他设置会原样保留；若没有其他设置，文件会被一并清理，Claude 桌面的托管配置提示也会消失")
-                CheckItem(kind: .info, text: "卸载后 Claude 桌面立即恢复官方直连，不影响已有的聊天记录和账号登录")
-            }
-            if let error = service.accountError {
-                Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
-            }
-        } actions: {
-            Button("取消", action: close).keyboardShortcut(.cancelAction).buttonStyle(.pill(.secondary, height: 27))
-            Button(working ? "正在卸载…" : "授权并卸载") {
-                working = true
-                Task {
-                    await service.claudeDesktop("code_relay_uninstall", confirm: true)
-                    working = false
-                    if service.accountError == nil { close() }
-                }
-            }
-            .keyboardShortcut(.defaultAction).buttonStyle(.pill(.primary, height: 27))
-            .disabled(working || service.accountBusy)
-        }
-        .onAppear { service.clearAccountError() }
-    }
-}
-
 // MARK: 换上
 
 // 换上 on a card. One client in use: a plain button. Both: the left half switches with the remembered
@@ -1179,9 +1004,6 @@ struct ClaudeSwitchSheet: View {
             .loopPanel()
             if moves.desk, let status, status.turnsOnBypass(entry?.desk) {
                 Banner(glyph: .info, text: "换过去会顺带给这个账号打开 Bypass 权限模式。")
-            }
-            if moves.desk, status?.codeRelay?.enabled == true {
-                Banner(glyph: .relay, text: "你已开启 Code 无感换号：若与桌面在同一 Team，只换 Claude Code 即可让桌面 Code 对话立即切换，无需重启桌面。")
             }
             if let error = service.accountError {
                 Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)

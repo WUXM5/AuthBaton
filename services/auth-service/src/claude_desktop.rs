@@ -37,13 +37,6 @@ pub struct Command<'a> {
     pub confirm: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct DesktopIdentity {
-    pub account_uuid: String,
-    pub org_uuid: Option<String>,
-    pub display: String,
-}
-
 #[derive(Clone)]
 struct Operation {
     kind: &'static str,
@@ -405,64 +398,6 @@ impl Runtime {
         }));
         self.next_refresh = Instant::now();
         Ok(())
-    }
-
-    pub fn code_relay_enabled(&self) -> bool {
-        self.shared
-            .as_ref()
-            .is_some_and(|shared| shared.ctx.config().code_relay)
-    }
-
-    pub fn set_code_relay_config(&self, on: bool) -> Result<()> {
-        let shared = self
-            .shared
-            .as_ref()
-            .ok_or("Claude 桌面的会话同步没有启动")?;
-        api::set_code_relay(&shared.ctx, on).map_err(|failure| failure_text(&failure))?;
-        Ok(())
-    }
-
-    pub fn desktop_identity(&self) -> Option<DesktopIdentity> {
-        let shared = self.shared.as_ref()?;
-        let overview = shared.overview.lock().unwrap();
-        let ov = overview.as_ref()?;
-        let account_uuid = ov.desktop.signed_in.clone()?;
-        let display_name = ov
-            .accounts
-            .iter()
-            .find(|a| a.account_id == account_uuid)
-            .map(display)
-            .unwrap_or_else(|| "Claude 桌面账号".to_string());
-        let org_uuid = if ov.desktop.open_account.as_deref() == Some(account_uuid.as_str())
-            && ov.desktop.open_org.is_some()
-        {
-            ov.desktop.open_org.clone()
-        } else {
-            let sessions_dir = shared
-                .ctx
-                .paths
-                .user_data
-                .join("claude-code-sessions")
-                .join(&account_uuid);
-            let mut orgs: Vec<String> = std::fs::read_dir(sessions_dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
-                .filter_map(|entry| entry.file_name().into_string().ok())
-                .filter(|name| !name.starts_with('.'))
-                .collect();
-            if orgs.len() == 1 {
-                orgs.pop()
-            } else {
-                None
-            }
-        };
-        Some(DesktopIdentity {
-            account_uuid,
-            org_uuid,
-            display: display_name,
-        })
     }
 
     /// Read desktop-only quota for accounts that have a saved sign-in and no AuthBaton login.

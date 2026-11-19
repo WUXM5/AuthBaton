@@ -2,7 +2,6 @@ mod accounts;
 mod automation;
 mod claude;
 mod claude_desktop;
-mod claude_desktop_relay;
 mod claude_locks;
 mod claude_mod;
 mod claude_resets;
