@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Page: Hashable {
-    case accounts, codex, claude, automation, desktop, clients, cloud, network
+    case accounts, codex, claude, automation, clients, cloud, network
 }
 
 // Shared so the menu bar panel can open the window on a specific page or account.
@@ -16,11 +16,18 @@ final class AppNavigation: ObservableObject {
     @Published var networkSheet = false
     // The Claude page shows this account in full (an AuthBaton account ID or a desktop handle); nil is the overview.
     @Published var claudeDetail: String?
+    // The Codex page opens its Codex 桌面 connection sheet; the desktop has no page of its own.
+    @Published var desktopSheet = false
 
     func show(_ page: Page, select: String? = nil) {
         self.page = page
         if let select { selection = select }
         if page == .claude { claudeDetail = select }
+    }
+
+    func showDesktopConnection() {
+        show(.codex)
+        desktopSheet = true
     }
 
     // The page an account lives on.
@@ -80,7 +87,6 @@ struct DashboardView: View {
         case .codex: cloudMode ? AnyView(AccountsView()) : AnyView(CodexPage())
         case .claude: cloudMode ? AnyView(AccountsView()) : AnyView(ClaudeHomePage())
         case .automation: AutomationPage()
-        case .desktop: DesktopPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
         case .network: NetworkPage()
@@ -100,7 +106,10 @@ private struct Sidebar: View {
         let directory = service.directory
         let cloudMode = directory?.cloud?.mode == "cloud"
         let issues = directory?.issues(dismissed: reminders.dismissed).count ?? 0
-        let desktop = directory?.desktop
+        // Codex 桌面 lives on the Codex page now; its trouble shows as a dot on the Codex row.
+        let wiring = directory?.desktop.map { DesktopWiring($0, current: directory?.current("codex")) }
+        let codexHasAccounts = directory?.accounts.contains { $0.provider == "codex" } == true
+        let desktopTrouble = codexHasAccounts && wiring?.attention == true
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 BrandTile(size: 26)
@@ -119,8 +128,12 @@ private struct Sidebar: View {
                 .accessibilityLabel(issues > 0 ? "账号，\(issues) 件事要处理" : "账号")
                 if !cloudMode {
                     item(.codex, GlyphTile.name("codex"), glyph: .provider("codex")) {
-                        if let lowest = directory?.current("codex")?.lowestPrimary { trailingText("\(lowest)%") }
+                        HStack(spacing: 6) {
+                            if desktopTrouble { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
+                            if let lowest = directory?.current("codex")?.lowestPrimary { trailingText("\(lowest)%") }
+                        }
                     }
+                    .accessibilityLabel(desktopTrouble ? "Codex，Codex 桌面\(wiring?.lost == true ? "没连上" : "还没接管")" : "Codex")
                     // Claude Code and Claude 桌面 share one page; the dot is the desktop's own trouble.
                     let claudeDesktop = directory?.claudeDesktop
                     item(.claude, "Claude", glyph: .provider("claude")) {
@@ -134,16 +147,8 @@ private struct Sidebar: View {
                 }
                 Color.clear.frame(height: 12)
                 item(.automation, "换号与重置", glyph: .relay) {
-                    if let strategy = directory?.strategy { trailingText(strategy.config.enabled ? "开" : "关") }
+                    if directory?.strategy?.config.enabled == true { trailingText("开") }
                 }
-                item(.desktop, "Codex 桌面", glyph: .desktop) {
-                    if directory?.desktopBlocked == true {
-                        Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
-                    } else if desktop?.enabled == false {
-                        trailingText("关")
-                    }
-                }
-                .accessibilityLabel(directory?.desktopBlocked == true ? "Codex 桌面，没连上" : "Codex 桌面")
                 item(.clients, "客户端与服务", glyph: .clients) {
                     if !service.isConnected && !service.isConnecting {
                         Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)

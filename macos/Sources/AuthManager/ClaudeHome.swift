@@ -141,6 +141,7 @@ struct ClaudeHomePage: View {
     @AppStorage(ClaudeUse.key) private var useSetting = "auto"
     @AppStorage(ClaudeUse.scopeKey) private var scopeSetting = SwitchScope.both.rawValue
     @AppStorage(ClaudeUse.driftKey) private var driftDismissed = ""
+    @AppStorage(Onboarding.claudeKey) private var onboarding = ""
     @State private var sheet: ClaudeSheet?
 
     var body: some View {
@@ -153,6 +154,8 @@ struct ClaudeHomePage: View {
                                       switchTo: { perform($0, $1, directory: directory, use: use) })
                 } else {
                     overview(directory, use: use, entries: entries)
+                        .onAppear { settle(directory, entries: entries) }
+                        .onChange(of: entries.count) { _, _ in settle(directory, entries: entries) }
                 }
             } else {
                 Color.clear
@@ -174,6 +177,11 @@ struct ClaudeHomePage: View {
 
     private var scope: SwitchScope { SwitchScope(rawValue: scopeSetting) ?? .both }
 
+    private func settle(_ directory: AccountDirectory, entries: [ClaudeEntry]) {
+        onboarding = Onboarding.settle(onboarding, empty: entries.isEmpty,
+                                       finished: Onboarding.finished(directory, provider: "claude", count: entries.count))
+    }
+
     // 换上 with the remembered scope, or the scope picked from the ▾ menu (which becomes the new default).
     private func perform(_ entry: ClaudeEntry, _ picked: SwitchScope?, directory: AccountDirectory, use: ClaudeUse) {
         let plan = ClaudeSwitchPlan(entry, use: use, directory: directory, service: service)
@@ -193,16 +201,20 @@ struct ClaudeHomePage: View {
         let status = directory.claudeDesktop
         let codeNow = entries.first { $0.inCode }
         let deskNow = entries.first { $0.inDesk }
-        return PageScaffold(title: "Claude", subtitle: Text(subtitle(use, entries: entries, code: codeNow, desk: deskNow)), provider: "claude", spacing: 14) {
-            modeMenu(use)
-            RefreshPill(checkedAt: entries.compactMap { $0.cli?.usage?.checkedAt }.max(), busy: service.isRefreshing) {
-                Task {
-                    await service.refresh()
-                    await service.refreshQuotaIfNeeded()
+        // On a first run the starter card is the page; only 添加账号 stays in the header.
+        let starting = Onboarding.starting(onboarding, empty: entries.isEmpty)
+        return PageScaffold(title: "Claude", subtitle: Text(starting ? "还没有账号" : subtitle(use, entries: entries, code: codeNow, desk: deskNow)), provider: "claude", spacing: 14) {
+            if !starting {
+                modeMenu(use)
+                RefreshPill(checkedAt: entries.compactMap { $0.cli?.usage?.checkedAt }.max(), busy: service.isRefreshing) {
+                    Task {
+                        await service.refresh()
+                        await service.refreshQuotaIfNeeded()
+                    }
                 }
+                .fixedSize()
+                if use.desk, let status { nextButton(status, entries: entries).fixedSize() }
             }
-            .fixedSize()
-            if use.desk, let status { nextButton(status, entries: entries).fixedSize() }
             addButton(use, directory: directory).fixedSize()
         } content: {
             if use.code && directory.recoveryNeeded { RecoveryBanner() }
@@ -217,13 +229,19 @@ struct ClaudeHomePage: View {
                     Button("不用") { driftDismissed = "\(code.id)|\(desk.id)" }.buttonStyle(.pill(.link))
                 }
             }
-            if use.desk, let status {
+            if use.desk, let status, !starting {
                 DesktopNotices(status: status, locked: deskLocked(status)) { sheet = .desktop($0) }
                 SyncStrip(status: status, locked: deskLocked(status)) { sheet = .desktop($0) }
             }
-            if entries.isEmpty {
+            if starting {
+                ClaudeStarter(directory: directory, open: { sheet = .account($0) }, addDesktop: { sheet = .desktop(.add) },
+                              dismiss: { onboarding = Onboarding.done })
+            } else if entries.isEmpty {
                 AddCard(provider: "claude", open: { sheet = .account($0) }, lead: "还没有 Claude 账号", detail: "登录一个，或导入这台 Mac 上已有的登录。")
             } else {
+                if onboarding == Onboarding.started, let next = OnboardingNext.claude(directory, names: entries.map(\.name)) {
+                    NextStrip(next: next, open: { sheet = .account($0) }, dismiss: { onboarding = Onboarding.done })
+                }
                 Grid(horizontalSpacing: 14, verticalSpacing: 14) {
                     ForEach(Array(stride(from: 0, to: entries.count, by: 2)), id: \.self) { start in
                         GridRow {
@@ -237,8 +255,10 @@ struct ClaudeHomePage: View {
                     }
                 }
             }
-            hints(use, directory: directory)
-            footer(use, status: status)
+            if !starting {
+                hints(use, directory: directory)
+                footer(use, status: status)
+            }
         }
     }
 

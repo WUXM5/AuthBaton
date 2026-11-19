@@ -144,7 +144,7 @@ enum SVGPath {
 enum Glyph: Sendable {
     case accounts, relay, desktop, clients, cloud, refresh, plus, sun, shield, sync, info, clock, alert
     case check, chevronDown, chevronLeft, chevronRight, external, copy, server, mac, window, codex, claude
-    case wifi, hotspot, key, phone, terminal
+    case wifi, hotspot, key, phone, terminal, close
 
     fileprivate var data: [String] {
         switch self {
@@ -178,6 +178,7 @@ enum Glyph: Sendable {
         case .phone: [rect(6, 2.5, 8, 15, 2), "M9 15h2"]
         // Claude Code in a terminal: a prompt and a cursor, no frame, so it never reads as the desktop's screen.
         case .terminal: ["M4 5.5l4.5 4.5L4 14.5", "M11 15h5.5"]
+        case .close: ["M5.5 5.5l9 9M14.5 5.5l-9 9"]
         }
     }
 

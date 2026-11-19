@@ -347,31 +347,25 @@ struct AccountStrips: View {
     let account: ManagedAccount
     let directory: AccountDirectory
     let open: (AccountSheet) -> Void
-    // What the in-use Codex account says about the desktop: the accounts page has no other place for it,
-    // the Codex page has its own banner for a lost connection and the take-over button on the card.
-    var desktop: DesktopNotice = .none
-
-    enum DesktopNotice { case none, takeOver, all }
+    // What the in-use Codex account says about the desktop. The accounts page has no other place for it; the
+    // Codex page says it once in its own band, so its cards pass false.
+    var desktop = false
 
     private var locked: Bool { service.accountBusy || directory.busy || directory.recoveryNeeded }
 
     var body: some View {
         VStack(spacing: 0) {
-            if desktop != .none, account.provider == "codex", account.native, let connection = directory.desktop, connection.enabled {
+            if desktop, account.provider == "codex", account.native, let connection = directory.desktop, connection.enabled {
                 if !connection.connected {
-                    if desktop == .all {
-                        IssueStrip(glyph: .desktop,
-                                   text: directory.strategy?.config.enabled == true
-                                       ? "Codex 桌面没连上，现在换不了号，见底时只会重置。" : "Codex 桌面没连上，现在换不了号。") {
-                            Button("去连接") { AppNavigation.shared.show(.desktop) }.buttonStyle(.pill(.link))
-                        }
+                    IssueStrip(glyph: .desktop,
+                               text: directory.strategy?.config.enabled == true
+                                   ? "Codex 桌面没连上，现在换不了号，见底时只会重置。" : "Codex 桌面没连上，现在换不了号。") {
+                        Button("去连接") { AppNavigation.shared.showDesktopConnection() }.buttonStyle(.pill(.link))
                     }
                 } else if connection.selected != account.id {
                     IssueStrip(glyph: .desktop, text: "Codex 桌面还在用自己的登录；交给 AuthBaton 后才能热切换。") {
-                        if desktop == .all {
-                            Button("接管") { open(.switchTo(account.id)) }.buttonStyle(.pill(.primary, height: 22))
-                                .disabled(service.accountBusy || directory.switchDisabled(for: account))
-                        }
+                        Button("接管") { open(.switchTo(account.id)) }.buttonStyle(.pill(.primary, height: 22))
+                            .disabled(service.accountBusy || directory.switchDisabled(for: account))
                     }
                 }
             }
