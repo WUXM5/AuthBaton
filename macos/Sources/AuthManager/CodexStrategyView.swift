@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // 换号与重置: one lane per tool with its accounts as stations in relay order, and the picked station's
 // rule in a panel under its lane. Saving keeps the old contract: the whole config is sent with
@@ -14,8 +16,19 @@ struct AutomationPage: View {
     @State private var confirmForget = false
     @State private var sheet: AccountSheet?
     @State private var saving = false
+    // The rule being dragged across its lane; its slot shows where it will land.
+    @State private var dragging: String? = AutomationPage.previewDragging
+    // Set once the strategy has been on, or the first-time card was put away.
+    @AppStorage(Self.onboardedKey) private var onboarded = false
+    // "show" after the first-time card turned the strategy on, "done" once its note is closed.
+    @AppStorage(Self.hintKey) private var doneHint = ""
 
     private enum Confirm { case enable, save }
+
+    static let onboardedKey = "relay.onboarded"
+    static let hintKey = "relay.doneHint"
+    // Preview renders only: draws this rule mid-drag.
+    @MainActor static var previewDragging: String?
 
     // automation.rs validate(): the service refuses a strategy with more rules than this.
     static let ruleLimit = 32
@@ -28,6 +41,25 @@ struct AutomationPage: View {
     private func account(_ id: String) -> ManagedAccount? { accounts.first { $0.id == id } }
     private func tool(of id: String) -> String? { account(id)?.provider }
     private var dirty: Bool { baseline != nil && draft != baseline }
+    // Changes other than the order; an order change alone is saved from its lane's title.
+    private var rulesDirty: Bool {
+        guard let baseline else { return false }
+        return unordered(draft) != unordered(baseline)
+    }
+    private func unordered(_ config: CodexStrategyConfig) -> CodexStrategyConfig {
+        var config = config
+        config.accounts.sort { $0.id < $1.id }
+        return config
+    }
+    private func laneOrder(_ config: CodexStrategyConfig?, _ provider: String) -> [String] {
+        (config?.accounts ?? []).map(\.id).filter { tool(of: $0) == provider }
+    }
+    private func orderChanged(_ provider: String) -> Bool { baseline != nil && laneOrder(draft, provider) != laneOrder(baseline, provider) }
+    // Never turned on, never put away: the master card becomes the first-time card.
+    private var guiding: Bool { !onboarded && status?.config.enabled == false && status?.run == nil }
+    private var cliOnly: Bool {
+        service.directory.map { CodexUse.resolve(UserDefaults.standard.string(forKey: CodexUse.key) ?? "", $0) == .cli } ?? false
+    }
     private var editable: Bool { status?.run == nil && status?.busy != true }
     // Codex switches only through a connected desktop; without it a rule can only reset.
     private var codexCanSwitch: Bool { service.directory?.desktop.map { $0.enabled && $0.connected } ?? false }
@@ -49,19 +81,26 @@ struct AutomationPage: View {
                             Button("知道了") { service.clearAccountError() }.buttonStyle(.pill(.onAttention, height: 20))
                         }
                     }
-                    master(status)
+                    if guiding {
+                        guide(status)
+                    } else {
+                        master(status)
+                        if status.config.enabled, doneHint == "show" { startedNote }
+                    }
                     if let run = status.run {
                         runCard(run, status: status)
                     } else if status.phase == "attention" {
                         Banner(glyph: .relay, title: "自动换号停下了", text: status.message)
                     }
                     limitNotice
-                    ForEach(["codex", "claude"], id: \.self) { provider in lane(provider, status: status) }
+                    if !(guiding && accounts.isEmpty) {
+                        ForEach(["codex", "claude"], id: \.self) { provider in lane(provider, status: status) }
+                    }
                     Text("只看 5 分钟内成功查到的主额度（Claude 是 5 小时和 7 天额度）；独立额度和查询失败都不算见底，只有 Claude 的 Fable 额度例外：Claude Code 正在用 Fable 时，它到了见底线也换号，但不用重置卡。每轮见底最多重置一次，换号后这一轮就结束；额度回到见底线以上，才开始下一轮。重置卡离到期不到 30 分钟时，只要额度用过就自动用掉，不等见底（只换号的账号除外）。完全退出应用后停止。")
                         .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 3.5)
                 }
-                .safeAreaInset(edge: .bottom) { if dirty { saveBar } }
+                .safeAreaInset(edge: .bottom) { if rulesDirty { saveBar } }
             } else if service.directory != nil {
                 PageScaffold(title: "换号与重置", subtitle: Text("当前后台服务版本不支持换号与重置。")) {}
             } else {
@@ -69,9 +108,25 @@ struct AutomationPage: View {
             }
         }
         .onAppear {
+            // Someone who already runs the strategy needs no first-time card.
+            if status?.config.enabled == true { onboarded = true }
             sync()
             let selection = AppNavigation.shared.selection
             picked = draft.accounts.contains { $0.id == selection } ? selection : draft.accounts.first?.id
+        }
+        .onChange(of: status?.config.enabled) { old, now in
+            guard now == true, !onboarded else { return }
+            onboarded = true
+            // Turned on from the first-time card (not merely loaded as on): one note on what happens next.
+            if old == false, doneHint != "done" { doneHint = "show" }
+        }
+        // A drag let go outside any slot ends without a drop; the mouse coming up ends it.
+        .task(id: dragging) {
+            guard dragging != nil, Self.previewDragging == nil else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if NSEvent.pressedMouseButtons == 0 { dragging = nil; break }
+            }
         }
         .onChange(of: status?.config) { _, config in
             if !dirty { sync() }
@@ -172,6 +227,147 @@ struct AutomationPage: View {
         .loopCard(radius: 19, raised: true)
     }
 
+    // MARK: 第一次
+
+    // Turning the strategy on spends reset cards and switches accounts by itself, so the first time the
+    // master card asks for two checks: what can and cannot happen now, then the usual confirmation.
+    private func guide(_ status: CodexStrategyStatus) -> some View {
+        let empty = accounts.isEmpty
+        return VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 12) {
+                Icon(.relay, size: 17, color: Palette.solid)
+                    .frame(width: 30, height: 30)
+                    .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("开启自动接力前，先核对这两件事").font(.system(size: 13, weight: .semibold))
+                    Text("自动规则默认关闭；确认下方顺序和策略后再开启，之后随时可关。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                }
+                Spacer(minLength: 8)
+                Button("先不用") { onboarded = true }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    .help("收起这张卡，以后用右上角的开关开启")
+            }
+            HStack(alignment: .top, spacing: 11) {
+                VStack(alignment: .leading, spacing: 8) {
+                    stepTitle(1, "核对下方顺序与前提")
+                    if empty {
+                        Text("还没有可接力的账号，先去 Codex 或 Claude 页添加至少 1 个账号").font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        if let codex = codexCheck { checkRow(codex) }
+                        if let claude = claudeCheck { checkRow(claude) }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 11)
+                .frame(maxWidth: .infinity, minHeight: 82, alignment: .topLeading)
+                .loopPanel(radius: 12)
+                VStack(alignment: .leading, spacing: 8) {
+                    stepTitle(2, "确认开启自动执行")
+                    HStack(alignment: .bottom, spacing: 10) {
+                        Text("点开启会弹出最终确认；每轮见底最多重置一次，仅看 5 分钟内额度。")
+                            .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if empty {
+                            Button("去添加账号") { AppNavigation.shared.show(.accounts) }
+                                .buttonStyle(.pill(.primary, height: 27)).fixedSize()
+                        } else {
+                            Button(dirty ? "保存并开启" : "开启自动接力") {
+                                service.clearAccountError()
+                                confirm = .enable
+                            }
+                            .buttonStyle(.pill(.primary, height: 27)).fixedSize()
+                            .disabled(saving || service.accountBusy || !editable)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 11)
+                .frame(maxWidth: .infinity, minHeight: 82, alignment: .topLeading)
+                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.brand.opacity(0.18), lineWidth: 1))
+            }
+        }
+        .padding(.horizontal, 19).padding(.top, 15).padding(.bottom, 17)
+        .loopCard(radius: 19, raised: true)
+    }
+
+    private func stepTitle(_ number: Int, _ title: String) -> some View {
+        HStack(spacing: 7) {
+            Text("\(number)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                .frame(width: 17, height: 17).background(Palette.brand, in: Circle())
+            Text(title).font(.system(size: 12, weight: .semibold))
+        }
+    }
+
+    private struct Check {
+        enum Tone { case ready, blocked, quiet }
+        let tone: Tone
+        let text: String
+        var action: (title: String, run: () -> Void)? = nil
+    }
+
+    private func checkRow(_ check: Check) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(check.tone == .blocked ? Palette.attentionDot : check.tone == .ready ? Palette.brand : Palette.disabled)
+                .frame(width: 5, height: 5)
+            Text(check.text).font(.system(size: 11)).foregroundStyle(check.tone == .blocked ? Palette.attentionText : Palette.ink2)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            if let action = check.action {
+                Button(action.title, action: action.run)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                    .padding(.horizontal, 7).frame(height: 18)
+                    .background(Palette.attentionFill, in: Capsule())
+            }
+        }
+    }
+
+    // Codex switches only through a connected desktop; otherwise its rules can only reset.
+    private var codexCheck: Check? {
+        let count = accounts.filter { $0.provider == "codex" }.count
+        guard count > 0 else { return nil }
+        if cliOnly { return Check(tone: .quiet, text: "Codex：只用 CLI 模式，见底只会重置") }
+        let desktop = service.directory?.desktop
+        if desktop?.enabled != true {
+            return Check(tone: .blocked, text: "Codex：热切换关着，目前只会重置", action: ("去打开", { AppNavigation.shared.showDesktopConnection() }))
+        }
+        if desktop?.connected != true {
+            return Check(tone: .blocked, text: "Codex：桌面没连上，目前只会重置", action: ("去连接", { AppNavigation.shared.showDesktopConnection() }))
+        }
+        return Check(tone: .ready, text: "Codex：\(count) 个账号已就绪，桌面已连可热切换")
+    }
+
+    // New Claude accounts stay out until someone turns 参与 on, so say how many are in.
+    private var claudeCheck: Check? {
+        let rules = draft.accounts.filter { tool(of: $0.id) == "claude" }
+        guard !rules.isEmpty else { return nil }
+        let joined = rules.filter(\.participate).count
+        if joined == 0 { return Check(tone: .quiet, text: "Claude Code：\(rules.count) 个账号默认未参与，接力需手动开") }
+        return Check(tone: .ready, text: "Claude Code：\(joined) 个账号参与接力" + (joined < rules.count ? "，\(rules.count - joined) 个未参与" : ""))
+    }
+
+    // Once, after the first-time card turned the strategy on.
+    private var startedNote: some View {
+        HStack(spacing: 9) {
+            BrandTile(size: 16)
+            Text("自动规则已开始运行。每次换号或用卡都会记在右上角「执行记录」里，改规则保存时会再请你确认。")
+                .font(.system(size: 12)).foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { doneHint = "done" } label: {
+                Icon(.plus, size: 11, color: Palette.deep, weight: 2)
+                    .rotationEffect(.degrees(45))
+                    .frame(width: 22, height: 22).contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("不再显示")
+            .accessibilityLabel("关闭提示，不再显示")
+        }
+        .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 8)
+        .frame(minHeight: 40)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.brand.opacity(0.18), lineWidth: 1))
+    }
+
     // MARK: 正在换号
 
     private func runCard(_ run: CodexStrategyStatus.Run, status: CodexStrategyStatus) -> some View {
@@ -221,32 +417,63 @@ struct AutomationPage: View {
         let rules = draft.accounts.filter { tool(of: $0.id) == provider }
         let count = accounts.filter { $0.provider == provider }.count
         let index = draft.accounts.firstIndex { $0.id == picked && tool(of: $0.id) == provider }
+        let caption = provider == "codex" ? (guiding ? "从左往右接力 · 新号默认参与、只换号" : "从左往右接力")
+                                          : (guiding ? "只换 Claude Code，不换桌面；新号默认不参与、只重置" : "只换 Claude Code，不暂停会话")
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 Icon(.provider(provider), size: 15)
                 Text(GlyphTile.name(provider)).font(.system(size: 13, weight: .semibold))
-                Text(provider == "codex" ? "从左往右接力" : "只在 Claude 账号之间换号，不暂停会话")
-                    .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text(caption).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                 Spacer(minLength: 7)
-                if provider == "codex", rules.count > 1, !codexCanSwitch { desktopChip }
+                if orderChanged(provider) { orderEdits(provider) }
+                if provider == "codex", rules.count > 1, !codexCanSwitch, !orderChanged(provider) { desktopChip }
+                if count == 1 {
+                    Text("仅 1 个账号 · 暂无法接力，只能重置").font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                        .padding(.horizontal, 9).frame(height: 22).background(Palette.chip, in: Capsule())
+                }
             }
+            .frame(minHeight: 24)
             if rules.isEmpty && count > 0 {
                 // Past the rule limit: the accounts exist but none of them is on the relay.
                 Text("\(count) 个账号不在规则里，见底时不会自动处理。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 12)
             } else {
-                stations(rules, provider: provider, add: count <= 1).padding(.top, 19)
+                stations(rules, provider: provider, add: count <= 1).padding(.top, 14)
             }
             if let index {
                 editor($draft.accounts[index], lane: rules).padding(.top, 14)
-                Text(rules.count > 1 ? "拖动账号调整顺序；点一个账号，在下面改规则。" : "点一个账号，在下面改规则。")
-                    .font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 10)
-            } else if !rules.isEmpty {
-                Text("点一个账号，改规则。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 10)
             }
         }
         .padding(.horizontal, 19).padding(.top, 15).padding(.bottom, 17)
         .loopCard(radius: 19)
         .disabled(!editable)
+    }
+
+    // The lane's new order, put back or saved from where it was changed.
+    private func orderEdits(_ provider: String) -> some View {
+        HStack(spacing: 6) {
+            Text("顺位已改").font(.system(size: 11)).foregroundStyle(Palette.deep)
+            Button("撤销") { undoOrder(provider) }.buttonStyle(.pill(.secondary, height: 24))
+            // With other edits waiting too, the save bar below saves everything; one button, not two.
+            if !rulesDirty {
+                Button(saving ? "正在保存…" : "保存规则") {
+                    service.clearAccountError()
+                    if draft.enabled { confirm = .save } else { save() }
+                }
+                .buttonStyle(.pill(.primary, height: 24))
+                .disabled(saving || service.accountBusy || !editable)
+            }
+        }
+    }
+
+    // Puts one lane back in its saved order and keeps every other edit.
+    private func undoOrder(_ provider: String) {
+        let saved = laneOrder(baseline, provider)
+        var lane = draft.accounts.filter { tool(of: $0.id) == provider }
+            .sorted { (saved.firstIndex(of: $0.id) ?? .max) < (saved.firstIndex(of: $1.id) ?? .max) }
+            .makeIterator()
+        withAnimation(.easeOut(duration: 0.18)) {
+            draft.accounts = draft.accounts.map { tool(of: $0.id) == provider ? (lane.next() ?? $0) : $0 }
+        }
     }
 
     private var desktopChip: some View {
@@ -264,36 +491,79 @@ struct AutomationPage: View {
         .background(Palette.attentionFill, in: Capsule())
     }
 
+    // Each account is a brick under a slot number: the number belongs to the place, so dragging a brick
+    // to another slot changes the relay order. While a brick is dragged, its slot shows where it lands.
     @ViewBuilder private func stations(_ rules: [CodexStrategyConfig.Rule], provider: String, add: Bool) -> some View {
-        let row = HStack(alignment: .top, spacing: 0) {
+        let wide = rules.count > 5
+        let movable = rules.count > 1 && editable
+        let row = HStack(alignment: .brickMiddle, spacing: 0) {
             ForEach(Array(rules.enumerated()), id: \.element.id) { offset, rule in
-                Station(account: account(rule.id), rule: rule,
-                        next: offset + 1 < rules.count ? connector(rule, rules[offset + 1], provider: provider) : add ? .idle : nil,
-                        picked: picked == rule.id, pick: { picked = rule.id })
-                    .frame(width: rules.count > 5 ? 153 : nil)
-                    .frame(maxWidth: rules.count > 5 ? nil : .infinity)
-                    .draggable(rule.id)
-                    .dropDestination(for: String.self) { items, _ in
-                        guard let id = items.first else { return false }
-                        return place(id, at: rule.id)
-                    }
+                slot(rule, number: offset + 1, movable: movable)
+                    .frame(width: wide ? 136 : nil)
+                    .frame(maxWidth: wide ? nil : .infinity)
+                if offset + 1 < rules.count || add {
+                    RelayLine(style: offset + 1 < rules.count ? connector(rule, rules[offset + 1], provider: provider) : .idle,
+                              arrow: offset + 1 < rules.count && rule.participate && rules[offset + 1].participate)
+                        .frame(width: 22)
+                        .padding(.horizontal, 4)
+                        .alignmentGuide(.brickMiddle) { $0[VerticalAlignment.center] }
+                }
             }
-            if add { addStation(provider, empty: rules.isEmpty) }
-            // Keep a station a quarter of the lane wide when there are only a few.
+            if add { addSlot(provider, empty: rules.isEmpty) }
+            // Keep a brick a quarter of the lane wide when there are only a few.
             ForEach(0..<max(0, 4 - rules.count - (add ? 1 : 0)), id: \.self) { _ in
-                Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: 30, height: 1)
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                }
             }
         }
-        if rules.count > 5 {
-            ScrollView(.horizontal, showsIndicators: false) { row }
+        if wide {
+            ScrollView(.horizontal, showsIndicators: false) { row.padding(.vertical, 2) }
         } else {
             row
         }
     }
 
+    private func slot(_ rule: CodexStrategyConfig.Rule, number: Int, movable: Bool) -> some View {
+        let landing = dragging == rule.id
+        let brick = Brick(account: account(rule.id), rule: rule, picked: picked == rule.id, movable: movable) { picked = rule.id }
+        return VStack(spacing: 5) {
+            Text(rule.participate ? "\(number)" : "–")
+                .font(.system(size: landing ? 11 : 10, weight: landing ? .bold : .semibold, design: .rounded)).monospacedDigit()
+                .foregroundStyle(landing ? Palette.brand : !rule.participate ? Palette.dash : picked == rule.id ? Palette.deep : Palette.disabled)
+                .frame(height: 13)
+                .help(rule.participate ? "接力第 \(number) 位" : "没参与接力，没有顺位")
+                .accessibilityHidden(true)
+            Group {
+                if landing {
+                    // Same size as the brick, so the lane does not move while the drag passes over it.
+                    brick.hidden().overlay { LandingSlot() }
+                } else if movable {
+                    brick
+                        .onDrag {
+                            dragging = rule.id
+                            return NSItemProvider(object: rule.id as NSString)
+                        } preview: {
+                            Brick(account: account(rule.id), rule: rule, picked: false, movable: true, lifted: true) {}
+                                .frame(width: 150)
+                                .padding(10)
+                        }
+                } else {
+                    brick
+                }
+            }
+            .alignmentGuide(.brickMiddle) { $0[VerticalAlignment.center] }
+            .onDrop(of: [UTType.text], delegate: BrickDrop(target: rule.id, dragging: $dragging) { id, target in
+                withAnimation(.easeOut(duration: 0.18)) { _ = place(id, at: target) }
+            })
+        }
+    }
+
     // A line means a switch can happen from this station to the next: both take part and this one switches.
+    // The first-time card shows the lines as they would be once on, so a desktop that is off shows up here too.
     private func connector(_ from: CodexStrategyConfig.Rule, _ to: CodexStrategyConfig.Rule, provider: String) -> RelayLine.Style {
-        guard draft.enabled, from.participate, from.order.switches, to.participate else { return .idle }
+        guard draft.enabled || guiding, from.participate, from.order.switches, to.participate else { return .idle }
         return provider == "codex" && !codexCanSwitch ? .blocked : .open
     }
 
@@ -308,27 +578,37 @@ struct AutomationPage: View {
         return true
     }
 
-    private func addStation(_ provider: String, empty: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                    .strokeBorder(Palette.dash, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2.5]))
-                    .frame(width: 27, height: 27).rotationEffect(.degrees(45))
-                Icon(.plus, size: 12, color: Palette.ink3, weight: 2)
-            }
-            .frame(width: 37, height: 37)
+    // A lane with one account or none ends in an empty brick that adds one.
+    private func addSlot(_ provider: String, empty: Bool) -> some View {
+        VStack(spacing: 5) {
+            Color.clear.frame(height: 13)
             Button { sheet = .login(provider: provider, accountID: nil) } label: {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("添加 \(provider == "codex" ? "Codex" : "Claude") 账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.solid)
-                    Text(empty ? "有账号后才能加入接力" : "有第二个账号才能换号").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                VStack(alignment: .leading, spacing: 0) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                            .fill(Palette.wash)
+                            .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                .strokeBorder(Palette.brand, style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5])))
+                            .frame(width: 15, height: 15).rotationEffect(.degrees(45))
+                        Icon(.plus, size: 9, color: Palette.deep, weight: 2.4)
+                    }
+                    .frame(width: 22, height: 22)
+                    Text("添加 \(provider == "codex" ? "Codex" : "Claude") 账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.deep)
+                        .padding(.top, 5)
+                    Text(empty ? "有账号后才能加入接力" : "有 2 个以上才能接力").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                        .padding(.top, 1)
                 }
+                .frame(maxWidth: .infinity, minHeight: Brick.contentHeight, alignment: .leading)
                 .padding(.horizontal, 10).padding(.vertical, 9)
-                .contentShape(Rectangle())
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Palette.soft, style: StrokeStyle(lineWidth: 1.3, dash: [4, 3])))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
+            .alignmentGuide(.brickMiddle) { $0[VerticalAlignment.center] }
             .disabled(service.accountBusy || service.directory?.busy == true || service.directory?.recoveryNeeded == true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: 规则
@@ -478,56 +758,153 @@ struct AutomationPage: View {
     }
 }
 
-// One account on its lane: its seal with the line to the next station, then a card with its rule.
-private struct Station: View {
+// One account on its lane, as one piece: seal, name and grip, how it stands, its rule. Clicking picks it;
+// dragging it (when the lane has more than one) moves it to another slot.
+private struct Brick: View {
     let account: ManagedAccount?
     let rule: CodexStrategyConfig.Rule
-    let next: RelayLine.Style?
     let picked: Bool
+    let movable: Bool
+    var lifted = false
     let pick: () -> Void
     @State private var hovering = false
 
+    static let contentHeight: CGFloat = 66
+
+    init(account: ManagedAccount?, rule: CodexStrategyConfig.Rule, picked: Bool, movable: Bool, lifted: Bool = false, pick: @escaping () -> Void) {
+        self.account = account
+        self.rule = rule
+        self.picked = picked
+        self.movable = movable
+        self.lifted = lifted
+        self.pick = pick
+    }
+
     var body: some View {
-        let style: Pill.Style = rule.participate ? .neutral : .dashed
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 0) {
-                Seal(account?.displayName ?? "?", style: !rule.participate ? .out : account?.native == true ? .inUse : .standby, size: 37)
-                if let next { RelayLine(style: next).padding(.leading, 5).padding(.trailing, 3.5) }
-            }
-            .frame(height: 37)
-            Button(action: pick) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(account?.displayName ?? "账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
-                    status
-                    HStack(spacing: 5) {
-                        Pill("≤ \(rule.below)%", style: style)
-                        Pill(rule.order.label, style: style)
-                    }
-                    .padding(.top, 6)
-                }
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        Button(action: pick) {
+            content
                 .padding(.horizontal, 10).padding(.vertical, 9)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(picked ? Palette.card : hovering ? Palette.hover : .clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay { if picked { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.brand, lineWidth: 1.5) } }
-                .shadow(color: .black.opacity(picked ? 0.08 : 0), radius: 7, y: 5)
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .onHover { hovering = $0 }
-            .accessibilityAddTraits(picked ? .isSelected : [])
-            .padding(.trailing, 12)
+                .background(picked || lifted || hovering ? Palette.card : Palette.hover, in: shape)
+                .overlay { outline(shape) }
+                .shadow(color: .black.opacity(lifted ? 0.16 : picked ? 0.07 : hovering ? 0.05 : 0), radius: lifted ? 13 : 5, y: lifted ? 9 : 3)
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(movable ? "点一下改规则；按住拖到别的位置，换接力顺序" : "点一下改规则")
+        .accessibilityLabel(account?.displayName ?? "账号")
+        .accessibilityAddTraits(picked ? .isSelected : [])
+    }
+
+    @ViewBuilder private func outline(_ shape: RoundedRectangle) -> some View {
+        if picked || lifted {
+            shape.strokeBorder(Palette.brand, style: StrokeStyle(lineWidth: 1.5, dash: rule.participate || lifted ? [] : [4, 3]))
+        } else if rule.participate {
+            shape.strokeBorder(Palette.ring, lineWidth: 1)
+        } else {
+            shape.strokeBorder(Palette.dashStrong.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         }
     }
 
-    // In use, not taking part, and the lowest remaining; what needs a hand replaces it in amber.
+    private var content: some View {
+        let name = account?.displayName ?? "账号"
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Seal(name, style: !rule.participate ? .out : account?.native == true ? .inUse : .standby, size: 22)
+                Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                Spacer(minLength: 4)
+                if movable { Grip(color: lifted ? Palette.brand : picked ? Palette.deep : hovering ? Palette.ink3 : Palette.dashStrong) }
+            }
+            .frame(height: 22)
+            status.padding(.top, 5)
+            HStack(spacing: 5) {
+                if rule.participate {
+                    Pill("≤ \(rule.below)%")
+                    Pill(rule.order.label)
+                } else {
+                    Pill("未参与", style: .dashed)
+                    Pill(rule.order.label, style: .dashed)
+                }
+            }
+            .padding(.top, 7)
+        }
+        .frame(height: Self.contentHeight, alignment: .top)
+    }
+
+    // In use (with a dot), how much is left; what needs a hand replaces it in amber.
     @ViewBuilder private var status: some View {
         if let account, account.needsAction {
             Text(account.health.title).font(.system(size: 11)).foregroundStyle(Palette.attentionText).lineLimit(1)
         } else {
-            let parts = [account?.native == true ? "在用" : nil, rule.participate ? nil : "不参与",
-                         account?.lowestPrimary.map { "剩余 \($0)%" }].compactMap { $0 }
-            Text(parts.isEmpty ? (account?.quotaCaption ?? " ") : parts.joined(separator: " · "))
-                .font(.system(size: 11)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
+            let inUse = account?.native == true
+            let parts = [inUse ? "在用" : nil, account?.lowestPrimary.map { "剩余 \($0)%" }].compactMap { $0 }
+            HStack(spacing: 5) {
+                if inUse { Circle().fill(rule.participate ? Palette.brand : Palette.disabled).frame(width: 5, height: 5) }
+                Text(parts.isEmpty ? (account?.quotaCaption ?? " ") : parts.joined(separator: " · "))
+                    .font(.system(size: 11)).monospacedDigit().lineLimit(1)
+                    .foregroundStyle(!rule.participate ? Palette.ink3 : inUse ? Palette.deep : Palette.ink2)
+            }
+            .frame(height: 14)
         }
     }
+}
+
+// Six dots: this piece can be picked up.
+private struct Grip: View {
+    let color: Color
+    var body: some View {
+        VStack(spacing: 2.5) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 2.5) {
+                    Circle().frame(width: 2, height: 2)
+                    Circle().frame(width: 2, height: 2)
+                }
+            }
+        }
+        .foregroundStyle(color)
+        .accessibilityHidden(true)
+    }
+}
+
+// Where the dragged brick will land: a dashed brand slot the size of a brick.
+private struct LandingSlot: View {
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        shape.fill(Palette.wash)
+            .overlay(shape.strokeBorder(Palette.brand, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+            .overlay {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(Palette.brand.opacity(0.3), lineWidth: 1.3)
+                    .frame(width: 12, height: 12).rotationEffect(.degrees(45))
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+// Live reorder: entering another brick's slot moves the dragged rule there; letting go ends the drag.
+private struct BrickDrop: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    let move: (String, String) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        move(dragging, target)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+}
+
+private extension VerticalAlignment {
+    // The middle of a lane's bricks, below their slot numbers: where the lines between them run.
+    enum BrickMiddle: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat { context[VerticalAlignment.center] }
+    }
+    static let brickMiddle = VerticalAlignment(BrickMiddle.self)
 }
