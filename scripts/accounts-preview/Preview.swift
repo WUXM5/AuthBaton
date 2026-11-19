@@ -252,6 +252,11 @@ enum Fixture {
             data["strategy"] = strategy
         case "empty":
             data["accounts"] = []
+        case "offempty":
+            // A new install: no accounts yet and the strategy never turned on.
+            data["accounts"] = []
+            data["strategy"] = ["config": ["enabled": false, "accounts": []], "busy": false, "message": "", "phase": NSNull(), "run": NSNull(),
+                                "last_at": NSNull(), "account_states": []]
         case "attention":
             var list = data["accounts"] as! [[String: Any]]
             list[0]["state"] = "reauth"; list[0]["message"] = "合成：刷新令牌已失效，需要重新登录"
@@ -840,6 +845,10 @@ extension NSWindow {
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
         for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey] { UserDefaults.standard.removeObject(forKey: key) }
+        // Sections that are not about the first-time relay card start past it.
+        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
+        UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey)
+        UserDefaults.standard.removeObject(forKey: "codex.use")
         ReminderModel.shared.reload()
         AppNavigation.shared.selection = nil
         AppNavigation.shared.claudeDetail = nil
@@ -968,7 +977,7 @@ extension NSWindow {
     section(6, "换号与重置：改规则后保存需确认，发送完整规则") {
         select(.automation)
         check.visible("桌面没连上：现在只会重置，不会换号", "桌面没连上时写明 Codex 只会重置")
-        check.expect(Driver.visible("从左往右接力") && Driver.visible("只在 Claude 账号之间换号"), "Codex 和 Claude 分成两条接力线")
+        check.expect(Driver.visible("从左往右接力") && Driver.visible("只换 Claude Code"), "Codex 和 Claude 分成两条接力线")
         check.expect(Driver.visible("见底线") && Driver.visible("见底时") && Driver.visible("参与"), "规则面板有见底线、见底时、参与")
         state.calls.removeAll()
         setOrder(from: "先换号", to: "先重置")
@@ -1247,12 +1256,14 @@ extension NSWindow {
         }
     }
     section(21, "换号与重置：往后移一位改接力顺序，保存后按新顺序发送") {
+        select(.accounts)
         select(.automation)
         state.calls.removeAll()
         // The editor's arrows sit right of its title; orbit is first, so only "往后移一位" is enabled.
         if let (window, point) = Driver.controls(beside: "orbit", size: 22).last {
             Driver.click(window, point)
-            check.visible("未保存", "移动后出现保存条")
+            check.visible("顺位已改", "移动后这条轨的标题行写「顺位已改」")
+            check.expect(!Driver.visible("有未保存的修改", wait: 0.3), "只改了顺序时不再出现底部保存条")
             saveRules()
             let strategy = check.lastCall("accounts.strategy") ?? ""
             let orbit = strategy.range(of: "synthetic-orbit")?.lowerBound, personal = strategy.range(of: "synthetic-p\"")?.lowerBound
@@ -1471,6 +1482,88 @@ extension NSWindow {
         select(.claude)
         check.expect(Driver.hits("已见底").isEmpty, "没有规则盯着的账号不写「已见底」")
     }
+    section(30, "换号与重置第一次：从没开过时总开关卡换成两步起手卡，开启照样先确认，开启后提示一次；先不用后不再出现；没账号时先去添加") {
+        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
+        Fixture.load("off", into: state)
+        // A fresh page: a draft left by another section would show as unsaved edits.
+        select(.accounts)
+        select(.automation)
+        check.visible("开启自动接力前，先核对这两件事", "从没开过时出现起手卡")
+        check.visible("Codex：桌面没连上，目前只会重置", "桌面没连上时写明 Codex 只会重置")
+        check.visible("默认未参与，接力需手动开", "写明 Claude 账号默认不参与")
+        check.expect(!Driver.visible("已关闭 · 打开后按下面的规则自动处理", wait: 0.3), "起手卡替换原来的总开关卡")
+        state.calls.removeAll()
+        Driver.press("开启自动接力", .exact)
+        check.expect(Driver.visible("允许按这些规则自动执行"), "开启照样先弹确认")
+        check.expect(state.calls.isEmpty, "确认前不发请求")
+        Driver.press("确认开启", .exact)
+        let strategy = check.lastCall("accounts.strategy") ?? ""
+        check.expect(strategy.contains("\"enabled\":true") && strategy.contains("\"confirm\":true"), "确认后发送 enabled:true 的完整规则")
+        // The service now reports the strategy on.
+        Fixture.load("default", into: state)
+        Driver.settle(0.6)
+        check.visible("自动规则已开始运行", "由起手卡开启后提示一次")
+        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "开过一次就记下，不再出现起手卡")
+        if let (window, point) = Driver.controls(beside: "改规则保存时会再请你确认", size: 22).first {
+            Driver.click(window, point)
+            check.expect(!Driver.visible("自动规则已开始运行", wait: 0.5), "点 × 关掉提示")
+            check.expect(UserDefaults.standard.string(forKey: AutomationPage.hintKey) == "done", "关掉后不再出现")
+        } else {
+            check.expect(false, "找到提示的 ×")
+        }
+        print("  → 先不用")
+        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
+        Fixture.load("off", into: state)
+        select(.accounts)
+        select(.automation)
+        Driver.press("先不用", .exact)
+        check.visible("已关闭 · 打开后按下面的规则自动处理", "先不用后回到普通的总开关卡")
+        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "先不用后记下")
+        print("  → 还没有账号")
+        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
+        Fixture.load("offempty", into: state)
+        select(.accounts)
+        select(.automation)
+        check.visible("还没有可接力的账号", "没账号时说先去添加")
+        check.expect(!Driver.visible("从左往右接力", wait: 0.3), "没账号时不画接力轨")
+        Driver.press("去添加账号", .exact)
+        check.expect(AppNavigation.shared.page == .accounts, "「去添加账号」打开账号页")
+        print("  → 已经开着的老用户")
+        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
+        UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey)
+        Fixture.load("default", into: state)
+        select(.automation)
+        check.expect(!Driver.visible("开启自动接力前", wait: 0.3) && !Driver.visible("自动规则已开始运行", wait: 0.3), "已经开着时不出现起手卡和提示")
+        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "已经开着的记为看过")
+    }
+    section(31, "换号与重置排序：顺位已改写在这条轨的标题行，撤销只恢复这条轨的顺序，保存规则只有一个，保存发送新顺序") {
+        select(.accounts)
+        select(.automation)
+        state.calls.removeAll()
+        // The editor's arrow moves through the same reorder a drop does.
+        @MainActor func moveOrbitRight() -> Bool {
+            guard let (window, point) = Driver.controls(beside: "orbit", size: 22).last else { return false }
+            Driver.click(window, point)
+            return true
+        }
+        check.expect(moveOrbitRight(), "找到规则面板的「往后移一位」")
+        check.visible("顺位已改", "顺序变了，标题行写「顺位已改」")
+        check.expect(Driver.hits("保存规则").count == 1, "只改顺序：只有标题行一个「保存规则」")
+        setOrder(from: "先换号", to: "先重置")
+        check.visible("有未保存的修改", "顺序以外也改了：出现底部保存条")
+        check.expect(Driver.hits("保存规则").count == 1, "两样都改了：仍只有一个「保存规则」")
+        Driver.press("撤销", .exact)
+        check.expect(!Driver.visible("顺位已改", wait: 0.5), "撤销后这条轨回到原来的顺序")
+        check.visible("有未保存的修改", "撤销只动顺序，规则的改动还在")
+        Driver.press("还原", .exact)
+        check.expect(!Driver.visible("有未保存的修改", wait: 0.5), "还原后没有改动")
+        check.expect(moveOrbitRight(), "再往后移一位")
+        saveRules()
+        let strategy = check.lastCall("accounts.strategy") ?? ""
+        let orbit = strategy.range(of: "synthetic-orbit")?.lowerBound, personal = strategy.range(of: "synthetic-p\"")?.lowerBound
+        check.expect(orbit != nil && personal != nil && personal! < orbit!, "保存后 orbit 排到 12345678（个人）后面")
+        check.expect(strategy.contains("\"order\":\"switch_first\""), "只改了顺序，规则本身照旧")
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -1579,6 +1672,8 @@ extension NSWindow {
                 ("claude-switchblock", "switchblock", .claude, "synthetic-claude-b"),
                 ("claude-low", "claudelow", .claude, nil), ("claude-low5", "claudelow5", .claude, nil), ("claude-lowboth", "claudelowboth", .claude, nil),
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
+                ("automation-onboard", "off", .automation, nil), ("automation-onboard-empty", "offempty", .automation, nil),
+                ("automation-on-hint", "default", .automation, nil), ("automation-drag", "default", .automation, "synthetic-nova"),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
                 ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),
                 ("claude-desktop-behind", "desktopbehind", .claude, nil), ("claude-deskquota", "deskquota", .claude, nil),
@@ -1592,6 +1687,10 @@ extension NSWindow {
             for (name, scenario, page, selection) in pages {
                 Fixture.load(scenario, into: state)
                 if let mode = modes[name] { UserDefaults.standard.set(mode.rawValue, forKey: ClaudeUse.key) } else { UserDefaults.standard.removeObject(forKey: ClaudeUse.key) }
+                // The relay page's first-time card and its note after turning on, only where drawn.
+                UserDefaults.standard.set(!name.hasPrefix("automation-onboard"), forKey: AutomationPage.onboardedKey)
+                if name == "automation-on-hint" { UserDefaults.standard.set("show", forKey: AutomationPage.hintKey) } else { UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey) }
+                AutomationPage.previewDragging = name == "automation-drag" ? "synthetic-nova" : nil
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }
                 let size = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
