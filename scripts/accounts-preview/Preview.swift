@@ -115,6 +115,7 @@ enum Fixture {
             "snapshots": [["id": "20261102-210000-watch", "at": now - 2400, "kind": "hourly", "folders": 3],
                           ["id": "20261101-090000-baseline", "at": now - 36 * 3600, "kind": "baseline", "folders": 2]],
             "retention": ["at_risk": false, "kept": true, "can_undo": true, "can_keep": true],
+            "code_relay": ["enabled": false, "install_state": "not_installed", "state": "off", "message": "同 Team 账号不重启桌面、对话不中断", "busy": false, "relayed_count": 0],
             "symlinks": 0,
         ]
     }
