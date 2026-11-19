@@ -561,10 +561,15 @@ impl Runtime {
         } else if state.is_relay_active() {
             let label = active_label.as_deref().unwrap_or("当前账号");
             ("active", format!("已开启 · 当前账号 {label}"))
+        } else if state.effective_active().is_none() {
+            (
+                "waiting_account",
+                "请先登录至少一个同 Team 的 Code 账号，即可无感换号".to_string(),
+            )
         } else {
             (
                 "waiting_account",
-                "等待可用的同 Team Claude 账号，暂时回退官方登录".to_string(),
+                "等待识别同 Team 的 Claude 桌面账号，暂时回退默认登录".to_string(),
             )
         };
         json!({

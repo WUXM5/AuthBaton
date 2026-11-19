@@ -326,6 +326,26 @@ enum Fixture {
                 "busy": false, "relayed_count": 3,
             ]
             data["claude_desktop"] = desktop
+        case "coderelaydesk":
+            // Pure-Desktop mode with Code 无感换号 on: 1 desktop shell login + 1 AuthBaton-only same-Team Code account.
+            var list = data["accounts"] as! [[String: Any]]
+            var second = list.first { $0["provider"] as? String == "claude" }!
+            second["id"] = "synthetic-claude-b"; second["label"] = "Claude 备用"; second["identity"] = "b***@example.invalid"
+            second["native"] = false; second["state"] = "healthy"; second["message"] = ""; second["expires_at"] = now + 3600
+            second["warmup"] = ["enabled": false, "hour": 9, "running": false]
+            list.append(second)
+            data["accounts"] = list
+            var desktop = claudeDesktop(now)
+            var rows = Array((desktop["accounts"] as! [[String: Any]]).prefix(1))
+            rows[0]["in_use"] = true
+            desktop["accounts"] = rows
+            desktop["code_relay"] = [
+                "enabled": true, "install_state": "installed", "state": "active",
+                "message": "已开启 · 当前账号 Claude 当前账号",
+                "active_label": "Claude 当前账号", "same_team": true,
+                "busy": false, "relayed_count": 1,
+            ]
+            data["claude_desktop"] = desktop
         case "claudeboth":
             // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
             var list = data["accounts"] as! [[String: Any]]
@@ -1574,6 +1594,7 @@ extension NSWindow {
         check.expect(!Driver.visible("开始管理 Codex 账号", wait: 0.3) && !Driver.visible("再加一个备用号", wait: 0.3), "已有账号时不出现引导")
         check.expect(UserDefaults.standard.string(forKey: Onboarding.codexKey) == Onboarding.done, "已有账号的第一次打开直接记为结束")
         UserDefaults.standard.removeObject(forKey: Onboarding.codexKey)
+        UserDefaults.standard.removeObject(forKey: Onboarding.claudeKey)
         Fixture.load("fresh", into: state)
         select(.codex)
         check.visible("开始管理 Codex 账号", "Codex 没有账号：起手卡")
@@ -1740,6 +1761,22 @@ extension NSWindow {
         check.expect(uninstallCall.contains("\"desktop_action\":\"code_relay_uninstall\"")
                      && uninstallCall.contains("\"confirm\":true"),
                      "确认后发送 code_relay_uninstall confirm:true")
+        print("  → 纯桌面模式开启 Code 无感换号：Code 账号免桌面登录直接无感换上")
+        UserDefaults.standard.set(ClaudeUse.desktop.rawValue, forKey: ClaudeUse.key)
+        defer { UserDefaults.standard.removeObject(forKey: ClaudeUse.key) }
+        Fixture.load("coderelaydesk", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        check.visible("Code无感可用", "只用桌面且开启无感换号时，仅登在 AuthBaton 的账号标注「Code 无感可用」")
+        check.expect(!Driver.visible("去桌面登录", wait: 0.3), "不再要求去桌面重复登录")
+        if !Driver.press("换上", .exact) { check.expect(false, "找到 Claude 备用卡片上的「换上」") }
+        let directActivate = check.lastCall("accounts.activate") ?? ""
+        check.expect(main.attachedSheet == nil && directActivate.contains("synthetic-claude-b"),
+                     "只用桌面开启无感换号时，点「换上」直接无感切 Code，不弹桌面重启框")
+        Driver.menuChoice = "添加 Code 模式账号（无感换号 / CLI 共用）…"
+        Driver.press("添加账号", .suffix)
+        check.expect(main.attachedSheet != nil, "只用桌面开启无感换号时，页头「添加账号」可直接添加 Code 模式账号")
+        Driver.press("取消", .exact)
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")

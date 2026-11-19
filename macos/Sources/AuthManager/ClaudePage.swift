@@ -68,15 +68,17 @@ struct ClaudeAccountPage: View {
     }
 
     private var picker: some View {
-        HStack(spacing: 3.5) {
+        let codeRelayOn = directory.claudeDesktop?.codeRelay?.enabled == true
+        let dual = use == .both || codeRelayOn
+        return HStack(spacing: 3.5) {
             ForEach(entries) { item in
                 let on = item.id == entry.id
                 Button { nav.claudeDetail = item.id } label: {
                     HStack(spacing: 6) {
                         ClaudeSeal(entry: item, size: 19, rule: item.cli.flatMap { directory.rule(for: $0.id) })
                         Text(item.name).font(.system(size: 12, weight: on ? .semibold : .regular)).lineLimit(1)
-                        if use == .both && use.code && item.inCode { Icon(.terminal, size: 10, color: Palette.deep, weight: 2.2) }
-                        if use == .both && item.inDesk { Icon(.desktop, size: 10, color: Palette.deep, weight: 2) }
+                        if dual && (use.code || codeRelayOn) && item.inCode { Icon(.terminal, size: 10, color: Palette.deep, weight: 2.2) }
+                        if dual && item.inDesk { Icon(.desktop, size: 10, color: Palette.deep, weight: 2) }
                         if item.cli?.needsAction == true { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
                     }
                     .padding(.leading, 5).padding(.trailing, 10).frame(height: 27)
@@ -124,7 +126,7 @@ private struct ClaudeMain: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
                             Text(account.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                            InUsePill(entry: entry, use: use)
+                            InUsePill(entry: entry, use: use, codeRelayOn: directory.claudeDesktop?.codeRelay?.enabled == true)
                         }
                         Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3)
                             .textSelection(.enabled).lineLimit(1)

@@ -194,14 +194,16 @@ private struct LocalLoginRow: View {
 private struct NewLoginRow: View {
     let provider: String
     let prominent: Bool
+    var note: String? = nil
     let open: (AccountSheet) -> Void
 
     var body: some View {
         HStack(spacing: 9) {
             Button("登录新账号") { open(.login(provider: provider, accountID: nil)) }
                 .buttonStyle(.pill(prominent ? .primary : .secondary, height: 26))
-            Text(prominent ? "浏览器授权单独保存，不会影响本机其他客户端。" : "浏览器授权单独保存，不影响当前登录")
+            Text(note ?? (prominent ? "浏览器授权单独保存，不会影响本机其他客户端。" : "浏览器授权单独保存，不影响当前登录"))
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -278,7 +280,8 @@ struct ClaudeStarter: View {
                                 .background(Palette.field, in: RoundedRectangle(cornerRadius: 7.5, style: .continuous))
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("Claude 桌面").font(.system(size: 12, weight: .semibold))
-                                Text("在桌面登录过的账号会自动认出，不用导入").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                                Text("桌面只需登录 1 个同 Team 账号（Chat / Cowork）；已登录的会自动认出").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Button("在 Claude 桌面登录…") { keep(); addDesktop() }
@@ -289,7 +292,10 @@ struct ClaudeStarter: View {
                         .background(Palette.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
                     }
-                    NewLoginRow(provider: "claude", prominent: !(use.code && local != nil) && !(use.desk && desktop), open: { keep(); open($0) })
+                    NewLoginRow(provider: "claude",
+                                prominent: !(use.code && local != nil) && !(use.desk && desktop),
+                                note: loginNote(use),
+                                open: { keep(); open($0) })
                 }
             }
         }
@@ -304,9 +310,17 @@ struct ClaudeStarter: View {
 
     private func note(_ use: ClaudeUse) -> String {
         switch use {
-        case .both: "两边登录相互独立，可以只换一边或一起换；额度与重置卡互通。"
+        case .both: "桌面 Code 无感换号与终端 CLI 共用 AuthBaton 登录，额度与重置卡互通；桌面壳登录用于 Chat / Cowork。"
         case .code: "点击直接换号不弹确认框；只显示 Claude Code 相关项。"
-        case .desktop: "换号时会退出再重新打开 Claude 桌面，有任务在跑时 Claude 会先问你。"
+        case .desktop: "桌面换号会重启桌面（用于 Chat / Cowork）；若常用桌面 Code，把同 Team 账号登录到 AuthBaton 并开「Code 无感换号」即可不重启切号。"
+        }
+    }
+
+    private func loginNote(_ use: ClaudeUse) -> String? {
+        switch use {
+        case .desktop: "供桌面 Code 无感换号用（无需装独立 CLI），日后用终端 CLI 也可直接复用。"
+        case .both: "桌面 Code 无感换号与终端 CLI 共用，浏览器授权单独保存，不影响当前登录。"
+        case .code: nil
         }
     }
 }

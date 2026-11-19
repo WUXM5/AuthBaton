@@ -648,12 +648,20 @@ impl Accounts {
             return Err("不支持的账号类型");
         }
         let binary = if provider == "codex" {
-            self.codex.as_deref()
+            self.codex
+                .clone()
+                .ok_or("未安装对应的官方 CLI")?
         } else {
-            self.sources.claude_bin.as_deref()
-        }
-        .ok_or("未安装对应的官方 CLI")?
-        .to_path_buf();
+            self.sources
+                .claude_bin
+                .clone()
+                .or_else(|| {
+                    crate::desktop_claude(&self.home)
+                        .into_iter()
+                        .find(|p| p.is_file())
+                })
+                .ok_or("未找到 Claude CLI：请安装 Claude Code CLI，或在 Claude 桌面版先打开一次 Code 模式")?
+        };
         let profile = random_id()?;
         let location = self.staging(provider, &profile)?;
         let index = if let Some(id) = existing {
@@ -1685,11 +1693,39 @@ impl Accounts {
             return;
         }
 
-        let active_summary = self
+        let active_candidate = self
             .db
             .accounts
             .iter()
-            .find(|a| a.provider == "claude" && a.native)
+            .find(|a| a.provider == "claude" && a.native && switch_target_ready(a).is_ok())
+            .or_else(|| {
+                // Pure-Desktop users who added Code accounts without a pre-existing CLI default
+                // login have no `native` account until their first switch; pick a ready same-Team
+                // account (preferring the Desktop's current account UUID) so seamless switching
+                // and 429 failover work immediately.
+                let desk_org = desktop_org.as_deref()?;
+                let same_team = |a: &&Account| {
+                    a.provider == "claude"
+                        && switch_target_ready(a).is_ok()
+                        && a.metadata
+                            .as_ref()
+                            .and_then(|m| parse_claude_owner(&m.owner))
+                            .is_some_and(|(_, org)| org == desk_org)
+                };
+                if let Some(desk_uuid) = desktop_acct.as_deref()
+                    && let Some(matched) = self.db.accounts.iter().find(|a| {
+                        same_team(a)
+                            && a.metadata
+                                .as_ref()
+                                .and_then(|m| parse_claude_owner(&m.owner))
+                                .is_some_and(|(acct, _)| acct == desk_uuid)
+                    })
+                {
+                    return Some(matched);
+                }
+                self.db.accounts.iter().find(same_team)
+            });
+        let active_summary = active_candidate
             .map(|a| {
                 format!(
                     "{}:{}:{:?}:{:?}",
@@ -1734,12 +1770,7 @@ impl Accounts {
             })
         };
 
-        let active = self
-            .db
-            .accounts
-            .iter()
-            .find(|a| a.provider == "claude" && a.native && switch_target_ready(a).is_ok())
-            .and_then(&extract);
+        let active = active_candidate.and_then(&extract);
 
         let mut fallbacks = Vec::new();
         if let Some(active_acct) = &active {
@@ -1764,7 +1795,7 @@ impl Accounts {
                 let Some(acct) = self.db.accounts.iter().find(|a| a.id == id) else {
                     continue;
                 };
-                if acct.provider != "claude" || acct.native || switch_target_ready(acct).is_err() {
+                if acct.provider != "claude" || switch_target_ready(acct).is_err() {
                     continue;
                 }
                 let Some(owner) = acct.metadata.as_ref().map(|m| m.owner.as_str()) else {
