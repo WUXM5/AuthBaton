@@ -252,6 +252,19 @@ enum Fixture {
             data["strategy"] = strategy
         case "empty":
             data["accounts"] = []
+        case "fresh":
+            // A first run: no AuthBaton account, and Claude 桌面 installed but not yet seen signed in.
+            data["accounts"] = []
+            var desktop = data["claude_desktop"] as! [String: Any]
+            desktop["accounts"] = []
+            desktop["snapshots"] = []
+            desktop["sessions"] = 0
+            data["claude_desktop"] = desktop
+        case "codexone":
+            // Just after the first Codex account, the desktop already connected (a lost one's band would take the strip's place).
+            let list = data["accounts"] as! [[String: Any]]
+            data["accounts"] = list.filter { $0["provider"] as? String != "codex" || $0["id"] as? String == "synthetic-orbit" }
+            data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
         case "attention":
             var list = data["accounts"] as! [[String: Any]]
             list[0]["state"] = "reauth"; list[0]["message"] = "合成：刷新令牌已失效，需要重新登录"
@@ -839,9 +852,12 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
-        for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey] { UserDefaults.standard.removeObject(forKey: key) }
+        for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey, CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         ReminderModel.shared.reload()
         AppNavigation.shared.selection = nil
+        AppNavigation.shared.desktopSheet = false
         AppNavigation.shared.claudeDetail = nil
         Driver.settle(0.5)
         run()
@@ -874,7 +890,7 @@ extension NSWindow {
         state.calls.removeAll()
         check.expect(Driver.visible("现在还换不到"), "出现「现在还换不到」说明")
         check.expect(Driver.visible("关闭热切换"), "给出第二条出路：关闭热切换")
-        Driver.press("以调试模式重启并换上", .exact)
+        Driver.press("重启桌面并换上", .exact)
         check.expect(check.lastCall("accounts.desktop_relaunch_switch")?.contains("synthetic-nova") == true, "按钮调用 accounts.desktop_relaunch_switch(id)")
         check.expect(check.lastCall("accounts.activate") == nil, "没连上时不直接调用 accounts.activate")
         let restart = Date().timeIntervalSince1970
@@ -984,28 +1000,39 @@ extension NSWindow {
                      "新 Claude 账号随规则发送：只重置，默认不参与")
         print("    \(strategy.prefix(400))")
     }
-    section(7, "Codex 桌面页：启动与关闭热切换；已连接但没接管时写明并给出接管") {
+    section(7, "Codex 桌面并进 Codex 页：页头胶囊写连接状态，连接详情里重开、端口和热切换；没接管时页面上方写明并给出接管") {
         Fixture.load("unmanaged", into: state)
-        select(.desktop)
-        check.expect(Driver.visible("已连接 · 未接管"), "已连接但没接管时写明「已连接 · 未接管」")
         select(.codex)
-        check.expect(Driver.visible("交给 AuthBaton"), "Codex 页在用的卡片说明要接管")
-        check.expect(Driver.near("orbit", "接管") != nil, "在用的卡片给出「接管」")
+        check.visible("接管后才能热切换", "已连接但没接管时页面上方写明")
+        check.expect(Driver.visible("未接管") && Driver.visible("接管桌面"), "页头胶囊写「未接管」，横幅给「接管桌面」")
+        check.expect(Driver.near("orbit", "接管") == nil, "在用的卡片不再重复「接管」")
+        Driver.press("连接详情")
+        check.visible("已连接 · 未接管", "连接详情写明「已连接 · 未接管」")
+        if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        Driver.settle(0.5)
         select(.accounts)
         check.expect(Driver.visible("交给 AuthBaton") && !Driver.hits("接管", .exact).isEmpty, "账号页在用的卡片说明并给出「接管」")
         Fixture.load("connected", into: state)
-        select(.desktop)
-        check.expect(Driver.visible("已连接 · 已接管"), "接管后写明「已连接 · 已接管」")
+        select(.codex)
+        check.expect(!Driver.visible("还在用自己的登录", wait: 0.3) && !Driver.visible("Codex 桌面没连上", wait: 0.3), "连上并接管后页面上没有横幅")
+        // The capsule's monitor glyph reads as a character in front of its label.
+        Driver.press("热切换", .suffix)
+        check.visible("已连接 · 已接管", "连接详情写明「已连接 · 已接管」")
+        if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        Driver.settle(0.5)
         Fixture.load("default", into: state)
-        select(.desktop)
+        select(.codex)
+        check.visible("Codex 桌面没连上", "没连上时页面上方写明")
         state.calls.removeAll()
         Driver.press("以调试模式重新打开")
-        check.expect(check.lastCall("accounts.desktop_launch") != nil, "「以调试模式重新打开」调用 accounts.desktop_launch")
-        if let toggle = Driver.views(NSSwitch.self).first {
+        check.expect(check.lastCall("accounts.desktop_launch") != nil, "横幅「以调试模式重新打开」调用 accounts.desktop_launch")
+        Driver.press("没连上", .suffix)
+        check.visible("点「以调试模式重新打开」后会这样做", "没连上时连接详情列出三步")
+        if let toggle = Driver.views(NSSwitch.self).first(where: { $0.window?.sheetParent != nil }) {
             Driver.click(toggle)
             check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":false") == true, "关闭热切换开关发送 enabled:false")
         } else {
-            check.expect(false, "找到热切换开关")
+            check.expect(false, "找到连接详情里的热切换开关")
         }
     }
     section(8, "个人云端：切换模式需要确认") {
@@ -1451,6 +1478,78 @@ extension NSWindow {
         check.visible("用Code模式聊一次", "并提示去 Code 模式聊一次，之后自动刷新")
         check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
     }
+    section(32, "Codex 使用方式：只用 CLI 关掉热切换、页面不再出现桌面；换回用桌面恢复热切换；没连上的换号框选「关闭热切换」后变成普通切换") {
+        select(.codex)
+        check.expect(Driver.visible("CLI 与桌面"), "开着热切换时默认按「CLI 与桌面」")
+        state.calls.removeAll()
+        Driver.menuChoice = "只用 Codex CLI"
+        // The menu's chevron reads as a character after its label.
+        Driver.press("CLI 与桌面", .prefix)
+        Driver.settle()
+        check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":false") == true, "选「只用 CLI」发送热切换 enabled:false")
+        check.expect(UserDefaults.standard.string(forKey: CodexUse.key) == CodexUse.cli.rawValue, "记住了「只用 CLI」")
+        Fixture.load("hotoff", into: state)
+        Driver.settle()
+        check.expect(Driver.visible("只用 CLI") && !Driver.visible("普通切换", wait: 0.3) && !Driver.visible("Codex 桌面没连上", wait: 0.3),
+                     "只用 CLI：页头没有桌面胶囊，也没有桌面横幅")
+        check.visible("只用 CLI 时见底只会重置", "页脚写明只用 CLI 时见底只会重置")
+        openSwitch("synthetic-nova")
+        check.expect(Driver.visible("仅改写") && Driver.visible("请先退出正在运行的 Codex CLI"), "只用 CLI 的换号框：普通切换，提醒先退出 CLI")
+        Driver.press("取消", .exact)
+        Driver.settle()
+        select(.codex)
+        state.calls.removeAll()
+        Driver.menuChoice = "CLI 与桌面都用"
+        Driver.press("只用 CLI", .prefix)
+        Driver.settle()
+        check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":true") == true, "换回用桌面时恢复热切换 enabled:true")
+        print("  → 没连上的换号框：选「关闭热切换」，主按钮跟着变")
+        UserDefaults.standard.removeObject(forKey: CodexUse.key)
+        Fixture.load("default", into: state)
+        openSwitch("synthetic-nova")
+        check.expect(Driver.visible("重启桌面并换上"), "默认选「重启桌面并换上」")
+        Driver.press("关闭热切换，改用普通切换")
+        check.visible("关闭热切换并继续", "选第二种后主按钮变「关闭热切换并继续」")
+        state.calls.removeAll()
+        Driver.press("关闭热切换并继续", .exact)
+        check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":false") == true, "确认后发送热切换 enabled:false")
+        UserDefaults.standard.set(CodexUse.both.rawValue, forKey: CodexUse.key)
+        Fixture.load("hotoff", into: state)
+        Driver.settle(0.8)
+        check.visible("已退出，换上", "关掉热切换后同一个框变成普通切换确认")
+        check.visible("退出 Codex 桌面和 CLI", "用桌面时普通切换提醒先退出桌面")
+        Driver.press("取消", .exact)
+    }
+    section(33, "首次使用引导：没有账号时 Codex / Claude 页换成起手卡，能导入本机登录；先不用后不再出现；有了第一个账号后只剩一行提示；老用户看不到") {
+        select(.codex)
+        check.expect(!Driver.visible("开始管理 Codex 账号", wait: 0.3) && !Driver.visible("再加一个备用号", wait: 0.3), "已有账号时不出现引导")
+        check.expect(UserDefaults.standard.string(forKey: Onboarding.codexKey) == Onboarding.done, "已有账号的第一次打开直接记为结束")
+        UserDefaults.standard.removeObject(forKey: Onboarding.codexKey)
+        Fixture.load("fresh", into: state)
+        select(.codex)
+        check.visible("开始管理 Codex 账号", "Codex 没有账号：起手卡")
+        check.expect(Driver.visible("平时怎么用 Codex") && Driver.visible("本机已有 Codex 登录"), "第一步选使用方式，第二步给出本机登录")
+        check.expect(Driver.hits("CLI 与桌面", .exact).count == 1, "起手卡时页头没有使用方式菜单，只在卡里选")
+        state.calls.removeAll()
+        Driver.press("导入本机登录", .exact)
+        check.expect(check.lastCall("accounts.import")?.contains("codex") == true, "「导入本机登录」调用 accounts.import(codex)")
+        Driver.press("先不用", .exact)
+        Driver.settle()
+        check.expect(UserDefaults.standard.string(forKey: Onboarding.codexKey) == Onboarding.done, "先不用后记下引导已结束")
+        check.expect(!Driver.visible("开始管理 Codex 账号", wait: 0.3) && Driver.visible("还没有 Codex 账号"), "先不用后回到普通空页面")
+        select(.claude)
+        check.visible("开始管理 Claude 账号", "Claude 没有账号：起手卡")
+        check.expect(Driver.visible("本机 Claude Code 登录") && Driver.visible("在 Claude 桌面登录"), "列出本机 Claude Code 登录和 Claude 桌面")
+        print("  → 有了第一个账号：一行提示")
+        UserDefaults.standard.set(Onboarding.started, forKey: Onboarding.codexKey)
+        Fixture.load("codexone", into: state)
+        select(.codex)
+        check.visible("再加一个备用号", "第一个账号后提示加备用号")
+        Driver.press("添加备用号", .exact)
+        check.expect(main.attachedSheet != nil, "「添加备用号」打开添加账号")
+        Driver.press("取消", .exact)
+        Driver.settle()
+    }
     section(29, "Claude 卡见底：见底那栏的大数字换成多久后回满，条下写剩余和见底线，名字旁「已见底」；两个都见底只放大最晚回满的；独立额度是小进度条") {
         Fixture.load("claudelow", into: state)
         select(.claude)
@@ -1491,7 +1590,7 @@ extension NSWindow {
 
 @main struct Preview {
     static func page(_ name: String) -> Page {
-        ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation, "desktop": .desktop,
+        ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation,
          "clients": .clients, "cloud": .cloud, "network": .network][name]!
     }
     @MainActor static func main() {
@@ -1553,7 +1652,7 @@ extension NSWindow {
             let output = URL(fileURLWithPath: args[4], isDirectory: true)
             try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let claude = state.directory!.accounts.first { $0.provider == "claude" }?.id
-            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude), ("automation", .automation, nil), ("desktop", .desktop, nil)] {
+            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude), ("automation", .automation, nil)] {
                 AppNavigation.shared.show(page, select: selection)
                 _ = render(DashboardView(), size: NSSize(width: 1020, height: 660), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
             }
@@ -1580,7 +1679,8 @@ extension NSWindow {
                 ("claude-low", "claudelow", .claude, nil), ("claude-low5", "claudelow5", .claude, nil), ("claude-lowboth", "claudelowboth", .claude, nil),
                 ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
                 ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
-                ("desktop", "default", .desktop, nil), ("desktop-connected", "connected", .desktop, nil), ("desktop-off", "hotoff", .desktop, nil),
+                ("codex-connected", "connected", .codex, nil), ("codex-plain", "hotoff", .codex, nil), ("codex-cli", "hotoff", .codex, nil),
+                ("codex-onboard", "fresh", .codex, nil), ("claude-onboard", "fresh", .claude, nil), ("codex-next", "codexone", .codex, nil),
                 ("claude-desktop-behind", "desktopbehind", .claude, nil), ("claude-deskquota", "deskquota", .claude, nil),
                 ("claude-desktop-switching", "desktopswitching", .claude, nil), ("claude-desktop-missing", "desktopmissing", .claude, nil),
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
@@ -1589,9 +1689,14 @@ extension NSWindow {
             ]
             // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
             let modes: [String: ClaudeUse] = ["claude-code": .code, "claude-desktop": .desktop]
+            let codexModes: [String: CodexUse] = ["codex-plain": .both, "codex-cli": .cli]
             for (name, scenario, page, selection) in pages {
                 Fixture.load(scenario, into: state)
                 if let mode = modes[name] { UserDefaults.standard.set(mode.rawValue, forKey: ClaudeUse.key) } else { UserDefaults.standard.removeObject(forKey: ClaudeUse.key) }
+                // Each page decides its own first run and way of use, except where the scenario pins one.
+                for key in [CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey] { UserDefaults.standard.removeObject(forKey: key) }
+                if let use = codexModes[name] { UserDefaults.standard.set(use.rawValue, forKey: CodexUse.key) }
+                if name == "codex-next" { UserDefaults.standard.set(Onboarding.started, forKey: Onboarding.codexKey) }
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }
                 let size = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
@@ -1603,6 +1708,7 @@ extension NSWindow {
             let sheets: [(String, AnyView)] = [
                 ("sheet-login", AnyView(LoginView(provider: "codex"))),
                 ("sheet-switch-blocked", AnyView(SwitchSheet(account: nova, close: {}))),
+                ("sheet-desktop-connection", AnyView(CodexConnectSheet(close: {}))),
                 ("sheet-recover", AnyView(RecoverSaveSheet(account: claude, close: {}))),
                 ("sheet-reset", AnyView(ResetSheet(account: nova, creditID: "credit-l1", requestID: "r", expiresAt: Fixture.iso(5 * 86400), retry: false, close: {}))),
                 ("sheet-remove", AnyView(RemoveSheet(account: nova, close: {}))),
@@ -1651,6 +1757,16 @@ extension NSWindow {
             let switchSize = render(SwitchSheet(account: state.directory!.accounts.first { $0.id == "synthetic-nova" }!, close: {}).background(Palette.card),
                                     size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-switch-desktop.png"))
             print("\(appearance)/sheet-switch-desktop: \(switchSize.width) × \(switchSize.height)")
+            for (name, scenario, use) in [("sheet-desktop-connection-on", "connected", CodexUse.both), ("sheet-desktop-connection-unmanaged", "unmanaged", .both),
+                                          ("sheet-switch-takeover", "unmanaged", .both), ("sheet-switch-plain", "hotoff", .both), ("sheet-switch-cli", "hotoff", .cli)] {
+                UserDefaults.standard.set(use.rawValue, forKey: CodexUse.key)
+                Fixture.load(scenario, into: state)
+                let view = name.hasPrefix("sheet-desktop") ? AnyView(CodexConnectSheet(close: {}))
+                    : AnyView(SwitchSheet(account: state.directory!.accounts.first { $0.id == "synthetic-nova" }!, close: {}))
+                let size = render(view.background(Palette.card), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
+                print("\(appearance)/\(name): \(size.width) × \(size.height)")
+            }
+            UserDefaults.standard.removeObject(forKey: CodexUse.key)
             Fixture.load("claude2", into: state)
             let claudeSize = render(SwitchSheet(account: state.directory!.accounts.first { $0.id == "synthetic-claude-b" }!, close: {}).background(Palette.card),
                                     size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-switch-claude.png"))

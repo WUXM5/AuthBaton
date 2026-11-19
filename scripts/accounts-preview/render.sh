@@ -10,7 +10,7 @@ SDK="$(xcrun --sdk macosx26.5 --show-sdk-path)"
 SRC="$ROOT/macos/Sources/AuthManager"
 swiftc -sdk "$SDK" -parse-as-library \
   "$SRC/Models.swift" "$SRC/Theme.swift" "$SRC/LoopKit.swift" "$SRC/Presentation.swift" "$SRC/DashboardView.swift" \
-  "$SRC/AccountsView.swift" "$SRC/AccountParts.swift" "$SRC/CodexPage.swift" "$SRC/ClaudeHome.swift" "$SRC/ClaudePage.swift" "$SRC/ConfirmSheets.swift" \
+  "$SRC/AccountsView.swift" "$SRC/AccountParts.swift" "$SRC/CodexPage.swift" "$SRC/Onboarding.swift" "$SRC/ClaudeHome.swift" "$SRC/ClaudePage.swift" "$SRC/ConfirmSheets.swift" \
   "$SRC/CodexStrategyView.swift" "$SRC/DesktopConnectionView.swift" "$SRC/ClaudeDesktopModels.swift" "$SRC/ClaudeDesktopPage.swift" "$SRC/NetworkModels.swift" "$SRC/NetworkPage.swift" \
   "$SRC/MenuBarPanel.swift" "$SRC/LoginView.swift" "$SRC/CloudView.swift" "$SRC/ResetHistoryView.swift" \
   "$ROOT/scripts/accounts-preview/Preview.swift" -o "$BIN"

@@ -230,7 +230,7 @@ struct MenuBarPanel: View {
                 Button("取消") { expanded = nil }.buttonStyle(.pill(.secondary, height: 20))
                 if blocked {
                     Button("打开设置") {
-                        AppNavigation.shared.show(.desktop)
+                        AppNavigation.shared.showDesktopConnection()
                         openWindow()
                     }
                     .buttonStyle(.pill(.secondary, height: 20))

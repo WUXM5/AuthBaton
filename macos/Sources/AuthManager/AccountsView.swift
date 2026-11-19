@@ -10,6 +10,7 @@ enum AccountSheet: Identifiable {
     case rename(String)
     case history(String?)
     case strategyStop
+    case desktopConnection
 
     var id: String {
         switch self {
@@ -21,6 +22,7 @@ enum AccountSheet: Identifiable {
         case .rename(let id): "rename-\(id)"
         case .history(let id): "history-\(id ?? "all")"
         case .strategyStop: "strategy-stop"
+        case .desktopConnection: "desktop-connection"
         }
     }
 }
@@ -195,7 +197,7 @@ private struct HeroCard: View {
                 }
                 .padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 15)
                 if let current {
-                    AccountStrips(account: current, directory: directory, open: open, desktop: .all).padding(.horizontal, 19)
+                    AccountStrips(account: current, directory: directory, open: open, desktop: true).padding(.horizontal, 19)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

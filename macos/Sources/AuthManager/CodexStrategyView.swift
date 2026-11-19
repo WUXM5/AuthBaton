@@ -253,7 +253,7 @@ struct AutomationPage: View {
         let off = service.directory?.desktop?.enabled != true
         return HStack(spacing: 7) {
             Text(off ? "热切换关着：现在只会重置，不会换号" : "桌面没连上：现在只会重置，不会换号")
-            Button(off ? "去打开" : "去连接") { AppNavigation.shared.show(.desktop) }
+            Button(off ? "去打开" : "去连接") { AppNavigation.shared.showDesktopConnection() }
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .semibold))
                 .padding(.horizontal, 7).frame(height: 17)
