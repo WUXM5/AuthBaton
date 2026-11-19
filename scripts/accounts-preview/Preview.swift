@@ -577,10 +577,10 @@ extension NSWindow {
     static func normalize(_ text: String) -> String {
         // SF draws a capital I and a small l alike, and OCR mixes them up ("Iab team"); fold both sides.
         var result = text.replacingOccurrences(of: "I", with: "l").lowercased().replacingOccurrences(of: " ", with: "")
-        for (from, to) in [("～", "~"), ("：", ":"), ("，", ","), ("（", "("), ("）", ")"), ("…", "..."), ("「", ""), ("」", ""),
+        for (from, to) in [("～", "~"), ("：", ":"), ("，", ","), ("（", "("), ("）", ")"), ("…", "..."), ("⋯", "..."), ("「", ""), ("」", ""),
                            ("·", "."), ("・", "."), ("•", "."), ("；", ";"), ("？", "?"), ("！", "!"),
-                           // OCR sometimes reads 换 as its traditional form, and in small text 底 as 厎, 未 as 末, 撤 as 撒
-                           // (the app never writes 厎, 末 or 撒).
+                           // OCR sometimes reads 换 as its traditional form, and in small text 底 as 厎, 未 as 末, 撤 as 撒,
+                           // … as ⋯ (the app never writes 厎, 末, 撒 or ⋯).
                            ("換", "换"), ("厎", "底"), ("末", "未"), ("撒", "撤")] {
             result = result.replacingOccurrences(of: from, with: to)
         }
@@ -1388,6 +1388,9 @@ extension NSWindow {
         state.loginTarget = nil
     }
     section(25, "Claude 页（两边都用）：同步条、桌面换号要确认并按 handle 发送，Code 在用的账号只把桌面换过来") {
+        // With the Code relay strip on the page, the third card's buttons sit below a 765-high window.
+        main.setContentSize(NSSize(width: 1020, height: 900))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("default", into: state)
         select(.claude)
         check.expect(Driver.visible("Code与桌面") && Driver.visible("个桌面会话") && Driver.visible("各账号一样"), "两边都用：页头写使用方式，同步条写会话数和各账号一样")
@@ -1467,6 +1470,9 @@ extension NSWindow {
         main.orderFrontRegardless()
     }
     section(27, "Claude 页：两边都能换时「换上」分两半，▾ 选只换一边并记住；只用 Code / 只用桌面时页面只放那一边") {
+        // With the Code relay strip on the page, the third card's buttons sit below a 765-high window.
+        main.setContentSize(NSSize(width: 1020, height: 900))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("claudeboth", into: state)
         select(.claude)
         check.expect(Driver.visible("只有会话、没保存登录") && Driver.visible("c***@example.invalid"), "只有会话目录的旧账号单独写一句")
@@ -1716,8 +1722,9 @@ extension NSWindow {
         Fixture.load("coderelayon", into: state)
         select(.claude)
         state.calls.removeAll()
-        check.visible("当前账号Claude当前账号", "开启后状态条展示当前接力账号")
-        check.visible("已接力3次", "开启后展示已接力次数")
+        // The strip's small grey line reads unevenly (当前 as 当刖, 接力 as 接刀); match the parts OCR keeps.
+        check.visible("账号Claude", "开启后状态条展示当前接力账号")
+        check.visible("3次", "开启后展示已接力次数")
         check.expect(!Driver.visible("桌面也换上", wait: 0.3), "开启无感换号时不弹账号不一致横幅")
         if let hit = Driver.hits("卸载插件").first {
             // Vision OCR merges the footer text and trailing link into one line; click the trailing link.
