@@ -1,0 +1,14 @@
+{
+  "name": "authbaton-desktop-relay",
+  "description": "AuthBaton managed marketplace for Claude Desktop Code tab seamless same-Team account switching",
+  "owner": {
+    "name": "AuthBaton"
+  },
+  "plugins": [
+    {
+      "name": "authbaton",
+      "source": "./authbaton",
+      "description": "AuthBaton Claude Desktop Code seamless same-Team account switcher"
+    }
+  ]
+}
