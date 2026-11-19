@@ -15,7 +15,7 @@ struct CloudPage: View {
         let cloud = service.directory?.cloud
         PageScaffold(title: "个人云端",
                      subtitle: Text("\(cloud?.mode == "cloud" ? "云端模式" : "本地模式") · \(cloud?.paired == true ? "已配对" : "还没配对")"),
-                     spacing: 14) {
+                     spacing: 14, narrow: true) {
             CloudConnectionView()
         }
     }

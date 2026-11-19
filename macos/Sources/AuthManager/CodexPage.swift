@@ -110,17 +110,11 @@ struct CodexPage: View {
                             if onboarding == Onboarding.started, let next = OnboardingNext.codex(directory, accounts: accounts) {
                                 NextStrip(next: next, open: { sheet = $0 }, dismiss: { onboarding = Onboarding.done })
                             }
-                            // Two cards a row, each row as tall as its taller card so the footers line up.
-                            Grid(horizontalSpacing: 14, verticalSpacing: 14) {
-                                ForEach(Array(stride(from: 0, to: accounts.count, by: 2)), id: \.self) { start in
-                                    GridRow {
-                                        ForEach(accounts[start..<min(start + 2, accounts.count)]) { account in
-                                            CodexCard(account: account, directory: directory, selected: nav.selection == account.id) { sheet = $0 }
-                                                .frame(maxHeight: .infinity, alignment: .top)
-                                                .id(account.id)
-                                        }
-                                        if start + 1 == accounts.count { Color.clear.frame(maxWidth: .infinity, maxHeight: 1) }
-                                    }
+                            CardGrid {
+                                ForEach(accounts) { account in
+                                    CodexCard(account: account, directory: directory, selected: nav.selection == account.id) { sheet = $0 }
+                                        .frame(maxHeight: .infinity, alignment: .top)
+                                        .id(account.id)
                                 }
                             }
                             if directory.strategy != nil {
@@ -308,7 +302,7 @@ private struct CodexCard: View {
                         .padding(.top, 9)
                 }
             }
-            .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 14)
+            .padding(.horizontal, 14).padding(.top, 15).padding(.bottom, 14)
             Spacer(minLength: 0)
             HStack(spacing: 5) {
                 if let rule {
@@ -323,9 +317,9 @@ private struct CodexCard: View {
                 // Taking the desktop over is the page band's job; the in-use card offers no 接管 of its own.
                 AccountActions(account: account, directory: directory, open: open, showSwitch: !account.native)
             }
-            .padding(.horizontal, 17).padding(.vertical, 10)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
-            AccountStrips(account: account, directory: directory, open: open).padding(.horizontal, 17)
+            AccountStrips(account: account, directory: directory, open: open).padding(.horizontal, 14)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .loopCard(radius: 19, raised: account.native)

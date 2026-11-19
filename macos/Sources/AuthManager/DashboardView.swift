@@ -49,7 +49,7 @@ struct DashboardView: View {
     var body: some View {
         HStack(spacing: 0) {
             Sidebar()
-                .frame(width: 197)
+                .frame(width: 182)
                 .frame(maxHeight: .infinity)
                 .background(Palette.rail)
                 .overlay(alignment: .trailing) { Rectangle().fill(Palette.railEdge).frame(width: 1) }
@@ -59,8 +59,8 @@ struct DashboardView: View {
                         if !service.isConnected { ReconnectButton() }
                     }
                     // Clear of the hidden title bar, where the window is dragged.
-                    .padding(.horizontal, 27).padding(.top, 34)
-                    .frame(maxWidth: 816)
+                    .padding(.horizontal, 16).padding(.top, 34)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 page
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -175,7 +175,7 @@ private struct Sidebar: View {
             .padding(.top, 17)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 8)
         .padding(.top, 43)
         .padding(.bottom, 10)
     }
@@ -205,7 +205,7 @@ private struct Sidebar: View {
                 Spacer(minLength: 3.5)
                 trailing()
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 8)
             .frame(height: 29)
             .background {
                 if on {
@@ -241,7 +241,7 @@ struct ClientsPage: View {
     @EnvironmentObject private var service: ServiceController
 
     var body: some View {
-        PageScaffold(title: "客户端与服务", subtitle: Text("官方客户端现在从哪里读登录")) {
+        PageScaffold(title: "客户端与服务", subtitle: Text("官方客户端现在从哪里读登录"), narrow: true) {
             Button { Task { await service.refresh() } } label: {
                 HStack(spacing: 5) {
                     Icon(.refresh, size: 12, color: Palette.ink2)

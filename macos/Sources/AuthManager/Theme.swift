@@ -83,11 +83,13 @@ extension View {
         self.background(Palette.panel, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 
-    // The page column: centred, at most 960 wide.
-    func pageColumn() -> some View {
-        self.padding(.horizontal, 27).padding(.top, 26).padding(.bottom, 41)
-            .frame(maxWidth: 816, alignment: .leading)
-            .frame(maxWidth: .infinity)
+    // The page column fills the window next to the sidebar, 16 from each side: a wider window gives the
+    // cards more room (and more columns), never empty bands. Single-column settings pages stop at 860
+    // and stay left, so their switches do not drift away from their labels.
+    func pageColumn(narrow: Bool = false) -> some View {
+        self.padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 24)
+            .frame(maxWidth: narrow ? 892 : .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -130,13 +132,14 @@ extension PageHeader where Trailing == EmptyView {
     }
 }
 
-// Every page: a header, then cards in one centred column.
+// Every page: a header, then its content in the page column.
 struct PageScaffold<Trailing: View, Content: View>: View {
     let title: String
     var subtitle: Text? = nil
     var provider: String? = nil
     var glyph: Glyph? = nil
     var spacing: CGFloat = 17
+    var narrow = false
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
 
@@ -146,14 +149,53 @@ struct PageScaffold<Trailing: View, Content: View>: View {
                 PageHeader(title: title, subtitle: subtitle, provider: provider, glyph: glyph) { trailing }
                 content
             }
-            .pageColumn()
+            .pageColumn(narrow: narrow)
+        }
+    }
+}
+
+// Account cards: as many columns as cards of at least 384 fit (one to four), 12 apart; each row is as tall
+// as its tallest card, so footers line up.
+struct CardGrid: Layout {
+    var minWidth: CGFloat = 384
+    var spacing: CGFloat = 12
+
+    private func columns(_ width: CGFloat) -> Int { max(1, min(4, Int((width + spacing) / (minWidth + spacing)))) }
+
+    private func rows(_ width: CGFloat, _ subviews: Subviews) -> (cell: CGFloat, columns: Int, heights: [CGFloat]) {
+        let n = columns(width)
+        let cell = (width - spacing * CGFloat(n - 1)) / CGFloat(n)
+        let heights = stride(from: 0, to: subviews.count, by: n).map { start in
+            subviews[start..<min(start + n, subviews.count)].map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }.max() ?? 0
+        }
+        return (cell, n, heights)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        // An unbounded proposal (asking for the ideal size) gets two columns' worth.
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minWidth * 2 + spacing
+        let layout = rows(width, subviews)
+        return CGSize(width: width, height: layout.heights.reduce(0, +) + spacing * CGFloat(max(0, layout.heights.count - 1)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = rows(bounds.width, subviews)
+        var y = bounds.minY
+        for (row, height) in layout.heights.enumerated() {
+            for column in 0..<layout.columns {
+                let index = row * layout.columns + column
+                guard index < subviews.count else { break }
+                subviews[index].place(at: CGPoint(x: bounds.minX + CGFloat(column) * (layout.cell + spacing), y: y),
+                                      proposal: ProposedViewSize(width: layout.cell, height: height))
+            }
+            y += height + spacing
         }
     }
 }
 
 extension PageScaffold where Trailing == EmptyView {
-    init(title: String, subtitle: Text? = nil, provider: String? = nil, spacing: CGFloat = 17, @ViewBuilder content: () -> Content) {
-        self.init(title: title, subtitle: subtitle, provider: provider, spacing: spacing, trailing: { EmptyView() }, content: content)
+    init(title: String, subtitle: Text? = nil, provider: String? = nil, spacing: CGFloat = 17, narrow: Bool = false, @ViewBuilder content: () -> Content) {
+        self.init(title: title, subtitle: subtitle, provider: provider, spacing: spacing, narrow: narrow, trailing: { EmptyView() }, content: content)
     }
 }
 

@@ -25,7 +25,7 @@ struct NetworkPage: View {
     private var status: NetworkStatus? { service.directory?.network }
 
     var body: some View {
-        PageScaffold(title: "网络", subtitle: Text(status?.current.title.prefixed("现在连着 ") ?? "正在读取…"), glyph: .wifi) {
+        PageScaffold(title: "网络", subtitle: Text(status?.current.title.prefixed("现在连着 ") ?? "正在读取…"), glyph: .wifi, narrow: true) {
             if status?.switching != true {
                 Button { sheet = .pick(nil) } label: {
                     HStack(spacing: 5) { Icon(.relay, size: 12, color: .white); Text("切换网络") }

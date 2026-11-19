@@ -494,37 +494,31 @@ struct AutomationPage: View {
 
     // Each account is a brick under a slot number: the number belongs to the place, so dragging a brick
     // to another slot changes the relay order. While a brick is dragged, its slot shows where it lands.
+    // Bricks keep one width and line up from the left, so a wider window shows more of the lane; a lane
+    // longer than the window scrolls sideways.
     @ViewBuilder private func stations(_ rules: [CodexStrategyConfig.Rule], provider: String, add: Bool) -> some View {
-        let wide = rules.count > 5
         let movable = rules.count > 1 && editable
         let row = HStack(alignment: .brickMiddle, spacing: 0) {
             ForEach(Array(rules.enumerated()), id: \.element.id) { offset, rule in
                 slot(rule, number: offset + 1, movable: movable)
-                    .frame(width: wide ? 136 : nil)
-                    .frame(maxWidth: wide ? nil : .infinity)
+                    .frame(width: Self.brickWidth)
                 if offset + 1 < rules.count || add {
                     RelayLine(style: offset + 1 < rules.count ? connector(rule, rules[offset + 1], provider: provider) : .idle,
                               arrow: offset + 1 < rules.count && rule.participate && rules[offset + 1].participate)
-                        .frame(width: 22)
+                        .frame(width: 14)
                         .padding(.horizontal, 4)
                         .alignmentGuide(.brickMiddle) { $0[VerticalAlignment.center] }
                 }
             }
-            if add { addSlot(provider, empty: rules.isEmpty) }
-            // Keep a brick a quarter of the lane wide when there are only a few.
-            ForEach(0..<max(0, 4 - rules.count - (add ? 1 : 0)), id: \.self) { _ in
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: 30, height: 1)
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
-                }
-            }
+            if add { addSlot(provider, empty: rules.isEmpty).frame(width: Self.brickWidth) }
         }
-        if wide {
+        ViewThatFits(in: .horizontal) {
+            row.frame(maxWidth: .infinity, alignment: .leading)
             ScrollView(.horizontal, showsIndicators: false) { row.padding(.vertical, 2) }
-        } else {
-            row
         }
     }
+
+    static let brickWidth: CGFloat = 172
 
     private func slot(_ rule: CodexStrategyConfig.Rule, number: Int, movable: Bool) -> some View {
         let landing = dragging == rule.id
