@@ -55,8 +55,9 @@ struct AutomationPage: View {
         (config?.accounts ?? []).map(\.id).filter { tool(of: $0) == provider }
     }
     private func orderChanged(_ provider: String) -> Bool { baseline != nil && laneOrder(draft, provider) != laneOrder(baseline, provider) }
-    // Never turned on, never put away: the master card becomes the first-time card.
-    private var guiding: Bool { !onboarded && status?.config.enabled == false && status?.run == nil }
+    // Never turned on, never put away: the master card becomes the first-time card. A strategy that has
+    // acted before (last_at) belongs to someone who already used it, even if it is off now.
+    private var guiding: Bool { !onboarded && status?.config.enabled == false && status?.run == nil && status?.lastAt == nil }
     private var cliOnly: Bool {
         service.directory.map { CodexUse.resolve(UserDefaults.standard.string(forKey: CodexUse.key) ?? "", $0) == .cli } ?? false
     }
