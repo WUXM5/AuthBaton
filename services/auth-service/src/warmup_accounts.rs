@@ -222,7 +222,16 @@ impl Accounts {
             if access.expires_at.is_some_and(|e| e <= time + 60) {
                 return Err("Access 已到期，等待认证维护续期");
             }
-            let binary = self.sources.claude_bin.clone().ok_or("未找到 Claude CLI")?;
+            let binary = self
+                .sources
+                .claude_bin
+                .clone()
+                .or_else(|| {
+                    crate::desktop_claude(&self.home)
+                        .into_iter()
+                        .find(|p| p.is_file())
+                })
+                .ok_or("未找到 Claude CLI")?;
             Ok((binary, access.token))
         });
         let id = account.id.clone();

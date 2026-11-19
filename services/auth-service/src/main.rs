@@ -2,6 +2,7 @@ mod accounts;
 mod automation;
 mod claude;
 mod claude_desktop;
+mod claude_desktop_relay;
 mod claude_locks;
 mod claude_mod;
 mod claude_resets;
@@ -106,6 +107,9 @@ fn sources(home: &Path) -> Sources {
             candidates.extend(env::split_paths(&paths).map(|path| path.join("claude")));
         }
         candidates.extend(npm_claude(home));
+        // Pure Claude Desktop users without a standalone CLI still have the official Claude Code
+        // binary bundled by Desktop's Code tab; use it as the final fallback for isolated login/warmup.
+        candidates.extend(desktop_claude(home));
         candidates.into_iter().find(|path| path.is_file())
     };
     Sources {
@@ -117,6 +121,43 @@ fn sources(home: &Path) -> Sources {
             .unwrap_or_else(|| home.join(".pi/agent")),
         claude_bin: find_binary(),
     }
+}
+
+/// Official Claude Code CLI downloaded by Claude Desktop for its Code tab under
+/// `~/Library/Application Support/Claude/claude-code/<version>/[<hash>/]claude.app/Contents/MacOS/claude`,
+/// ordered newest semantic version first.
+pub(crate) fn desktop_claude(home: &Path) -> Vec<PathBuf> {
+    let base = home.join("Library/Application Support/Claude/claude-code");
+    let mut versions: Vec<((u32, u32, u32), PathBuf)> = std::fs::read_dir(&base)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let mut parts = name.trim_start_matches('v').split('.').map(|p| p.parse().ok());
+            let version = (parts.next()??, parts.next()??, parts.next()??);
+            Some((version, entry.path()))
+        })
+        .collect();
+    versions.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    let mut found = Vec::new();
+    for (_, ver_dir) in versions {
+        found.push(ver_dir.join("claude.app/Contents/MacOS/claude"));
+        found.push(ver_dir.join("claude"));
+        let mut subdirs: Vec<PathBuf> = std::fs::read_dir(&ver_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n != "claude.app"))
+            .collect();
+        subdirs.sort();
+        for sub in subdirs {
+            found.push(sub.join("claude.app/Contents/MacOS/claude"));
+            found.push(sub.join("claude"));
+        }
+    }
+    found
 }
 
 /// Where `npm install -g` puts `claude` outside the paths above, for a service started from Finder
@@ -686,5 +727,28 @@ mod tests {
             serde_json::from_str(&line.expect("service dropped the connection")).unwrap();
         assert_eq!(reply["id"], "late");
         assert!(reply.get("result").is_some());
+    }
+
+    #[test]
+    fn desktop_bundled_claude_is_found_newest_version_first() {
+        let home = env::temp_dir().join(format!("am-desk-cli-{}", std::process::id()));
+        let old = home.join(
+            "Library/Application Support/Claude/claude-code/2.1.300/aaa111/claude.app/Contents/MacOS",
+        );
+        let new = home.join(
+            "Library/Application Support/Claude/claude-code/2.1.325/bbb222/claude.app/Contents/MacOS",
+        );
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        let old_bin = old.join("claude");
+        let new_bin = new.join("claude");
+        fs::write(&old_bin, b"#!/bin/sh\n").unwrap();
+        fs::write(&new_bin, b"#!/bin/sh\n").unwrap();
+        let found: Vec<PathBuf> = desktop_claude(&home)
+            .into_iter()
+            .filter(|p| p.is_file())
+            .collect();
+        assert_eq!(found, vec![new_bin, old_bin]);
+        fs::remove_dir_all(&home).unwrap();
     }
 }

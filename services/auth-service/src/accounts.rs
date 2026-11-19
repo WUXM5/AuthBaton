@@ -103,6 +103,10 @@ pub struct Accounts {
     automation: crate::automation::Runtime,
     claude_mod: crate::claude_mod::Runtime,
     claude_desktop: crate::claude_desktop::Runtime,
+    claude_desktop_relay: crate::claude_desktop_relay::Runtime,
+    relay_last_sync: u64,
+    relay_last_fingerprint: String,
+    relay_pending_switch: Option<String>,
     network: crate::network_switch::Runtime,
     #[cfg(test)]
     reset_transport: Option<crate::codex_api::Transport>,
@@ -134,6 +138,7 @@ impl Accounts {
         // Only the real service reads and writes Claude desktop's files; tests build through
         // with_platform and keep it off.
         manager.claude_desktop = crate::claude_desktop::Runtime::start(root);
+        manager.claude_desktop_relay = crate::claude_desktop_relay::Runtime::start(root, home);
         // Only the real service switches networks; the hotspot helper ships beside it.
         let hotspot = bundled.with_file_name("hotspot-helper");
         manager.network = crate::network_switch::Runtime::start(
@@ -237,6 +242,10 @@ impl Accounts {
             automation: crate::automation::Runtime::default(),
             claude_mod: crate::claude_mod::Runtime::default(),
             claude_desktop: crate::claude_desktop::Runtime::off(),
+            claude_desktop_relay: crate::claude_desktop_relay::Runtime::off(),
+            relay_last_sync: 0,
+            relay_last_fingerprint: String::new(),
+            relay_pending_switch: None,
             network: crate::network_switch::Runtime::off(),
             #[cfg(test)]
             reset_transport: None,
@@ -446,10 +455,74 @@ impl Accounts {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
         let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a)})).collect();
-        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":self.claude_desktop.snapshot(|uuid|{let prefix=format!("claude:{uuid}:");self.db.accounts.iter().find(|a|a.provider=="claude"&&a.metadata.as_ref().is_some_and(|m|m.owner.starts_with(&prefix))).map(|a|a.id.clone())})})
+        let mut desktop_snapshot = self.claude_desktop.snapshot(|uuid| {
+            let prefix = format!("claude:{uuid}:");
+            self.db
+                .accounts
+                .iter()
+                .find(|a| {
+                    a.provider == "claude"
+                        && a.metadata
+                            .as_ref()
+                            .is_some_and(|m| m.owner.starts_with(&prefix))
+                })
+                .map(|a| a.id.clone())
+        });
+        if let Some(obj) = desktop_snapshot.as_object_mut() {
+            obj.insert(
+                "code_relay".into(),
+                self.claude_desktop_relay
+                    .snapshot(self.claude_desktop.code_relay_enabled()),
+            );
+        }
+        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot})
     }
     pub fn claude_desktop(&mut self, command: crate::claude_desktop::Command<'_>) -> Result<()> {
-        self.claude_desktop.command(command)
+        match command.action {
+            "code_relay" => {
+                let on = command.enabled.ok_or("缺少无感换号开关")?;
+                if !on {
+                    self.claude_desktop.set_code_relay_config(false)?;
+                    self.relay_pending_switch = None;
+                    self.sync_claude_desktop_relay(true);
+                    return Ok(());
+                }
+                if !command.confirm {
+                    return Err("需要确认后才能开启 Claude 桌面 Code 无感换号");
+                }
+                let state = self.claude_desktop_relay.refresh_install_state();
+                match state {
+                    crate::claude_desktop_relay::InstallState::BlockedRemote => {
+                        return Err("当前组织启用了云端托管策略，无法使用本机插件注册");
+                    }
+                    crate::claude_desktop_relay::InstallState::Installed => {
+                        self.claude_desktop.set_code_relay_config(true)?;
+                        self.sync_claude_desktop_relay(true);
+                    }
+                    crate::claude_desktop_relay::InstallState::NotInstalled
+                    | crate::claude_desktop_relay::InstallState::NeedsUpdate => {
+                        self.claude_desktop_relay.start_install(true)?;
+                    }
+                }
+                Ok(())
+            }
+            "code_relay_install" => {
+                if !command.confirm {
+                    return Err("需要确认后才能安装或更新系统插件");
+                }
+                let auto_enable = self.claude_desktop.code_relay_enabled();
+                self.claude_desktop_relay.start_install(auto_enable)
+            }
+            "code_relay_uninstall" => {
+                if !command.confirm {
+                    return Err("需要确认后才能卸载系统插件");
+                }
+                let _ = self.claude_desktop.set_code_relay_config(false);
+                self.relay_pending_switch = None;
+                self.claude_desktop_relay.start_uninstall()
+            }
+            _ => self.claude_desktop.command(command),
+        }
     }
     pub fn import(&mut self, provider: &str, label: &str) -> Result<()> {
         self.ensure_idle()?;
@@ -575,12 +648,20 @@ impl Accounts {
             return Err("不支持的账号类型");
         }
         let binary = if provider == "codex" {
-            self.codex.as_deref()
+            self.codex
+                .clone()
+                .ok_or("未安装对应的官方 CLI")?
         } else {
-            self.sources.claude_bin.as_deref()
-        }
-        .ok_or("未安装对应的官方 CLI")?
-        .to_path_buf();
+            self.sources
+                .claude_bin
+                .clone()
+                .or_else(|| {
+                    crate::desktop_claude(&self.home)
+                        .into_iter()
+                        .find(|p| p.is_file())
+                })
+                .ok_or("未找到 Claude CLI：请安装 Claude Code CLI，或在 Claude 桌面版先打开一次 Code 模式")?
+        };
         let profile = random_id()?;
         let location = self.staging(provider, &profile)?;
         let index = if let Some(id) = existing {
@@ -1120,7 +1201,11 @@ impl Accounts {
             });
         }
         self.db.switch = None;
-        self.save()
+        let saved = self.save();
+        if target.provider == "claude" {
+            self.sync_claude_desktop_relay(true);
+        }
+        saved
     }
     pub fn retry_save(&mut self, id: &str) -> Result<()> {
         self.ensure_idle()?;
@@ -1293,6 +1378,7 @@ impl Accounts {
             let prefix = format!("claude:{uuid}:");
             owners.iter().any(|owner| owner.starts_with(&prefix))
         });
+        self.tick_claude_desktop_relay();
         self.network.tick();
         self.cloud_tick();
         if self
@@ -1499,9 +1585,248 @@ impl Accounts {
         self.desktop_stop();
         self.finish_reset();
         self.warmup_stop();
+        self.claude_desktop_relay.stop();
         self.claude_desktop.stop();
         self.network.stop();
         self.quota.stop(now());
+    }
+
+    fn tick_claude_desktop_relay(&mut self) {
+        if !self.claude_desktop_relay.is_active_runtime() {
+            return;
+        }
+        if self.claude_desktop_relay.poll() {
+            let _ = self.claude_desktop.set_code_relay_config(true);
+            self.sync_claude_desktop_relay(true);
+        }
+        let events = self.claude_desktop_relay.drain_events();
+        for event in events {
+            match event {
+                crate::claude_desktop_relay::RelayEvent::Switched { to_id } => {
+                    if self.ensure_idle().is_ok() && self.index(&to_id).is_ok() {
+                        let _ = self.activate_native(&to_id);
+                    } else {
+                        self.relay_pending_switch = Some(to_id);
+                    }
+                }
+                crate::claude_desktop_relay::RelayEvent::Observed {
+                    account_id,
+                    model,
+                    primary_used,
+                    limited,
+                } => {
+                    let time = now();
+                    if model
+                        .as_deref()
+                        .is_some_and(|m| m.to_ascii_lowercase().contains("fable"))
+                    {
+                        self.claude_mod.fable_at = Some(time);
+                    }
+                    if (limited || primary_used.is_some_and(|u| u >= 90.0))
+                        && time >= self.claude_mod.last_query + 30
+                    {
+                        self.claude_mod.last_query = time;
+                        self.quota.request(&account_id, time);
+                    }
+                }
+                crate::claude_desktop_relay::RelayEvent::Unauthorized { account_id } => {
+                    if self.ensure_check_admission().is_ok() {
+                        let _ = self.request_check(&account_id, true);
+                    }
+                }
+            }
+        }
+        if let Some(to_id) = self.relay_pending_switch.clone()
+            && self.ensure_idle().is_ok()
+        {
+            self.relay_pending_switch = None;
+            if self.index(&to_id).is_ok() {
+                let _ = self.activate_native(&to_id);
+            }
+            self.sync_claude_desktop_relay(true);
+        }
+        self.sync_claude_desktop_relay(false);
+    }
+
+    fn sync_claude_desktop_relay(&mut self, force: bool) {
+        if !self.claude_desktop_relay.is_active_runtime() {
+            return;
+        }
+        let config_enabled = self.claude_desktop.code_relay_enabled();
+        let desktop_id = self.claude_desktop.desktop_identity();
+        let desktop_acct = desktop_id.as_ref().map(|d| d.account_uuid.clone());
+        let desktop_label = desktop_id.as_ref().map(|d| d.display.clone());
+        let desktop_org = desktop_id
+            .as_ref()
+            .and_then(|d| d.org_uuid.clone())
+            .or_else(|| {
+                let acct = desktop_acct.as_deref()?;
+                self.db.accounts.iter().find_map(|a| {
+                    if a.provider != "claude" {
+                        return None;
+                    }
+                    let owner = a.metadata.as_ref()?.owner.as_str();
+                    let (a_uuid, o_uuid) = parse_claude_owner(owner)?;
+                    (a_uuid == acct).then(|| o_uuid.to_string())
+                })
+            });
+
+        if !config_enabled {
+            let fp = format!(
+                "off:{}:{}",
+                desktop_acct.as_deref().unwrap_or(""),
+                desktop_org.as_deref().unwrap_or("")
+            );
+            if force || self.relay_last_fingerprint != fp {
+                self.relay_last_fingerprint = fp;
+                self.relay_last_sync = now();
+                self.claude_desktop_relay
+                    .sync(crate::claude_desktop_relay::RelaySyncInput {
+                        enabled: false,
+                        desktop_account_uuid: desktop_acct,
+                        desktop_org_uuid: desktop_org,
+                        desktop_label,
+                        active: None,
+                        fallbacks: Vec::new(),
+                    });
+            }
+            return;
+        }
+
+        let active_candidate = self
+            .db
+            .accounts
+            .iter()
+            .find(|a| a.provider == "claude" && a.native && switch_target_ready(a).is_ok())
+            .or_else(|| {
+                // Pure-Desktop users who added Code accounts without a pre-existing CLI default
+                // login have no `native` account until their first switch; pick a ready same-Team
+                // account (preferring the Desktop's current account UUID) so seamless switching
+                // and 429 failover work immediately.
+                let desk_org = desktop_org.as_deref()?;
+                let same_team = |a: &&Account| {
+                    a.provider == "claude"
+                        && switch_target_ready(a).is_ok()
+                        && a.metadata
+                            .as_ref()
+                            .and_then(|m| parse_claude_owner(&m.owner))
+                            .is_some_and(|(_, org)| org == desk_org)
+                };
+                if let Some(desk_uuid) = desktop_acct.as_deref()
+                    && let Some(matched) = self.db.accounts.iter().find(|a| {
+                        same_team(a)
+                            && a.metadata
+                                .as_ref()
+                                .and_then(|m| parse_claude_owner(&m.owner))
+                                .is_some_and(|(acct, _)| acct == desk_uuid)
+                    })
+                {
+                    return Some(matched);
+                }
+                self.db.accounts.iter().find(same_team)
+            });
+        let active_summary = active_candidate
+            .map(|a| {
+                format!(
+                    "{}:{}:{:?}:{:?}",
+                    a.id, a.label, a.last_local, a.last_refresh
+                )
+            })
+            .unwrap_or_default();
+        let fp = format!(
+            "on:{}:{}:{}:{}",
+            desktop_acct.as_deref().unwrap_or(""),
+            desktop_org.as_deref().unwrap_or(""),
+            active_summary,
+            self.db.accounts.len()
+        );
+        let time = now();
+        if !force && self.relay_last_fingerprint == fp && time < self.relay_last_sync + 15 {
+            return;
+        }
+        self.relay_last_fingerprint = fp;
+        self.relay_last_sync = time;
+
+        let now_ms = time.saturating_mul(1000);
+        let extract = |account: &Account| -> Option<crate::claude_desktop_relay::RelayAccount> {
+            let owner = account.metadata.as_ref()?.owner.as_str();
+            let (account_uuid, org_uuid) = parse_claude_owner(owner)?;
+            let bundle = self.bundle(account).ok()?;
+            let token = bundle.credential["accessToken"].as_str()?;
+            if token.is_empty() {
+                return None;
+            }
+            if let Some(exp_ms) = bundle.credential["expiresAt"].as_u64()
+                && exp_ms <= now_ms.saturating_add(30_000)
+            {
+                return None;
+            }
+            Some(crate::claude_desktop_relay::RelayAccount {
+                id: account.id.clone(),
+                label: account.label.clone(),
+                account_uuid: account_uuid.to_string(),
+                org_uuid: org_uuid.to_string(),
+                access_token: token.to_string(),
+            })
+        };
+
+        let active = active_candidate.and_then(&extract);
+
+        let mut fallbacks = Vec::new();
+        if let Some(active_acct) = &active {
+            let mut ordered_ids: Vec<String> = self
+                .db
+                .automation
+                .config
+                .accounts
+                .iter()
+                .filter(|r| r.participate)
+                .map(|r| r.id.clone())
+                .collect();
+            for a in &self.db.accounts {
+                if a.provider == "claude" && !ordered_ids.contains(&a.id) {
+                    ordered_ids.push(a.id.clone());
+                }
+            }
+            for id in ordered_ids {
+                if id == active_acct.id {
+                    continue;
+                }
+                let Some(acct) = self.db.accounts.iter().find(|a| a.id == id) else {
+                    continue;
+                };
+                if acct.provider != "claude" || switch_target_ready(acct).is_err() {
+                    continue;
+                }
+                let Some(owner) = acct.metadata.as_ref().map(|m| m.owner.as_str()) else {
+                    continue;
+                };
+                let Some((_, org_uuid)) = parse_claude_owner(owner) else {
+                    continue;
+                };
+                if org_uuid != active_acct.org_uuid {
+                    continue;
+                }
+                if let Some(obs) = self.quota.automation_observation(&acct.id, time)
+                    && obs.remaining <= 0.5
+                {
+                    continue;
+                }
+                if let Some(candidate) = extract(acct) {
+                    fallbacks.push(candidate);
+                }
+            }
+        }
+
+        self.claude_desktop_relay
+            .sync(crate::claude_desktop_relay::RelaySyncInput {
+                enabled: true,
+                desktop_account_uuid: desktop_acct,
+                desktop_org_uuid: desktop_org,
+                desktop_label,
+                active,
+                fallbacks,
+            });
     }
 
     /// Safe network switching: watch, switch, cancel, forget.
@@ -1753,6 +2078,15 @@ fn remove_owned_profile(path: &Path) -> Result<()> {
         Err(_) => Err("无法清理此账号的 AuthBaton 临时目录，请重试移除"),
     }
 }
+fn parse_claude_owner(owner: &str) -> Option<(&str, &str)> {
+    let rest = owner.strip_prefix("claude:")?;
+    let (account_uuid, org_uuid) = rest.split_once(':')?;
+    if account_uuid.is_empty() || org_uuid.is_empty() {
+        return None;
+    }
+    Some((account_uuid, org_uuid))
+}
+
 fn valid_label(value: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 60 || value.chars().any(char::is_control) {

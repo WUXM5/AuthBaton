@@ -332,7 +332,9 @@ final class ServiceController: ObservableObject {
             while !Task.isCancelled {
                 // A Claude desktop switch reports each step; follow it closely while it runs.
                 // A network switch too; while its page or the menu bar shows it, once a second.
-                let interval: Duration = directory?.claudeDesktop?.busy == true || directory?.network?.switching == true ? .milliseconds(500)
+                let interval: Duration = directory?.claudeDesktop?.busy == true
+                    || directory?.claudeDesktop?.codeRelay?.busy == true
+                    || directory?.network?.switching == true ? .milliseconds(500)
                     : directory?.network?.watching == true ? .seconds(1) : .seconds(2)
                 do { try await Task.sleep(for: interval) } catch { return }
                 await reloadAccounts()

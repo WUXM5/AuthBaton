@@ -25,6 +25,25 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
     var picks: Picks? = nil
     // Quota read through Claude 桌面's own sign-in, for accounts only signed in there. Off until the user turns it on.
     var tokenQuota: TokenQuotaStatus? = nil
+    // Seamless same-Team account switching for Claude 桌面's Code tab via vouched Mod in-place swap. Off by default.
+    var codeRelay: CodeRelayStatus? = nil
+
+    struct CodeRelayStatus: Decodable, Sendable {
+        let enabled: Bool
+        // not_installed, installed, needs_update, blocked_remote
+        let installState: String
+        // off, active, waiting_account, team_mismatch, blocked_remote, installing, uninstalling, error
+        let state: String
+        let message: String
+        var activeLabel: String? = nil
+        var sameTeam: Bool? = nil
+        var busy: Bool = false
+        var lastError: String? = nil
+        var relayedCount: Int = 0
+        var lastSwitchAt: Double? = nil
+
+        var isInstalled: Bool { installState == "installed" || installState == "needs_update" }
+    }
 
     struct TokenQuotaStatus: Decodable, Sendable {
         let enabled: Bool
