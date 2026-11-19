@@ -251,16 +251,11 @@ struct ClaudeHomePage: View {
                 if onboarding == Onboarding.started, let next = OnboardingNext.claude(directory, names: entries.map(\.name)) {
                     NextStrip(next: next, open: { sheet = .account($0) }, dismiss: { onboarding = Onboarding.done })
                 }
-                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
-                    ForEach(Array(stride(from: 0, to: entries.count, by: 2)), id: \.self) { start in
-                        GridRow {
-                            ForEach(entries[start..<min(start + 2, entries.count)]) { entry in
-                                ClaudeEntryCard(entry: entry, use: use, directory: directory, open: { sheet = $0 },
-                                                switchTo: { perform(entry, $0, directory: directory, use: use) })
-                                    .frame(maxHeight: .infinity, alignment: .top)
-                            }
-                            if start + 1 == entries.count { Color.clear.frame(maxWidth: .infinity, maxHeight: 1) }
-                        }
+                CardGrid {
+                    ForEach(entries) { entry in
+                        ClaudeEntryCard(entry: entry, use: use, directory: directory, open: { sheet = $0 },
+                                        switchTo: { perform(entry, $0, directory: directory, use: use) })
+                            .frame(maxHeight: .infinity, alignment: .top)
                     }
                 }
             }
@@ -686,11 +681,11 @@ private struct ClaudeEntryCard: View {
                     }
                 }
             }
-            .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 14)
+            .padding(.horizontal, 14).padding(.top, 15).padding(.bottom, 14)
             Spacer(minLength: 0)
             if hasFooter(rule) { footer(rule) }
             if let cli = entry.cli, use.code {
-                AccountStrips(account: cli, directory: directory, open: { open(.account($0)) }).padding(.horizontal, 17)
+                AccountStrips(account: cli, directory: directory, open: { open(.account($0)) }).padding(.horizontal, 14)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -718,7 +713,7 @@ private struct ClaudeEntryCard: View {
                 ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo,
                                     login: { open(.desktop(.add)) })
             }
-            .padding(.horizontal, 17).padding(.vertical, 10)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
     }
 

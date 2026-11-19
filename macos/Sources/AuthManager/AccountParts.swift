@@ -34,7 +34,8 @@ struct QuotaFigures<Trailing: View>: View {
                 extraRows
                 trailingRow(text: due != nil ? leftText(windows[0]) : windows[0].refill(compact: !exact, exact: exact))
             } else {
-                HStack(alignment: .top, spacing: 20) {
+                // On a card (caption beside the number) the two windows sit 12 apart, so two 100% fit a 384 card.
+                HStack(alignment: .top, spacing: inlineCaption ? 12 : 20) {
                     ForEach(Array(windows.enumerated()), id: \.offset) { index, window in
                         let due = index == waiting ? RefillDue(window) : nil
                         VStack(alignment: .leading, spacing: 10) {
@@ -78,7 +79,7 @@ struct QuotaFigures<Trailing: View>: View {
             if let due {
                 DueFigure(due: due, size: size)
             } else if inlineCaption {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Figure(value: window.remaining, size: size)
                     // Two windows side by side at 100% leave no room: the caption shortens to the window's name, never wraps.
                     ViewThatFits(in: .horizontal) {

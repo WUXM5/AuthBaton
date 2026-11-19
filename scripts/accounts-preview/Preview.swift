@@ -340,6 +340,22 @@ enum Fixture {
             rows[0]["linked_account"] = "synthetic-claude-b"
             desktop["accounts"] = rows
             data["claude_desktop"] = desktop
+        case "full":
+            // Every window at 100% and a second Claude account: the widest an account card gets.
+            var list = data["accounts"] as! [[String: Any]]
+            var second = list.first { $0["provider"] as? String == "claude" }!
+            second["id"] = "synthetic-claude-b"; second["label"] = "Claude 备用"; second["identity"] = "b***@example.invalid"
+            second["native"] = false; second["state"] = "healthy"; second["message"] = ""; second["expires_at"] = now + 3600
+            second["warmup"] = ["enabled": false, "hour": 9, "running": false]
+            list.append(second)
+            data["accounts"] = list.map { account -> [String: Any] in
+                var account = account
+                if var usage = account["usage"] as? [String: Any], let windows = usage["windows"] as? [[String: Any]] {
+                    usage["windows"] = windows.map { window -> [String: Any] in var window = window; window["used_percent"] = 0; return window }
+                    account["usage"] = usage
+                }
+                return account
+            }
         case "claudelow", "claudelow5", "claudelowboth":
             // Two Claude accounts under rules with a 4% line, each with a Fable week. Claude 备用 is at the line
             // on its 7-day window (claudelow), its 5-hour window (claudelow5) or both (claudelowboth);
@@ -508,6 +524,8 @@ final class ActiveApp: NSApplication {
 final class KeyWindow: NSWindow {
     override var isKeyWindow: Bool { true }
     override var canBecomeKey: Bool { true }
+    // Wide renders (1600) are larger than a laptop screen; keep the size asked for.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 extension NSWindow {
@@ -561,8 +579,9 @@ extension NSWindow {
         var result = text.replacingOccurrences(of: "I", with: "l").lowercased().replacingOccurrences(of: " ", with: "")
         for (from, to) in [("～", "~"), ("：", ":"), ("，", ","), ("（", "("), ("）", ")"), ("…", "..."), ("「", ""), ("」", ""),
                            ("·", "."), ("・", "."), ("•", "."), ("；", ";"), ("？", "?"), ("！", "!"),
-                           // OCR sometimes reads 换 as its traditional form.
-                           ("換", "换")] {
+                           // OCR sometimes reads 换 as its traditional form, and in small text 底 as 厎, 未 as 末, 撤 as 撒
+                           // (the app never writes 厎, 末 or 撒).
+                           ("換", "换"), ("厎", "底"), ("末", "未"), ("撒", "撤")] {
             result = result.replacingOccurrences(of: from, with: to)
         }
         return result
@@ -1059,7 +1078,8 @@ extension NSWindow {
     section(8, "个人云端：切换模式需要确认") {
         select(.cloud)
         state.calls.removeAll()
-        Driver.press("云端", .exact)
+        // The 本地 / 云端 segments sometimes read as one line; the lone 云端 further down is a heading.
+        if Driver.hits("本地 云端").isEmpty { Driver.press("云端", .exact) } else { Driver.press("云端", .within("本地 云端")) }
         check.expect(state.calls.isEmpty, "点击「云端」不会直接切换")
         check.visible("包括自动重", "确认框写明自动重置也暂停")
         Driver.press("切换", .exact)
@@ -1302,7 +1322,7 @@ extension NSWindow {
         if let (window, point) = Driver.controls(beside: "orbit", size: 22).last {
             Driver.click(window, point)
             check.visible("顺位已改", "移动后这条轨的标题行写「顺位已改」")
-            check.expect(!Driver.visible("有未保存的修改", wait: 0.3), "只改了顺序时不再出现底部保存条")
+            check.expect(!Driver.visible("未保存", wait: 0.3), "只改了顺序时不再出现底部保存条")
             saveRules()
             let strategy = check.lastCall("accounts.strategy") ?? ""
             let orbit = strategy.range(of: "synthetic-orbit")?.lowerBound, personal = strategy.range(of: "synthetic-p\"")?.lowerBound
@@ -1552,7 +1572,8 @@ extension NSWindow {
         select(.codex)
         check.visible("开始管理 Codex 账号", "Codex 没有账号：起手卡")
         check.expect(Driver.visible("平时怎么用 Codex") && Driver.visible("本机已有 Codex 登录"), "第一步选使用方式，第二步给出本机登录")
-        check.expect(Driver.hits("CLI 与桌面", .exact).count == 1, "起手卡时页头没有使用方式菜单，只在卡里选")
+        // One 「CLI 与桌面」 (the card's segment); the header menu would be a second. OCR sometimes misreads 桌.
+        check.expect(Driver.hits("CLI 与", .prefix).count == 1, "起手卡时页头没有使用方式菜单，只在卡里选")
         state.calls.removeAll()
         Driver.press("导入本机登录", .exact)
         check.expect(check.lastCall("accounts.import")?.contains("codex") == true, "「导入本机登录」调用 accounts.import(codex)")
@@ -1666,9 +1687,9 @@ extension NSWindow {
         check.expect(Driver.hits("保存规则").count == 1, "两样都改了：仍只有一个「保存规则」")
         Driver.press("撤销", .exact)
         check.expect(!Driver.visible("顺位已改", wait: 0.5), "撤销后这条轨回到原来的顺序")
-        check.visible("有未保存的修改", "撤销只动顺序，规则的改动还在")
+        check.visible("未保存", "撤销只动顺序，规则的改动还在")
         Driver.press("还原", .exact)
-        check.expect(!Driver.visible("有未保存的修改", wait: 0.5), "还原后没有改动")
+        check.expect(!Driver.visible("未保存", wait: 0.5), "还原后没有改动")
         check.expect(moveOrbitRight(), "再往后移一位")
         saveRules()
         let strategy = check.lastCall("accounts.strategy") ?? ""
@@ -1831,7 +1852,16 @@ extension NSWindow {
                 ("clients", "default", .clients, nil), ("cloud", "default", .cloud, nil),
                 ("network", "default", .network, nil), ("network-safe", "netsafe", .network, nil),
                 ("network-waiting", "netwaiting", .network, nil), ("network-wrong", "netwrong", .network, nil),
+                // The page column at other window widths: 1020 is the default, 833 the smallest.
+                ("claude-full", "full", .claude, nil), ("claude-full-833", "full", .claude, nil),
+                ("claude-full-1300", "full", .claude, nil), ("claude-full-1600", "full", .claude, nil),
+                ("codex-1300", "full", .codex, nil), ("automation-1300", "default", .automation, nil),
+                ("accounts-1300", "default", .accounts, nil), ("clients-1300", "default", .clients, nil),
             ]
+            let sizes: [String: NSSize] = ["claude-full-833": NSSize(width: 833, height: 600),
+                                           "claude-full-1300": NSSize(width: 1300, height: 830), "claude-full-1600": NSSize(width: 1600, height: 900),
+                                           "codex-1300": NSSize(width: 1300, height: 830), "automation-1300": NSSize(width: 1300, height: 830),
+                                           "accounts-1300": NSSize(width: 1300, height: 830), "clients-1300": NSSize(width: 1300, height: 830)]
             // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
             let modes: [String: ClaudeUse] = ["claude-code": .code, "claude-desktop": .desktop]
             let codexModes: [String: CodexUse] = ["codex-plain": .both, "codex-cli": .cli]
@@ -1848,7 +1878,7 @@ extension NSWindow {
                 AutomationPage.previewDragging = name == "automation-drag" ? "synthetic-nova" : nil
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }
-                let size = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
+                let size = render(DashboardView(), size: sizes[name] ?? window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
             Fixture.load("default", into: state)
