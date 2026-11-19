@@ -314,6 +314,18 @@ enum Fixture {
             rows[2]["token_quota"] = ["state": "no_token", "message": "这个账号还没在 Claude 桌面用过 Code 模式", "checked_at": NSNull(), "windows": []]
             desktop["accounts"] = rows
             data["claude_desktop"] = desktop
+        case "coderelayon":
+            // Code 无感换号 installed and active on a same-Team account; 2 accounts keep the footer visible.
+            var desktop = claudeDesktop(now)
+            let rows = (desktop["accounts"] as! [[String: Any]]).prefix(2)
+            desktop["accounts"] = Array(rows)
+            desktop["code_relay"] = [
+                "enabled": true, "install_state": "installed", "state": "active",
+                "message": "已开启 · 当前账号 Claude 当前账号",
+                "active_label": "Claude 当前账号", "same_team": true,
+                "busy": false, "relayed_count": 3,
+            ]
+            data["claude_desktop"] = desktop
         case "claudeboth":
             // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
             var list = data["accounts"] as! [[String: Any]]
@@ -1664,6 +1676,43 @@ extension NSWindow {
         check.expect(orbit != nil && personal != nil && personal! < orbit!, "保存后 orbit 排到 12345678（个人）后面")
         check.expect(strategy.contains("\"order\":\"switch_first\""), "只改了顺序，规则本身照旧")
     }
+    section(34, "Claude 桌面 Code 无感换号：开启安装确认与托管提示说明、开启态展示、底部卸载插件闭环") {
+        Fixture.load("default", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        check.visible("Code无感换号", "Claude 页出现 Code 无感换号条")
+        if !Driver.press("开启…", .exact) { check.expect(false, "找到「开启…」按钮") }
+        check.visible("管理员密码框", "安装确认框说明首次开启会弹管理员密码框")
+        check.expect(Driver.visible("托管策略") || Driver.visible("托管配置"), "安装确认框主动解释 Claude 桌面的托管配置提示属正常现象")
+        check.visible("不存任何令牌", "安装确认框写明插件不存任何令牌")
+        check.expect(check.lastCall("accounts.claude_desktop") == nil, "仅打开安装确认框不发请求")
+        Driver.press("授权并开启", .exact)
+        let enableCall = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(enableCall.contains("\"desktop_action\":\"code_relay\"")
+                     && enableCall.contains("\"enabled\":true")
+                     && enableCall.contains("\"confirm\":true"),
+                     "确认后发送 code_relay enabled:true confirm:true")
+        Fixture.load("coderelayon", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        check.visible("当前账号Claude当前账号", "开启后状态条展示当前接力账号")
+        check.visible("已接力3次", "开启后展示已接力次数")
+        check.expect(!Driver.visible("桌面也换上", wait: 0.3), "开启无感换号时不弹账号不一致横幅")
+        if let hit = Driver.hits("卸载插件").first {
+            // Vision OCR merges the footer text and trailing link into one line; click the trailing link.
+            Driver.click(hit.window, NSPoint(x: hit.rect.maxX - 18, y: hit.rect.midY))
+            check.expect(true, "底部找到「卸载插件…」入口")
+        } else {
+            check.expect(false, "底部找到「卸载插件…」入口")
+        }
+        check.visible("托管配置提示也会消失", "卸载确认框写明卸载后托管配置提示消失")
+        check.expect(check.lastCall("accounts.claude_desktop") == nil, "仅打开卸载确认框不发请求")
+        Driver.press("授权并卸载", .exact)
+        let uninstallCall = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(uninstallCall.contains("\"desktop_action\":\"code_relay_uninstall\"")
+                     && uninstallCall.contains("\"confirm\":true"),
+                     "确认后发送 code_relay_uninstall confirm:true")
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -1827,6 +1876,14 @@ extension NSWindow {
             Fixture.load("default", into: state)
             let consentSize = render(TokenQuotaSheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-token-quota.png"))
             print("\(appearance)/sheet-token-quota: \(consentSize.width) × \(consentSize.height)")
+            let relayConsentSize = render(CodeRelaySheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-code-relay.png"))
+            print("\(appearance)/sheet-code-relay: \(relayConsentSize.width) × \(relayConsentSize.height)")
+            let relayUninstallSize = render(CodeRelayUninstallSheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-code-relay-uninstall.png"))
+            print("\(appearance)/sheet-code-relay-uninstall: \(relayUninstallSize.width) × \(relayUninstallSize.height)")
+            Fixture.load("coderelayon", into: state)
+            AppNavigation.shared.show(.claude, select: nil)
+            let relayOnSize = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-claude-coderelayon.png"))
+            print("\(appearance)/claude-coderelayon: \(relayOnSize.width) × \(relayOnSize.height)")
             // Both sides can move: the switch sheet offers 一起换 / 只换 Code / 只换桌面.
             Fixture.load("claudeboth", into: state)
             let choice = ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude-b", code: true, desk: true, choice: true), close: {})

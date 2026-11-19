@@ -830,6 +830,94 @@ fn run_osascript_admin(shell_script: &str) -> Result<(), String> {
     }
 }
 
+fn build_install_script(
+    managed_dir: &str,
+    staged_mkt: &Path,
+    staged_settings: &Path,
+    with_chown: bool,
+) -> String {
+    let target_mkt = format!("{managed_dir}/{MARKETPLACE_NAME}");
+    let target_mkt_tmp = format!("{target_mkt}.tmp");
+    let target_settings = format!("{managed_dir}/managed-settings.json");
+    let target_settings_tmp = format!("{target_settings}.tmp");
+    let chown_mkt = if with_chown {
+        format!("/usr/sbin/chown -R root:wheel {}\n", sh_quote(&target_mkt_tmp))
+    } else {
+        String::new()
+    };
+    let chown_settings = if with_chown {
+        format!(
+            "/usr/sbin/chown root:wheel {}\n",
+            sh_quote(&target_settings_tmp)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "set -e\n\
+         /bin/mkdir -p {managed}\n\
+         /bin/rm -rf {mkt_tmp}\n\
+         /bin/cp -R {src_mkt} {mkt_tmp}\n\
+         {chown_mkt}\
+         /bin/chmod -R a+rX,go-w {mkt_tmp}\n\
+         /bin/rm -rf {mkt}\n\
+         /bin/mv {mkt_tmp} {mkt}\n\
+         /bin/cp {src_settings} {settings_tmp}\n\
+         {chown_settings}\
+         /bin/chmod 0644 {settings_tmp}\n\
+         /bin/mv {settings_tmp} {settings}",
+        managed = sh_quote(managed_dir),
+        mkt_tmp = sh_quote(&target_mkt_tmp),
+        src_mkt = sh_quote(&staged_mkt.to_string_lossy()),
+        mkt = sh_quote(&target_mkt),
+        src_settings = sh_quote(&staged_settings.to_string_lossy()),
+        settings_tmp = sh_quote(&target_settings_tmp),
+        settings = sh_quote(&target_settings),
+    )
+}
+
+fn build_uninstall_script(
+    managed_dir: &str,
+    staged_settings: Option<&Path>,
+    with_chown: bool,
+) -> String {
+    let target_mkt = format!("{managed_dir}/{MARKETPLACE_NAME}");
+    let target_settings = format!("{managed_dir}/managed-settings.json");
+    let settings_step = if let Some(staged) = staged_settings {
+        let target_settings_tmp = format!("{target_settings}.tmp");
+        let chown_settings = if with_chown {
+            format!(
+                "/usr/sbin/chown root:wheel {}\n",
+                sh_quote(&target_settings_tmp)
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "/bin/cp {src} {tmp}\n\
+             {chown_settings}\
+             /bin/chmod 0644 {tmp}\n\
+             /bin/mv {tmp} {dst}",
+            src = sh_quote(&staged.to_string_lossy()),
+            tmp = sh_quote(&target_settings_tmp),
+            dst = sh_quote(&target_settings),
+        )
+    } else {
+        format!(
+            "/bin/rm -f {dst}\n\
+             /bin/rmdir {managed} 2>/dev/null || true",
+            dst = sh_quote(&target_settings),
+            managed = sh_quote(managed_dir),
+        )
+    };
+    format!(
+        "set -e\n\
+         /bin/rm -rf {mkt}\n\
+         {settings_step}",
+        mkt = sh_quote(&target_mkt),
+    )
+}
+
 fn run_admin_install(stage_parent: &Path) -> Result<(), String> {
     let stage_dir = stage_parent.join(format!("relay-stage-install-{}", std::process::id()));
     let _ = fs::remove_dir_all(&stage_dir);
@@ -854,30 +942,7 @@ fn run_admin_install(stage_parent: &Path) -> Result<(), String> {
         .map_err(|_| "无法写入暂存 managed-settings.json".to_string())?;
 
     let staged_mkt = stage_dir.join(MARKETPLACE_NAME);
-    let target_mkt_tmp = format!("{target_mkt}.tmp");
-    let target_settings = format!("{MANAGED_DIR}/managed-settings.json");
-    let target_settings_tmp = format!("{target_settings}.tmp");
-    let script = format!(
-        "set -e\n\
-         /bin/mkdir -p {managed}\n\
-         /bin/rm -rf {mkt_tmp}\n\
-         /bin/cp -R {src_mkt} {mkt_tmp}\n\
-         /usr/sbin/chown -R root:wheel {mkt_tmp}\n\
-         /bin/chmod -R a+rX,go-w {mkt_tmp}\n\
-         /bin/rm -rf {mkt}\n\
-         /bin/mv {mkt_tmp} {mkt}\n\
-         /bin/cp {src_settings} {settings_tmp}\n\
-         /usr/sbin/chown root:wheel {settings_tmp}\n\
-         /bin/chmod 0644 {settings_tmp}\n\
-         /bin/mv {settings_tmp} {settings}",
-        managed = sh_quote(MANAGED_DIR),
-        mkt_tmp = sh_quote(&target_mkt_tmp),
-        src_mkt = sh_quote(&staged_mkt.to_string_lossy()),
-        mkt = sh_quote(&target_mkt),
-        src_settings = sh_quote(&staged_settings.to_string_lossy()),
-        settings_tmp = sh_quote(&target_settings_tmp),
-        settings = sh_quote(&target_settings),
-    );
+    let script = build_install_script(MANAGED_DIR, &staged_mkt, &staged_settings, true);
     run_osascript_admin(&script)
 }
 
@@ -892,43 +957,22 @@ fn run_admin_uninstall(stage_parent: &Path) -> Result<(), String> {
     let _cleanup = StageCleanup(stage_dir.clone());
 
     let managed_settings_path = Path::new(MANAGED_DIR).join("managed-settings.json");
-    let target_mkt = format!("{MANAGED_DIR}/{MARKETPLACE_NAME}");
-    let target_settings = format!("{MANAGED_DIR}/managed-settings.json");
     let remaining_settings = match fs::read_to_string(&managed_settings_path) {
         Ok(text) => unmerge_managed_settings(&text)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(_) => return Err("无法读取现有 managed-settings.json".to_string()),
     };
 
-    let settings_step = if let Some(json_text) = remaining_settings {
-        let staged_settings = stage_dir.join("managed-settings.json");
-        fs::write(&staged_settings, json_text)
+    let staged_settings = if let Some(json_text) = remaining_settings {
+        let path = stage_dir.join("managed-settings.json");
+        fs::write(&path, json_text)
             .map_err(|_| "无法写入卸载后配置暂存文件".to_string())?;
-        let target_settings_tmp = format!("{target_settings}.tmp");
-        format!(
-            "/bin/cp {src} {tmp}\n\
-             /usr/sbin/chown root:wheel {tmp}\n\
-             /bin/chmod 0644 {tmp}\n\
-             /bin/mv {tmp} {dst}",
-            src = sh_quote(&staged_settings.to_string_lossy()),
-            tmp = sh_quote(&target_settings_tmp),
-            dst = sh_quote(&target_settings),
-        )
+        Some(path)
     } else {
-        format!(
-            "/bin/rm -f {dst}\n\
-             /bin/rmdir {managed} 2>/dev/null || true",
-            dst = sh_quote(&target_settings),
-            managed = sh_quote(MANAGED_DIR),
-        )
+        None
     };
 
-    let script = format!(
-        "set -e\n\
-         /bin/rm -rf {mkt}\n\
-         {settings_step}",
-        mkt = sh_quote(&target_mkt),
-    );
+    let script = build_uninstall_script(MANAGED_DIR, staged_settings.as_deref(), true);
     run_osascript_admin(&script)
 }
 
@@ -2493,6 +2537,80 @@ mod tests {
         client2.read_to_string(&mut out2).unwrap();
         assert!(out2.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{out2}");
         assert!(out2.contains("X-AuthBaton-Pass: 1"), "{out2}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_and_uninstall_scripts_complete_full_closed_loop() {
+        let dir = temp_dir("install-uninstall-loop");
+        let managed = dir.join("ClaudeCode");
+        let managed_str = managed.to_string_lossy().to_string();
+        let remote = dir.join("remote-settings.json");
+        fs::write(&remote, "{}").unwrap();
+        let stage = dir.join("stage");
+        fs::create_dir_all(&stage).unwrap();
+
+        // 1. Fresh install on clean directory -> Installed (with all files & 0644 managed-settings).
+        assert_eq!(inspect_install_state_at(&managed, &remote), InstallState::NotInstalled);
+        write_staged_mod(&stage).unwrap();
+        let target_mkt = format!("{managed_str}/{MARKETPLACE_NAME}");
+        let merged = merge_managed_settings(None, &target_mkt).unwrap();
+        let staged_settings = stage.join("managed-settings.json");
+        fs::write(&staged_settings, &merged).unwrap();
+        let install_sh = build_install_script(
+            &managed_str,
+            &stage.join(MARKETPLACE_NAME),
+            &staged_settings,
+            false,
+        );
+        let status = Command::new("/bin/sh").arg("-c").arg(&install_sh).status().unwrap();
+        assert!(status.success(), "install script failed");
+        assert_eq!(inspect_install_state_at(&managed, &remote), InstallState::Installed);
+        assert_eq!(
+            fs::metadata(managed.join("managed-settings.json")).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        // 2. Full uninstall when AuthBaton was the only entry -> removes plugin, settings, AND empty dir.
+        let existing = fs::read_to_string(managed.join("managed-settings.json")).unwrap();
+        assert!(unmerge_managed_settings(&existing).unwrap().is_none());
+        let uninstall_sh = build_uninstall_script(&managed_str, None, false);
+        let status = Command::new("/bin/sh").arg("-c").arg(&uninstall_sh).status().unwrap();
+        assert!(status.success(), "clean uninstall script failed");
+        assert!(!managed.exists(), "empty managed directory should be removed cleanly");
+        assert_eq!(inspect_install_state_at(&managed, &remote), InstallState::NotInstalled);
+
+        // 3. Install & uninstall when user already has other managed keys -> preserves user keys.
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(
+            managed.join("managed-settings.json"),
+            r#"{"cleanupPeriodDays": 365, "enabledPlugins": {"other@corp": true}}"#,
+        )
+        .unwrap();
+        let existing2 = fs::read_to_string(managed.join("managed-settings.json")).unwrap();
+        let merged2 = merge_managed_settings(Some(&existing2), &target_mkt).unwrap();
+        fs::write(&staged_settings, &merged2).unwrap();
+        let status = Command::new("/bin/sh").arg("-c").arg(&install_sh).status().unwrap();
+        assert!(status.success());
+        assert_eq!(inspect_install_state_at(&managed, &remote), InstallState::Installed);
+
+        let after_install = fs::read_to_string(managed.join("managed-settings.json")).unwrap();
+        let remaining = unmerge_managed_settings(&after_install).unwrap().unwrap();
+        let staged_rem = stage.join("managed-settings-rem.json");
+        fs::write(&staged_rem, &remaining).unwrap();
+        let uninstall_preserve = build_uninstall_script(&managed_str, Some(&staged_rem), false);
+        let status = Command::new("/bin/sh").arg("-c").arg(&uninstall_preserve).status().unwrap();
+        assert!(status.success());
+        assert!(!managed.join(MARKETPLACE_NAME).exists());
+        let final_settings: Value = serde_json::from_str(
+            &fs::read_to_string(managed.join("managed-settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(final_settings["cleanupPeriodDays"], 365);
+        assert_eq!(final_settings["enabledPlugins"]["other@corp"], true);
+        assert!(final_settings["enabledPlugins"].get(PLUGIN_ID).is_none());
+        assert_eq!(inspect_install_state_at(&managed, &remote), InstallState::NotInstalled);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }
