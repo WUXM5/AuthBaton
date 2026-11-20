@@ -346,6 +346,19 @@ enum Fixture {
                 "busy": false, "relayed_count": 1,
             ]
             data["claude_desktop"] = desktop
+        case "coderelaydeskonly":
+            // Code 无感换号 on, but every account is only signed in to Claude 桌面: no Code account in AuthBaton yet.
+            data["accounts"] = (data["accounts"] as! [[String: Any]]).filter { $0["provider"] as? String != "claude" }
+            var desktop = claudeDesktop(now)
+            var rows = Array((desktop["accounts"] as! [[String: Any]]).prefix(2))
+            rows[0].removeValue(forKey: "linked_account")
+            desktop["accounts"] = rows
+            desktop["code_relay"] = [
+                "enabled": true, "install_state": "installed", "state": "waiting_account",
+                "message": "请先登录至少一个同 Team 的 Code 账号，即可无感换号",
+                "busy": false, "relayed_count": 0,
+            ]
+            data["claude_desktop"] = desktop
         case "claudeboth":
             // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
             var list = data["accounts"] as! [[String: Any]]
@@ -1777,6 +1790,18 @@ extension NSWindow {
         Driver.press("添加账号", .suffix)
         check.expect(main.attachedSheet != nil, "只用桌面开启无感换号时，页头「添加账号」可直接添加 Code 模式账号")
         Driver.press("取消", .exact)
+        print("  → 开着无感换号但只在桌面登录过：确认框说明这次要重启桌面，并给「登录 Code 账号」")
+        Fixture.load("coderelaydeskonly", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        if !Driver.press("换上…", .exact) { check.expect(false, "找到只在桌面登录过的账号的「换上…」") }
+        // The long synthetic email wraps the banner after 「Code 账」; match the line OCR keeps whole.
+        check.visible("这次只能重启Claude桌面", "确认框写明这个账号还没登录 Code 账号、这次只能重启 Claude 桌面")
+        check.expect(!Driver.visible("只换ClaudeCode即可", wait: 0.3), "不再提示这个账号做不到的「只换 Claude Code」")
+        Driver.press("登录 Code 账号", .exact)
+        check.visible("官方ClaudeCLI登录", "点「登录 Code 账号」打开 Claude 登录框")
+        check.expect(check.lastCall("accounts.claude_desktop") == nil, "没有发出桌面换号")
+        Driver.press("取消", .exact)
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
@@ -1938,7 +1963,7 @@ extension NSWindow {
                 ("sheet-rename", AnyView(RenameSheet(account: nova, close: {}))),
                 ("history", AnyView(ResetHistoryView(accountID: nil))),
                 ("menubar", AnyView(MenuBarPanel(openWindow: {}))),
-                ("sheet-desktop-switch", AnyView(ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude", code: false, desk: true, choice: false), close: {}))),
+                ("sheet-desktop-switch", AnyView(ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude", code: false, desk: true, choice: false), close: {}, login: {}))),
                 ("sheet-network-new", AnyView(NetworkSwitchSheet(initial: .wifi("Cafe Guest"), started: {}, close: {}))),
                 ("sheet-network-phone", AnyView(NetworkSwitchSheet(initial: .phone("我的 iPhone"), started: {}, close: {}))),
             ]
@@ -1958,9 +1983,13 @@ extension NSWindow {
             AppNavigation.shared.show(.claude, select: nil)
             let relayOnSize = render(DashboardView(), size: window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-claude-coderelayon.png"))
             print("\(appearance)/claude-coderelayon: \(relayOnSize.width) × \(relayOnSize.height)")
+            Fixture.load("coderelaydeskonly", into: state)
+            let noCodeSize = render(ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "desktop:h-nova", code: false, desk: true, choice: false), close: {}, login: {}),
+                                    size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-desktop-switch-nocode.png"))
+            print("\(appearance)/sheet-desktop-switch-nocode: \(noCodeSize.width) × \(noCodeSize.height)")
             // Both sides can move: the switch sheet offers 一起换 / 只换 Code / 只换桌面.
             Fixture.load("claudeboth", into: state)
-            let choice = ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude-b", code: true, desk: true, choice: true), close: {})
+            let choice = ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude-b", code: true, desk: true, choice: true), close: {}, login: {})
             let choiceSize = render(choice, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-claude-switch.png"))
             print("\(appearance)/sheet-claude-switch: \(choiceSize.width) × \(choiceSize.height)")
             // A saved Claude account with two kinds of reset card to choose from.
