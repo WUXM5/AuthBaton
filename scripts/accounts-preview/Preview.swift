@@ -1129,6 +1129,22 @@ extension NSWindow {
         let imported = check.lastCall("accounts.import") ?? ""
         check.expect(imported.contains("codex") && !imported.contains("label"), "导入请求不带名称")
         check.expect(main.attachedSheet == nil, "导入成功后框关闭")
+        print("  → Claude Code：导入只认 CLI 的登录，说明 Claude 桌面的登录导不进来")
+        state.calls.removeAll()
+        Driver.press("添加账号", .suffix)
+        // OCR reads the segment's glyph as 米 (「米 Claude Code」).
+        Driver.press("Claude Code", .suffix)
+        // OCR drops the 的 in the title and wraps the line under it after 「Claude 桌」.
+        check.visible("导入ClaudeCodeCLI", "Claude Code 的导入选项写明导入的是 CLI 的登录")
+        check.expect(!Driver.visible("导入这台Mac", wait: 0.3), "Claude Code 侧不再写「导入这台 Mac 上已有的登录」")
+        Driver.press("导入ClaudeCodeCLI")
+        check.visible("登录不能导入", "导入说明写明 Claude 桌面的登录不能导入")
+        state.failNext = "本机 Claude Code CLI 还没有登录。Claude 桌面的登录不能导入，请改选「登录新账号」。"
+        Driver.press("导入", .exact)
+        check.expect(check.lastCall("accounts.import")?.contains("claude") == true, "导入请求发给 Claude")
+        check.visible("CLI还没有登录", "本机 CLI 没登录时框里说清楚，并指向「登录新账号」")
+        check.expect(main.attachedSheet != nil, "导入失败时框不关")
+        Driver.press("取消", .exact)
     }
     section(10, "菜单栏面板：点账号先展开说明，没连上时给重启并换上") {
         main.orderOut(nil)
@@ -1955,6 +1971,7 @@ extension NSWindow {
             let nova = state.directory!.accounts.first { $0.id == "synthetic-nova" }!
             let sheets: [(String, AnyView)] = [
                 ("sheet-login", AnyView(LoginView(provider: "codex"))),
+                ("sheet-add-claude", AnyView(LoginView(provider: "claude"))),
                 ("sheet-switch-blocked", AnyView(SwitchSheet(account: nova, close: {}))),
                 ("sheet-desktop-connection", AnyView(CodexConnectSheet(close: {}))),
                 ("sheet-recover", AnyView(RecoverSaveSheet(account: claude, close: {}))),

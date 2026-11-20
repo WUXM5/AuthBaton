@@ -526,10 +526,15 @@ impl Accounts {
     }
     pub fn import(&mut self, provider: &str, label: &str) -> Result<()> {
         self.ensure_idle()?;
-        let mut bundle = self.native(provider)?.read(&self.platform)?;
-        if provider == "claude" {
-            bundle = self.place_claude_login(bundle, Some(self.profile_lookup()))?;
-        }
+        let native = self.native(provider)?;
+        let bundle = if provider == "claude" {
+            // The store can exist without a login: Claude 桌面's Code and Cowork keep their own
+            // entries (mcpOAuth, coworkRemoteDevice) there but never the CLI login.
+            let login = native.login(&self.platform)?.ok_or(NO_CLAUDE_CLI_LOGIN)?;
+            self.place_claude_login(login, Some(self.profile_lookup()))?
+        } else {
+            native.read(&self.platform)?
+        };
         self.adopt_native(bundle, label)?;
         self.save()
     }
@@ -1999,6 +2004,8 @@ mod reset_accounts;
 #[path = "warmup_accounts.rs"]
 mod warmup_accounts;
 const IDENTITY_CHANGED: &str = "原生登录身份已变化，请重新纳管当前登录";
+const NO_CLAUDE_CLI_LOGIN: &str =
+    "本机 Claude Code CLI 还没有登录。Claude 桌面的登录不能导入，请改选「登录新账号」。";
 const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
 /// `lookup` is the profile request an authentication check may make; a local check reads only.
 fn read_account_bundle(

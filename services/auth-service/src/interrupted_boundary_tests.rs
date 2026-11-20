@@ -465,6 +465,40 @@ fn a_signed_out_or_cleared_default_can_be_switched_and_logged_in_again() {
     }
 }
 
+#[test]
+fn importing_claude_without_a_cli_login_says_there_is_none_to_import() {
+    let desktop = claude("desk", "SYNTHETIC_DESK_REFRESH");
+    let mut cleared = desktop.credential.clone();
+    cleared["accessToken"] = json!("");
+    cleared["refreshToken"] = json!("");
+    cleared["expiresAt"] = json!(0);
+    // Only Claude 桌面 used on this Mac: its Code sessions wrote the identity file, and its Code or
+    // Cowork left Mac entries in the store, but no CLI login.
+    for stored in [
+        Some(json!({"mcpOAuth":{"keep":true}})),
+        Some(json!({"coworkRemoteDevice":{"keep":true}})),
+        Some(json!({"claudeAiOauth":cleared,"mcpOAuth":{"keep":true}})),
+        None,
+    ] {
+        let fixture = Fixture::new();
+        let mut manager = fixture.manager();
+        let native = fixture.native();
+        manager.native_override = Some(native.clone());
+        if let Some(stored) = &stored {
+            write_json(&native.directory.join(".credentials.json"), stored).unwrap();
+        }
+        write_json(&native.config, &json!({"oauthAccount":desktop.identity})).unwrap();
+        assert_eq!(manager.import("claude", ""), Err(NO_CLAUDE_CLI_LOGIN));
+        assert!(manager.db.accounts.is_empty());
+        if let Some(stored) = stored {
+            assert_eq!(
+                read_json(&native.directory.join(".credentials.json")).unwrap(),
+                Some(stored)
+            );
+        }
+    }
+}
+
 /// A check stopped by a crash after the official CLI rotated the credential in its profile.
 fn crashed_codex_check(fixture: &Fixture, vault_changed_since: bool) -> (Accounts, Bundle, Bundle) {
     let old = codex_bundle();
