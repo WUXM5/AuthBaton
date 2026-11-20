@@ -172,7 +172,8 @@ struct ClaudeHomePage: View {
                 switch item {
                 case .account(let sheet): AccountSheetView(item: sheet, close: { self.sheet = nil })
                 case .desktop(let sheet): DesktopSheetView(item: sheet, close: { self.sheet = nil })
-                case .switching(let request): ClaudeSwitchSheet(request: request, close: { self.sheet = nil })
+                case .switching(let request): ClaudeSwitchSheet(request: request, close: { self.sheet = nil },
+                                                                login: { self.sheet = .account(.login(provider: "claude", accountID: nil)) })
                 case .tokenQuota: TokenQuotaSheet(close: { self.sheet = nil })
                 case .codeRelay: CodeRelaySheet(close: { self.sheet = nil })
                 case .codeRelayUninstall: CodeRelayUninstallSheet(close: { self.sheet = nil })
@@ -1167,6 +1168,7 @@ struct ClaudeSwitchSheet: View {
     @AppStorage(ClaudeUse.scopeKey) private var scopeSetting = SwitchScope.both.rawValue
     let request: ClaudeSwitchRequest
     let close: () -> Void
+    let login: () -> Void
     @State private var picked: SwitchScope?
     @State private var working = false
     @State private var started = false
@@ -1224,7 +1226,16 @@ struct ClaudeSwitchSheet: View {
                 Banner(glyph: .info, text: "换过去会顺带给这个账号打开 Bypass 权限模式。")
             }
             if moves.desk, status?.codeRelay?.enabled == true {
-                Banner(glyph: .relay, text: "你已开启 Code 无感换号：若与桌面在同一 Team，只换 Claude Code 即可让桌面 Code 对话立即切换，无需重启桌面。")
+                if entry?.cli == nil {
+                    // Only signed in to Claude 桌面: 无感换号 has no Code login to lend, so this switch restarts.
+                    Banner(glyph: .relay, text: "\(name) 还没登录 Code 账号，这次只能重启 Claude 桌面。") {
+                        Button("登录 Code 账号", action: login)
+                            .buttonStyle(.pill(.onAttention, height: 20))
+                            .disabled(working || service.accountBusy || directory?.busy == true)
+                    }
+                } else {
+                    Banner(glyph: .relay, text: "你已开启 Code 无感换号：若与桌面在同一 Team，只换 Claude Code 即可让桌面 Code 对话立即切换，无需重启桌面。")
+                }
             }
             if let error = service.accountError {
                 Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
