@@ -39,11 +39,15 @@ struct OnboardingNext {
     static func codex(_ directory: AccountDirectory, accounts: [ManagedAccount]) -> OnboardingNext? {
         // A desktop band about the connection speaks first; never two bands at once.
         if let desktop = directory.desktop, DesktopWiring(desktop, current: directory.current("codex")).attention { return nil }
+        // With hot switching off Codex never switches on its own, so there is no relay to send anyone to.
+        if accounts.count >= 2, directory.desktop?.enabled != true { return nil }
         return next(names: accounts.map(\.displayName), provider: "codex", directory: directory)
     }
 
     static func claude(_ directory: AccountDirectory, names: [String]) -> OnboardingNext? {
-        next(names: names, provider: "claude", directory: directory)
+        // Accounts only Claude 桌面 knows cannot relay: two of those are not yet a reason to open the rules.
+        if names.count >= 2, directory.relay("claude").count < 2 { return nil }
+        return next(names: names, provider: "claude", directory: directory)
     }
 
     private static func next(names: [String], provider: String, directory: AccountDirectory) -> OnboardingNext? {

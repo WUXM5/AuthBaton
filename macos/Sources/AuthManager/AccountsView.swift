@@ -89,9 +89,11 @@ struct AccountsView: View {
             : codex && claude ? "Codex 和 Claude Code 都有账号在用。"
             : codex ? "Codex 有账号在用，Claude Code 还没有。"
             : claude ? "Claude Code 有账号在用，Codex 还没有。" : "还没有在用的账号。"
-        let count = directory.issues(dismissed: reminders.dismissed).count
-        guard count > 0 else { return Text(lead) }
-        return Text(lead) + Text("\(count) 件事要处理").foregroundStyle(Palette.attentionText).fontWeight(.semibold) + Text("，标在对应的账号上。")
+        let issues = directory.issues(dismissed: reminders.dismissed)
+        guard !issues.isEmpty else { return Text(lead) }
+        // Some issues belong to no account (an unconfirmed switch, a stopped relay) and show as banners instead.
+        return Text(lead) + Text("\(issues.count) 件事要处理").foregroundStyle(Palette.attentionText).fontWeight(.semibold)
+            + Text(issues.allSatisfy { $0.account != nil } ? "，标在对应的账号上。" : "。")
     }
 
     private func latestCheck(_ directory: AccountDirectory) -> Double? {
@@ -259,8 +261,10 @@ private struct Bench: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text("备用").font(.system(size: 14, weight: .bold))
-                    Text(directory.strategy?.config.enabled == true ? "见底时按这个顺序换上" : "随时可以换上")
-                        .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    if !groups.isEmpty {
+                        Text(directory.strategy?.config.enabled == true ? "见底时按这个顺序换上" : "随时可以换上")
+                            .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    }
                     Spacer()
                     if directory.strategy != nil {
                         Button("换号与重置 ›") { AppNavigation.shared.show(.automation) }.buttonStyle(.pill(.link))

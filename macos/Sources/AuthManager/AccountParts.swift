@@ -326,10 +326,12 @@ struct AccountActions: View {
     }
 
     private func help(_ expiresAt: String?) -> String {
-        guard account.provider == "claude" else { return "用最早到期的那张：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期" }
+        // Without a date the label is already a whole phrase ("未提供到期时间").
+        let expiry = QuotaResetCredit.expiryLabel(expiresAt) + (QuotaResetCredit.date(expiresAt) == nil ? "" : " 到期")
+        guard account.provider == "claude" else { return "用最早到期的那张：\(expiry)" }
         let offers = account.claudeOffers
         if offers.count > 1 { return "有 \(offers.count) 类重置卡，确认时再选" }
-        return "\(offers.first.map { ClaudeResetKind.name($0.kind) } ?? "重置卡")：\(QuotaResetCredit.expiryLabel(expiresAt)) 到期"
+        return "\(offers.first.map { ClaudeResetKind.name($0.kind) } ?? "重置卡")：\(expiry)"
     }
 }
 
@@ -365,7 +367,9 @@ struct AccountStrips: View {
             if desktop, account.provider == "codex", account.native, let connection = directory.desktop, connection.enabled {
                 if !connection.connected {
                     IssueStrip(glyph: .desktop,
+                               // This strip sits on the account in use: what its own rule still does.
                                text: directory.strategy?.config.enabled == true
+                                   && directory.rule(for: account.id).map { $0.participate && $0.order.resets } == true
                                    ? "Codex 桌面没连上，现在换不了号，见底时只会重置。" : "Codex 桌面没连上，现在换不了号。") {
                         Button("去连接") { AppNavigation.shared.showDesktopConnection() }.buttonStyle(.pill(.link))
                     }

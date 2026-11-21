@@ -119,7 +119,8 @@ struct CodexPage: View {
                             }
                             if directory.strategy != nil {
                                 HStack(spacing: 0) {
-                                    Text(use.desk ? "卡片按接力顺序排；改顺序和规则去" : "卡片按接力顺序排；只用 CLI 时见底只会重置，改顺序和规则去")
+                                    Text(use.desk ? "卡片按接力顺序排；改顺序和规则去"
+                                         : "卡片按接力顺序排；只用 CLI 时见底\(directory.resets("codex") ? "只会重置" : "不会换号")，改顺序和规则去")
                                     Button("换号与重置") { nav.show(.automation) }.buttonStyle(.pill(.link))
                                     Text("。")
                                 }
@@ -157,7 +158,7 @@ struct CodexPage: View {
         if accounts.isEmpty { return "还没有账号" }
         var parts = ["\(accounts.count) 个账号"]
         if let current = directory.current("codex") { parts.append("在用 \(current.displayName)") }
-        let pi = service.snapshot?.providers.first(where: { $0.id == "pi" })?.state == "configured"
+        let pi = service.snapshot?.providers.first(where: { $0.id == "pi" }).map { $0.state == "configured" && $0.viaAuthBaton } == true
         switch use {
         case .both: parts.append(pi ? "CLI 与 pi 同步切换" : "CLI 同步切换")
         case .desktop: break
@@ -222,7 +223,7 @@ struct CodexPage: View {
         if let desktop = directory.desktop, desktop.enabled {
             let current = directory.current("codex")
             if !desktop.connected {
-                Banner(glyph: .desktop, text: directory.strategy?.config.enabled == true
+                Banner(glyph: .desktop, text: directory.strategy?.config.enabled == true && directory.resets("codex")
                        ? "Codex 桌面没连上，现在换不了号，见底时只会重置。" : "Codex 桌面没连上，现在换不了号。") {
                     Button("连接详情") { sheet = .desktopConnection }.buttonStyle(.pill(.link))
                     Button(desktop.busy ? "正在重开…" : "以调试模式重新打开") {

@@ -73,9 +73,23 @@ impl Accounts {
     }
     pub(super) fn strategy_snapshot(&self) -> Value {
         let store = &self.db.automation;
+        // On and idle, there is nothing to add to "watching N accounts". What the strategy last did stays
+        // for ten minutes, as the desktop's last switch does; after that it is no longer news.
+        let stale = store.config.enabled
+            && store.run.is_none()
+            && store
+                .last_at
+                .is_none_or(|at| now().saturating_sub(at) >= 600);
+        let message = if !self.automation.message.is_empty() {
+            self.automation.message.as_str()
+        } else if stale {
+            ""
+        } else {
+            store.last_message.as_str()
+        };
         json!({"config":store.config,"phase":store.run.as_ref().map(|r|r.phase),
             "busy":self.automation.job.is_some(),
-            "message":if self.automation.message.is_empty(){&store.last_message}else{&self.automation.message},
+            "message":message,
             "last_at":store.last_at,
             "account_states":store.config.accounts.iter().filter_map(|r|self.automation.account_messages.get(&r.id).map(|message|json!({"id":r.id,"message":message}))).collect::<Vec<_>>(),
             "run":store.run.as_ref().map(|r|json!({"id":r.id,"source":r.source,"target":r.target,"created_at":r.created_at,
@@ -140,8 +154,11 @@ impl Accounts {
         if account.provider == "claude" {
             return None;
         }
-        if !self.db.desktop.enabled || !self.desktop.connected {
-            return Some("换号需等桌面连接恢复，重置不受连接影响");
+        if !self.db.desktop.enabled {
+            return Some("热切换关着，换不了号");
+        }
+        if !self.desktop.connected {
+            return Some("Codex 桌面没连上，换不了号");
         }
         if account.metadata.as_ref().map(|m| &m.owner) != self.desktop.owner.as_ref() {
             return Some("桌面与默认账号尚未确认一致，暂不换号");
@@ -340,7 +357,7 @@ impl Accounts {
         self.automation
             .account_messages
             .retain(|id, _| ids.contains(id));
-        self.automation.message = format!("正在独立监测 {} 个账号；重置无需桌面连接", ids.len());
+        self.automation.message.clear();
         for id in ids {
             let Some(account) = self.db.accounts.iter().find(|a| a.id == id).cloned() else {
                 continue;

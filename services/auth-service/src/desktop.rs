@@ -246,7 +246,7 @@ impl Default for Runtime {
             owner: None,
             mode: None,
             hash: None,
-            message: "未启用桌面实验连接".into(),
+            message: "热切换关着".into(),
             connected: false,
             observed_at: None,
             last_poll: 0,
@@ -317,7 +317,7 @@ impl Runtime {
 pub fn external_auth(bundle: &Bundle) -> Result<Value> {
     let metadata = bundle.metadata()?;
     if bundle.provider != "codex" {
-        return Err("桌面实验连接仅支持 Codex");
+        return Err("热切换只支持 Codex");
     }
     let access = bundle.credential["tokens"]["access_token"]
         .as_str()

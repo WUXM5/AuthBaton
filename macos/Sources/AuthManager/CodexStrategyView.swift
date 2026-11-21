@@ -97,7 +97,7 @@ struct AutomationPage: View {
                     if !(guiding && accounts.isEmpty) {
                         ForEach(["codex", "claude"], id: \.self) { provider in lane(provider, status: status) }
                     }
-                    Text("只看 5 分钟内成功查到的主额度（Claude 是 5 小时和 7 天额度）；独立额度和查询失败都不算见底，只有 Claude 的 Fable 额度例外：Claude Code 正在用 Fable 时，它到了见底线也换号，但不用重置卡。每轮见底最多重置一次，换号后这一轮就结束；额度回到见底线以上，才开始下一轮。重置卡离到期不到 30 分钟时，只要额度用过就自动用掉，不等见底（只换号的账号除外）。完全退出应用后停止。")
+                    Text("只看 5 分钟内成功查到的主额度（Claude 是 5 小时和 7 天额度）；独立额度和查询失败都不算见底，只有 Claude 的 Fable 额度例外：Claude Code 正在用 Fable 时，它到了见底线也换号，但不用重置卡。每轮见底最多重置一次，换号后这一轮就结束；额度回到见底线以上，才开始下一轮。重置卡离到期不到 30 分钟时，只要额度用过就自动用掉，不等见底（不参与和只换号的账号除外）。完全退出应用后停止。")
                         .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 3.5)
                 }
@@ -149,18 +149,41 @@ struct AutomationPage: View {
                 Task { await service.accountOperation("accounts.strategy_forget", params: LoginParams(confirm: true)) }
             }
         } message: {
-            Text("只清除这次换号的记录并关闭自动换号；不会启动或停止任何会话。没完成的认证切换仍要从原来的入口处理。")
+            Text("只清除这次换号的记录，自动换号保持关闭；不会启动或停止任何会话。页面上如果还提示「上次切换没确认」，照那里的「重试切换」处理。")
         }
     }
 
-    private var confirmation: String {
-        "每个参与的账号剩余降到自己的见底线时，按「见底时」处理；换号按接力顺序在同类账号里选。Codex 会暂停、换号、接续桌面任务；Claude 直接换默认登录，运行中的会话约 30 秒内改用新账号，被额度打断的会话要在原会话按一次回车继续。\n\n"
-            + (draft.accounts.contains { $0.participate && $0.order.resets }
-               ? "设成先重置、先换号或只重置的账号见底时，或者重置卡离到期不到 30 分钟时，会自动用掉重置卡，不逐次弹窗。\n\n" : "没有账号会自动用重置卡。\n\n")
-            + (draft.accounts.contains { $0.participate && tool(of: $0.id) == "claude" } ? "参与的 Claude 账号会用掉官方给的重置卡。\n\n" : "")
-            + (draft.accounts.contains { $0.participate && $0.order.switches && tool(of: $0.id) == "claude" }
-               ? "Claude Code 正在用 Fable 时，当前 Claude 账号的 Fable 额度到了见底线也会换号，只换到 Fable 额度也高于见底线的账号。\n\n" : "")
-            + "结果不明确时会停下并留下记录；随时可以关闭。"
+    private var confirmation: String { Self.confirmation(draft.accounts, tool: tool(of:)) }
+
+    // What turning these rules on allows, and nothing they cannot do: each paragraph is there only when
+    // a rule that takes part makes it true.
+    static func confirmation(_ rules: [CodexStrategyConfig.Rule], tool: (String) -> String?) -> String {
+        let joined = rules.filter(\.participate)
+        guard !joined.isEmpty else { return "现在没有账号参与：不会自动换号，也不会自动用重置卡。给账号打开「参与」并保存后才生效。" }
+        var parts = ["每个参与的账号剩余降到自己的见底线时，按「见底时」处理。"]
+        var switching: [String] = []
+        if joined.contains(where: { $0.order.switches && tool($0.id) == "codex" }) { switching.append("Codex 会暂停、换号、接续桌面任务") }
+        if joined.contains(where: { $0.order.switches && tool($0.id) == "claude" }) {
+            switching.append("Claude 直接换默认登录，运行中的会话约 30 秒内改用新账号，被额度打断的会话要在原会话按一次回车继续")
+        }
+        if !switching.isEmpty { parts.append("换号按接力顺序在同类账号里选。" + switching.joined(separator: "；") + "。") }
+        if joined.contains(where: \.order.resets) {
+            parts.append("设成先重置、先换号或只重置的账号会自动用掉重置卡，不逐次弹窗：见底时用；卡离到期不到 30 分钟、额度用过时也会用。"
+                         + (joined.contains { $0.order.resets && tool($0.id) == "claude" } ? "Claude 账号用的是官方排的下一张，不能选类别。" : ""))
+        } else {
+            parts.append("没有账号会自动用重置卡。")
+        }
+        if joined.contains(where: { $0.order.switches && tool($0.id) == "claude" }) {
+            parts.append("Claude Code 正在用 Fable 时，在用的 Claude 账号的 Fable 额度到了见底线也会换号，只换到 Fable 额度也高于见底线的账号。")
+        }
+        parts.append("结果不明确时会停下并留下记录；随时可以关闭。")
+        return parts.joined(separator: "\n\n")
+    }
+
+    // Whether any rule of this tool that takes part spends reset cards. Where a switch cannot happen, such an
+    // account still resets; the others do nothing, so the page must not promise a reset for them.
+    private func resets(_ provider: String) -> Bool {
+        draft.accounts.contains { $0.participate && $0.order.resets && tool(of: $0.id) == provider }
     }
 
     private func sync() {
@@ -252,7 +275,7 @@ struct AutomationPage: View {
                 VStack(alignment: .leading, spacing: 8) {
                     stepTitle(1, "核对下方顺序与前提")
                     if empty {
-                        Text("还没有可接力的账号，先去 Codex 或 Claude 页添加至少 1 个账号").font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                        Text("还没有可接力的账号，先添加至少 1 个 Codex 或 Claude 账号").font(.system(size: 11)).foregroundStyle(Palette.ink2)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
                         if let codex = codexCheck { checkRow(codex) }
@@ -327,13 +350,15 @@ struct AutomationPage: View {
     private var codexCheck: Check? {
         let count = accounts.filter { $0.provider == "codex" }.count
         guard count > 0 else { return nil }
-        if cliOnly { return Check(tone: .quiet, text: "Codex：只用 CLI 模式，见底只会重置") }
+        let left = resets("codex") ? "只会重置" : "不会换号"
+        if cliOnly { return Check(tone: .quiet, text: "Codex：只用 CLI 模式，见底\(left)") }
+        if count == 1 { return Check(tone: .quiet, text: "Codex：仅 1 个账号，暂无法接力") }
         let desktop = service.directory?.desktop
         if desktop?.enabled != true {
-            return Check(tone: .blocked, text: "Codex：热切换关着，目前只会重置", action: ("去打开", { AppNavigation.shared.showDesktopConnection() }))
+            return Check(tone: .blocked, text: "Codex：热切换关着，目前\(left)", action: ("去打开", { AppNavigation.shared.showDesktopConnection() }))
         }
         if desktop?.connected != true {
-            return Check(tone: .blocked, text: "Codex：桌面没连上，目前只会重置", action: ("去连接", { AppNavigation.shared.showDesktopConnection() }))
+            return Check(tone: .blocked, text: "Codex：桌面没连上，目前\(left)", action: ("去连接", { AppNavigation.shared.showDesktopConnection() }))
         }
         return Check(tone: .ready, text: "Codex：\(count) 个账号已就绪，桌面已连可热切换")
     }
@@ -343,6 +368,7 @@ struct AutomationPage: View {
         let rules = draft.accounts.filter { tool(of: $0.id) == "claude" }
         guard !rules.isEmpty else { return nil }
         let joined = rules.filter(\.participate).count
+        if rules.count == 1 { return Check(tone: .quiet, text: "Claude Code：仅 1 个账号" + (joined == 0 ? "，默认未参与" : "") + "，暂无法接力") }
         if joined == 0 { return Check(tone: .quiet, text: "Claude Code：\(rules.count) 个账号默认未参与，接力需手动开") }
         return Check(tone: .ready, text: "Claude Code：\(joined) 个账号参与接力" + (joined < rules.count ? "，\(rules.count - joined) 个未参与" : ""))
     }
@@ -351,7 +377,7 @@ struct AutomationPage: View {
     private var startedNote: some View {
         HStack(spacing: 9) {
             BrandTile(size: 16)
-            Text("自动规则已开始运行。每次换号或用卡都会记在右上角「执行记录」里，改规则保存时会再请你确认。")
+            Text("自动规则已开始运行。每次用重置卡都会记在右上角「执行记录」里，改规则保存时会再请你确认。")
                 .font(.system(size: 12)).foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button { doneHint = "done" } label: {
@@ -376,7 +402,7 @@ struct AutomationPage: View {
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 9) {
                 if stuck { Icon(.alert, size: 14, color: Palette.attention) } else { ProgressView().controlSize(.small) }
-                Text("正在换号：\(account(run.source)?.displayName ?? "原账号") → \(account(run.target)?.displayName ?? "新账号")")
+                Text((stuck ? "自动换号停下了：" : "正在换号：") + "\(account(run.source)?.displayName ?? "原账号") → \(account(run.target)?.displayName ?? "新账号")")
                     .font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 7)
                 if stuck {
@@ -429,7 +455,7 @@ struct AutomationPage: View {
                 if orderChanged(provider) { orderEdits(provider) }
                 if provider == "codex", rules.count > 1, !codexCanSwitch, !orderChanged(provider) { desktopChip }
                 if count == 1 {
-                    Text("仅 1 个账号 · 暂无法接力，只能重置").font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                    Text(resets(provider) ? "仅 1 个账号 · 暂无法接力，只能重置" : "仅 1 个账号 · 暂无法接力").font(.system(size: 11)).foregroundStyle(Palette.ink2)
                         .padding(.horizontal, 9).frame(height: 22).background(Palette.chip, in: Capsule())
                 }
             }
@@ -477,19 +503,26 @@ struct AutomationPage: View {
         }
     }
 
-    private var desktopChip: some View {
-        let off = service.directory?.desktop?.enabled != true
-        return HStack(spacing: 7) {
-            Text(off ? "热切换关着：现在只会重置，不会换号" : "桌面没连上：现在只会重置，不会换号")
-            Button(off ? "去打开" : "去连接") { AppNavigation.shared.showDesktopConnection() }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .padding(.horizontal, 7).frame(height: 17)
-                .background(Palette.card, in: Capsule())
+    // Why Codex cannot switch right now, and what is left. 只用 CLI is a choice, not a fault: it gets a plain chip.
+    @ViewBuilder private var desktopChip: some View {
+        let left = resets("codex") ? "现在只会重置，不会换号" : "现在不会换号"
+        if cliOnly {
+            Text("只用 CLI 模式：\(left)").font(.system(size: 11)).foregroundStyle(Palette.ink2)
+                .padding(.horizontal, 9).frame(height: 22).background(Palette.chip, in: Capsule())
+        } else {
+            let off = service.directory?.desktop?.enabled != true
+            HStack(spacing: 7) {
+                Text((off ? "热切换关着：" : "桌面没连上：") + left)
+                Button(off ? "去打开" : "去连接") { AppNavigation.shared.showDesktopConnection() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 7).frame(height: 17)
+                    .background(Palette.card, in: Capsule())
+            }
+            .font(.system(size: 11)).foregroundStyle(Palette.attentionText)
+            .padding(.leading, 9).padding(.trailing, 3.5).frame(height: 22)
+            .background(Palette.attentionFill, in: Capsule())
         }
-        .font(.system(size: 11)).foregroundStyle(Palette.attentionText)
-        .padding(.leading, 9).padding(.trailing, 3.5).frame(height: 22)
-        .background(Palette.attentionFill, in: Capsule())
     }
 
     // Each account is a brick under a slot number: the number belongs to the place, so dragging a brick
@@ -683,10 +716,14 @@ struct AutomationPage: View {
     // What the picked account has to work with: in use or not, how far from its line, its reset cards.
     private func note(_ account: ManagedAccount?, _ rule: CodexStrategyConfig.Rule) -> Text {
         guard let account else { return Text("") }
+        // What the service says about this account is about its saved rule: shown only while the rule here
+        // is the saved one, and then it is the one that says whether the account is at its line.
+        let saved = baseline?.accounts.first { $0.id == account.id } == rule
+        let message = draft.enabled && saved ? status?.accountStates?.first { $0.id == account.id }?.message ?? "" : ""
         var lead: [String] = []
         if account.native { lead.append("在用") }
         if let lowest = account.lowestPrimary {
-            lead.append("剩余 \(lowest)%" + (rule.participate && lowest <= rule.below ? "，已到见底线" : ""))
+            lead.append("剩余 \(lowest)%" + (message.isEmpty && rule.participate && lowest <= rule.below ? "，已到见底线" : ""))
         }
         let chances = account.chances(dismissed: reminders.dismissed)
         let cards: String = chances.map { chances in
@@ -697,9 +734,7 @@ struct AutomationPage: View {
         // A rule that resets but has no card left will skip straight to its next step.
         let short = rule.participate && rule.order.resets && chances?.total == 0
         var text = Text(lead.map { $0 + "。" }.joined()) + Text(cards + "。").foregroundStyle(short ? Palette.attentionText : Palette.ink3)
-        if draft.enabled, let message = status?.accountStates?.first(where: { $0.id == account.id })?.message, !message.isEmpty {
-            text = text + Text(message.hasSuffix("。") ? message : message + "。")
-        }
+        if !message.isEmpty { text = text + Text(message.hasSuffix("。") ? message : message + "。") }
         return text
     }
 

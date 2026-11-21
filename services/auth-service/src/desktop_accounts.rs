@@ -19,7 +19,7 @@ impl Accounts {
             && self.db.desktop.selected.is_some()
             && (self.client_running)("codex")
         {
-            return Err("关闭实验连接前请退出 Codex 桌面；不会自动注销账号");
+            return Err("关闭热切换前请先退出 Codex 桌面；不会自动注销账号");
         }
         if let Some(enabled) = enabled {
             self.db.desktop.enabled = enabled;
@@ -36,10 +36,12 @@ impl Accounts {
     }
     pub fn launch_desktop(&self) -> Result<()> {
         if !self.db.desktop.enabled {
-            return Err("请先启用实验连接");
+            return Err("请先开启热切换");
         }
         if desktop::desktop_running()? {
-            return Err("首次接入请先手动退出 Codex 桌面，再点击启动；不会结束你的任务");
+            return Err(
+                "Codex 桌面还开着：请先手动退出，再点「以调试模式重新打开」；AuthBaton 不会结束你的任务",
+            );
         }
         let app = desktop::DESKTOP_APPS
             .into_iter()
@@ -172,7 +174,7 @@ impl Accounts {
     // when no Codex turn is running, and switch once it connects.
     pub fn relaunch_desktop_and_activate(&mut self, id: &str) -> Result<()> {
         if !self.db.desktop.enabled {
-            return Err("请先启用实验连接");
+            return Err("请先开启热切换");
         }
         if self.automation.job.is_some() || self.db.automation.run.is_some() {
             return Err("请等待自动额度流程完成");
@@ -220,7 +222,7 @@ impl Accounts {
         let target = self.bundle(&self.db.accounts[index])?;
         let metadata = target.metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {
-            return Err("目标 Access token 已到期或即将到期，请先在线检查或重新登录");
+            return Err("目标账号的 Access 已到期或即将到期，请先做一次认证检查或重新登录");
         }
         Ok(())
     }
@@ -233,12 +235,12 @@ impl Accounts {
         let target = self.bundle(&self.db.accounts[self.index(id)?])?;
         let metadata = target.metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {
-            return Err("目标 Access token 已到期或即将到期，切换未开始");
+            return Err("目标账号的 Access 已到期或即将到期，切换未开始");
         }
         let auth = desktop::external_auth(&target)?;
         let native = self.native("codex")?;
         if native.mode != "file" {
-            return Err("桌面实验切换暂只支持 Codex file 认证后端");
+            return Err("热切换暂只支持 Codex file 认证后端");
         }
         let old = native.read(&self.platform)?;
         if observed["owner"] != old.metadata()?.owner && observed["owner"] != metadata.owner {
@@ -385,7 +387,7 @@ impl Accounts {
                                     "桌面与全局默认已切换；桌面凭据由 AuthBaton 维护".into();
                                 a.state = "saved".into();
                             }
-                            self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();
+                            self.desktop.message = "桌面与全局默认一致，已由 AuthBaton 接管".into();
                             if let Err(e) = self.save() {
                                 self.desktop.message = e.into();
                                 self.desktop.action_feedback(&id, "failed");
@@ -455,7 +457,7 @@ impl Accounts {
                                 self.desktop_log("bind", Some(&id), "恢复桌面续期回调");
                                 return;
                             }
-                            self.desktop.message = "桌面与全局默认一致，实验连接已接管".into();
+                            self.desktop.message = "桌面与全局默认一致，已由 AuthBaton 接管".into();
                             if self.desktop.refresh.is_none()
                                 && self.db.switch.is_none()
                                 && let Some(request) =
@@ -734,6 +736,7 @@ impl Accounts {
                 native: Some(self.native("codex")?),
             };
             self.db.accounts[index].state = "checking".into();
+            self.db.accounts[index].message = "正在为 Codex 桌面续期".into();
             self.save()?;
             self.job = Some(Job {
                 id: id.into(),

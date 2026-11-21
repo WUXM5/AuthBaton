@@ -61,7 +61,7 @@ extension ManagedAccount {
         case "reauth": return Health(tone: .attention, title: "需重新登录", detail: message)
         case "unsaved":
             return provider == "claude" && native
-                ? Health(tone: .attention, title: "续期备份没同步", detail: "CLI 照常可用，AuthBaton 会自动重试，不会重复续期。")
+                ? Health(tone: .attention, title: "续期备份没同步", detail: "会自动重试，不会重复续期；CLI 要求重新登录时点「恢复同步」。")
                 : Health(tone: .attention, title: "续期结果待保存", detail: message)
         case "uncertain": return Health(tone: .neutral, title: "等待重新确认", detail: message)
         case "attention": return Health(tone: .attention, title: "需要处理", detail: message)
@@ -195,7 +195,7 @@ extension AccountQuota {
         guard let countdown = When.countdown(to: date) else { return "\(verb)时间已过，等下次查询" }
         let seconds = date.timeIntervalSinceNow
         let short = compact && seconds >= 86400 ? "\(Int(seconds / 86400)) 天后" : countdown
-        return short + verb + (exact ? " · \(When.text(date))" : "")
+        return short + verb + (exact ? " · \(When.clock(date))" : "")
     }
 }
 
@@ -219,7 +219,7 @@ struct ExpiryReminder: Identifiable {
     var title: String { "\(accountName) 有 \(count) 张重置卡，7 天内到期" }
     var detail: String {
         let when = When.countdown(to: earliest).map { "（\($0)）" } ?? ""
-        return "\(count > 1 ? "最早 " : "")\(When.text(earliest)) 到期\(when)"
+        return "\(count > 1 ? "最早 " : "")\(When.clock(earliest)) 到期\(when)"
             + (provider == "claude" ? "，过期作废；可以在「换号与重置」里设成见底时自动用。" : "，过期作废。")
     }
 
@@ -348,6 +348,14 @@ extension AccountDirectory {
     func notch(for account: ManagedAccount) -> Int? {
         guard strategy?.config.enabled == true, let rule = rule(for: account.id), rule.participate else { return nil }
         return rule.below
+    }
+
+    // Whether any rule of this tool that takes part spends reset cards. Where a switch cannot happen, only
+    // such accounts still reset at their line; the others do nothing.
+    func resets(_ provider: String) -> Bool {
+        (strategy?.config.accounts ?? []).contains { rule in
+            rule.participate && rule.order.resets && accounts.contains { $0.id == rule.id && $0.provider == provider }
+        }
     }
 
     // Accounts of a provider in relay order; those without a rule come last.

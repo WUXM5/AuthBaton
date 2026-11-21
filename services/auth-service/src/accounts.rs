@@ -284,9 +284,6 @@ impl Accounts {
         if manager.db.switch.as_ref().is_some_and(|s| s.desktop) {
             manager.db.switch = None;
         }
-        if manager.db.switch.is_some() {
-            manager.notice = Some("上次切换尚未确认，请结束任务后重试".into());
-        }
         // No login survives a restart: keep a staged result that can still be saved, drop the rest.
         let pending: Vec<String> = manager
             .db
@@ -758,7 +755,7 @@ impl Accounts {
         } else if let Some(state) = &mut login.state {
             state.phase = "succeeded".into();
             state.message = if self.cloud.config.reauthorizations.contains_key(&id) {
-                "官方登录已完成；后台将核对身份并更新同一云端账号，请在云端页查看交接结果。"
+                "官方登录已完成；后台将核对身份并更新同一云端账号，请在「个人云端」查看交接结果。"
             } else if self.db.accounts.iter().any(|a| a.id == id && a.native) {
                 "当前账号已重新登录并完成存储校验，请重新打开官方客户端。"
             } else {
@@ -1063,7 +1060,7 @@ impl Accounts {
                         && (!manual || client_running(&account.provider))
                     {
                         let message = if manual {
-                            "认证检查可能续期，请先退出官方客户端；查额度请用「检查用量」"
+                            "认证检查可能续期，请先退出官方客户端；查额度请用「查询额度」"
                         } else {
                             "当前默认账号由官方客户端续期；额度可独立查询，无需退出客户端"
                         };

@@ -195,7 +195,7 @@ enum Fixture {
                 ["id": "synthetic-p", "order": "reset_first", "participate": true, "below": 2],
                 ["id": "synthetic-team", "order": "switch_only", "participate": true, "below": 3],
                 ["id": "synthetic-nova", "order": "switch_only", "participate": true, "below": 3]]],
-                         "busy": false, "message": "正在独立监测 4 个账号；重置无需桌面连接", "phase": NSNull(), "run": NSNull(), "last_at": NSNull(),
+                         "busy": false, "message": "", "phase": NSNull(), "run": NSNull(), "last_at": NSNull(),
                          "account_states": [["id": "synthetic-orbit", "message": "额度充足，高于见底线 3%"],
                                             ["id": "synthetic-p", "message": "额度充足，高于见底线 2%"]]],
             "claude_desktop": claudeDesktop(now),
@@ -248,6 +248,19 @@ enum Fixture {
             var strategy = data["strategy"] as! [String: Any]
             var config = strategy["config"] as! [String: Any]
             config["enabled"] = false
+            strategy["config"] = config
+            strategy["message"] = ""
+            data["strategy"] = strategy
+        case "switchonly":
+            // Strategy off, and every rule only switches: nothing here may promise a reset.
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            config["enabled"] = false
+            config["accounts"] = (config["accounts"] as! [[String: Any]]).map { rule -> [String: Any] in
+                var rule = rule
+                rule["order"] = "switch_only"
+                return rule
+            }
             strategy["config"] = config
             strategy["message"] = ""
             data["strategy"] = strategy
@@ -1100,7 +1113,7 @@ extension NSWindow {
         Driver.press("以调试模式重新打开")
         check.expect(check.lastCall("accounts.desktop_launch") != nil, "横幅「以调试模式重新打开」调用 accounts.desktop_launch")
         Driver.press("没连上", .suffix)
-        check.visible("点「以调试模式重新打开」后会这样做", "没连上时连接详情列出三步")
+        check.visible("用调试模式重开，分三步", "没连上时连接详情列出三步")
         if let toggle = Driver.views(NSSwitch.self).first(where: { $0.window?.sheetParent != nil }) {
             Driver.click(toggle)
             check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":false") == true, "关闭热切换开关发送 enabled:false")
@@ -1663,7 +1676,7 @@ extension NSWindow {
         select(.automation)
         check.visible("开启自动接力前，先核对这两件事", "从没开过时出现起手卡")
         check.visible("Codex：桌面没连上，目前只会重置", "桌面没连上时写明 Codex 只会重置")
-        check.visible("默认未参与，接力需手动开", "写明 Claude 账号默认不参与")
+        check.visible("默认未参与，暂无法接力", "写明 Claude 账号默认不参与")
         check.expect(!Driver.visible("已关闭 · 打开后按下面的规则自动处理", wait: 0.3), "起手卡替换原来的总开关卡")
         state.calls.removeAll()
         Driver.press("开启自动接力", .exact)
@@ -1802,6 +1815,39 @@ extension NSWindow {
         check.visible("官方ClaudeCLI登录", "点「登录 Code 账号」打开 Claude 登录框")
         check.expect(check.lastCall("accounts.claude_desktop") == nil, "没有发出桌面换号")
         Driver.press("取消", .exact)
+    }
+    section(35, "文案跟着规则走：没有规则会重置时哪里都不说会重置；确认框只写这些规则会做的事") {
+        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
+        Fixture.load("switchonly", into: state)
+        select(.accounts)
+        select(.automation)
+        check.visible("桌面没连上：现在不会换号", "都只换号、桌面没连上：只写不会换号")
+        check.expect(!Driver.visible("只会重置", wait: 0.3), "都只换号时页面上不出现「只会重置」")
+        func rule(_ id: String, _ order: CodexStrategyOrder, on: Bool = true) -> CodexStrategyConfig.Rule {
+            CodexStrategyConfig.Rule(id: id, order: order, participate: on)
+        }
+        let tool: (String) -> String? = { $0.hasPrefix("claude") ? "claude" : "codex" }
+        // The report this fix came from: one Claude account, 只换号.
+        var text = AutomationPage.confirmation([rule("claude-a", .switchOnly)], tool: tool)
+        check.expect(text.contains("没有账号会自动用重置卡") && !text.contains("用掉") && !text.contains("官方"),
+                     "Claude 账号只换号：确认框只说不会用重置卡，不再说会用掉官方的卡")
+        check.expect(text.contains("Claude 直接换默认登录") && !text.contains("Codex"), "只有 Claude 换号时不提 Codex")
+        text = AutomationPage.confirmation([rule("claude-a", .resetFirst), rule("codex-a", .switchOnly)], tool: tool)
+        check.expect(text.contains("会自动用掉重置卡") && text.contains("官方排的下一张") && !text.contains("没有账号会自动用重置卡"),
+                     "有 Claude 账号会重置：写明会用卡、用的是官方排的下一张")
+        text = AutomationPage.confirmation([rule("codex-a", .resetOnly), rule("claude-a", .switchOnly, on: false)], tool: tool)
+        check.expect(text.contains("会自动用掉重置卡") && !text.contains("官方") && !text.contains("换号按接力顺序") && !text.contains("Fable"),
+                     "只有 Codex 只重置：不提换号、Claude 的卡和 Fable")
+        text = AutomationPage.confirmation([rule("claude-a", .resetOnly, on: false)], tool: tool)
+        check.expect(text.contains("现在没有账号参与") && !text.contains("见底线"), "没有账号参与：只说现在什么都不会自动做")
+        // The same answer from the service is not news: the directory is published only when it changes.
+        let json = try! JSONSerialization.data(withJSONObject: Fixture.directory("default"))
+        var other = Fixture.directory("default")
+        other["busy"] = true
+        let first = try! Fixture.decoder.decode(AccountDirectory.self, from: json)
+        check.expect(first == (try! Fixture.decoder.decode(AccountDirectory.self, from: json)), "同一份目录解出来相等，轮询不会重复刷新界面")
+        check.expect(first != (try! Fixture.decoder.decode(AccountDirectory.self, from: JSONSerialization.data(withJSONObject: other))),
+                     "目录里有一处变了就不相等")
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")

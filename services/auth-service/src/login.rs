@@ -371,7 +371,7 @@ impl LoginManager {
                     && attempt.login_id.is_some()
                 {
                     if params["success"] == true {
-                        self.finish("succeeded", "官方 Codex 已完成登录并保存凭据。请在桌面 App 中确认账号，必要时重启。");
+                        self.finish("succeeded", "官方 Codex 已完成登录并保存凭据。");
                     } else if attempt.cancelling {
                         self.finish(
                             "cancelled",

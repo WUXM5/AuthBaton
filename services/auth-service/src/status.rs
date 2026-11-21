@@ -130,9 +130,9 @@ fn token_state(status: &mut ProviderStatus, expires_at: Option<u64>, checked_at:
     let expired = expires_at.is_some_and(|expiry| expiry <= checked_at);
     status.state = if expired { "expired" } else { "configured" };
     status.summary = if expired {
-        "本地 access token 已到期；尚未检查是否可续期"
+        "本地 Access 已到期；尚未检查是否可续期"
     } else if expires_at.is_some() {
-        "本地 access token 尚未到期"
+        "本地 Access 尚未到期"
     } else {
         "已检测到凭据；无法从本地确定有效期"
     }
@@ -192,7 +192,7 @@ pub fn pi_status(path: &Path, checked_at: u64) -> ProviderStatus {
             .push("共享账号管理中的 Codex 账号；默认跟随全局当前账号，任务中固定身份".into());
         status
             .details
-            .push("pi 按需取得 access token；认证检查与续期仍由 AuthBaton 协调".into());
+            .push("pi 按需取得 Access；认证检查与续期仍由 AuthBaton 协调".into());
         return status;
     }
     let auth = match read_auth(path) {

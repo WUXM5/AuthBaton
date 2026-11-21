@@ -301,7 +301,7 @@ struct ClientsPage: View {
                     Pill(provider.authKind, small: true)
                 }
                 Group {
-                    if provider.id == "pi", configured, let codex {
+                    if provider.id == "pi", configured, provider.viaAuthBaton, let codex {
                         HStack(spacing: 5) {
                             Text("跟着 Codex 在用的账号：")
                             Seal(codex.displayName, style: .inUse, size: 14)

@@ -10,6 +10,10 @@ struct ProviderStatus: Decodable, Equatable, Identifiable, Sendable {
     let expiresAt: Double?
     let details: [String]
 
+    // pi takes its Codex login from AuthBaton only through the AuthBaton plugin; with its own sign-in it
+    // does not follow the account in use.
+    var viaAuthBaton: Bool { authKind == "AuthBaton 本机服务" }
+
     var stateLabel: String {
         switch state {
         case "configured": "已配置"

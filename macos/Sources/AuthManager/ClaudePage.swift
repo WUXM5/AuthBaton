@@ -34,7 +34,7 @@ struct ClaudeAccountPage: View {
                     }
                 }
                 .padding(.top, 34)
-                if use.code && directory.recoveryNeeded { RecoveryBanner() }
+                if (use.code || directory.claudeDesktop?.codeRelay?.enabled == true) && directory.recoveryNeeded { RecoveryBanner() }
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 14) {
                         main.frame(minWidth: 323, idealWidth: 323, maxWidth: .infinity)
@@ -200,7 +200,7 @@ private struct ClaudeMain: View {
             }
             if let grants = status?.grants {
                 if !grants.eligible { Text(grants.message).font(.system(size: 11)).foregroundStyle(Palette.ink3) }
-                if grants.remaining == nil {
+                if grants.eligible, grants.remaining == nil {
                     Text("这次没返回剩余张数，不能按 0 张算。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
                 ForEach(Array(grants.items.enumerated()), id: \.offset) { _, grant in
@@ -210,7 +210,7 @@ private struct ClaudeMain: View {
                         Ticket(text: ClaudeResetKind.counted(grant.remaining, grant.kind), soon: soon && grant.remaining > 0, large: true)
                             .frame(minWidth: 124, alignment: .leading)
                         VStack(alignment: .leading, spacing: 0) {
-                            Text("有效期至 \(QuotaResetCredit.expiryLabel(grant.endsAt))").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                            Text((QuotaResetCredit.date(grant.endsAt) == nil ? "" : "有效期至 ") + QuotaResetCredit.expiryLabel(grant.endsAt)).font(.system(size: 12)).foregroundStyle(Palette.ink2)
                             Text(usage(grant, eligible: grants.eligible)).font(.system(size: 11)).foregroundStyle(Palette.ink3)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -227,8 +227,10 @@ private struct ClaudeMain: View {
             if let weekly = status?.weekly {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("每周会话额度重置").font(.system(size: 12, weight: .semibold))
-                    Text([weekly.perWeek.map { "每周 \($0) 次" } ?? "每周次数没返回",
-                          weekly.available.map { $0 ? "现在可用" : "现在不可用" } ?? "可用状态没返回"].joined(separator: " · "))
+                    // Without the entitlement the official answer carries a reason, not counts.
+                    Text(weekly.eligible ? [weekly.perWeek.map { "每周 \($0) 次" } ?? "每周次数没返回",
+                                            weekly.available.map { $0 ? "现在可用" : "现在不可用" } ?? "可用状态没返回"].joined(separator: " · ")
+                         : weekly.message)
                         .font(.system(size: 11)).foregroundStyle(Palette.ink3)
                     if let next = weekly.nextAvailableAt {
                         Text("下次可用：\(QuotaResetCredit.expiryLabel(next))").font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -236,7 +238,7 @@ private struct ClaudeMain: View {
                 }
             }
             if status?.grants == nil && status?.weekly == nil {
-                Text("官方还没返回重置信息，立即查询后再看。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                Text("官方还没返回重置信息，查询额度后再看。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
             }
             if let reset = account.reset, !reset.unresolved, let when = reset.finishedAt ?? reset.startedAt,
                Date().timeIntervalSince1970 - when >= 600 {
@@ -423,7 +425,7 @@ private struct ClaudeSide: View {
 
     @ViewBuilder private var rules: some View {
         let desk = use.desk ? entry.desk : nil
-        if let strategy = directory.strategy, use.code {
+        if let strategy = directory.strategy, use.code || directory.claudeDesktop?.codeRelay?.enabled == true {
             let rule = directory.rule(for: account.id)
             VStack(alignment: .leading, spacing: 9) {
                 HStack {

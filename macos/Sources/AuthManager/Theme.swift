@@ -548,9 +548,15 @@ struct CheckItem: View {
 enum When {
     static func text(_ date: Date, now: Date = Date()) -> String {
         let seconds = date.timeIntervalSince(now)
+        if seconds > 0, seconds < 60 { return "1 分钟内" }
         if abs(seconds) < 60 { return "刚刚" }
         if seconds < 0, seconds > -3600 { return "\(Int(-seconds / 60)) 分钟前" }
         if seconds > 0, seconds < 3600 { return "\(Int(seconds / 60)) 分钟后" }
+        return clock(date, now: now)
+    }
+
+    // The day and the time on the clock, for a moment that is shown next to its own countdown.
+    static func clock(_ date: Date, now: Date = Date()) -> String {
         let calendar = Calendar.current
         let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
         let time = String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
