@@ -1123,7 +1123,7 @@ extension NSWindow {
         Driver.press("以调试模式重新打开")
         check.expect(check.lastCall("accounts.desktop_launch") != nil, "横幅「以调试模式重新打开」调用 accounts.desktop_launch")
         Driver.press("没连上", .suffix)
-        check.visible("用调试模式重开，分三步", "没连上时连接详情列出三步")
+        check.visible("点「以调试模式重新打开」后会这样做", "没连上时连接详情列出三步")
         if let toggle = Driver.views(NSSwitch.self).first(where: { $0.window?.sheetParent != nil }) {
             Driver.click(toggle)
             check.expect(check.lastCall("accounts.desktop")?.contains("\"enabled\":false") == true, "关闭热切换开关发送 enabled:false")

@@ -184,6 +184,7 @@ pub struct Runtime {
     pub other_clients: fn() -> bool,
     pub relaunch: fn(u16) -> Result<()>,
     pub turns_running: fn(&Path) -> Result<bool>,
+    pub running: fn() -> Result<bool>,
     // A switch asked for but not started yet, with a deadline: it waits for a desktop restarted
     // for it to connect, or for a poll or check that holds the slots a switch needs.
     pub pending_switch: Option<(String, u64)>,
@@ -220,6 +221,7 @@ impl Default for Runtime {
             other_clients: other_codex_clients,
             relaunch,
             turns_running,
+            running: desktop_running,
             pending_switch: None,
             finish_after: 0,
             #[cfg(not(test))]
@@ -512,7 +514,7 @@ pub fn relaunch(port: u16) -> Result<()> {
         while desktop_running()? {
             if std::time::Instant::now() > deadline {
                 let _ = quit.kill();
-                return Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再切换");
+                return Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再试");
             }
             std::thread::sleep(Duration::from_millis(500));
         }

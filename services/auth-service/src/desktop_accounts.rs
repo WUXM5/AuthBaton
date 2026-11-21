@@ -34,27 +34,34 @@ impl Accounts {
         }
         Ok(())
     }
-    pub fn launch_desktop(&self) -> Result<()> {
+    // Opens the desktop with the debug port. One that is open is first quit the normal way, and
+    // only while no Codex turn is running in it.
+    pub fn launch_desktop(&mut self) -> Result<()> {
         if !self.db.desktop.enabled {
             return Err("请先开启热切换");
         }
-        if desktop::desktop_running()? {
-            return Err(
-                "Codex 桌面还开着：请先手动退出，再点「以调试模式重新打开」；AuthBaton 不会结束你的任务",
-            );
+        if self.desktop.job.is_some() || self.desktop.pending_switch.is_some() {
+            return Err("请等待当前桌面操作完成");
         }
-        let app = desktop::DESKTOP_APPS
-            .into_iter()
-            .find(|p| Path::new(p).exists())
-            .ok_or("未找到官方桌面应用")?;
-        let status = desktop::open_desktop(app, self.db.desktop.port)
-            .status()
-            .map_err(|_| "无法启动官方桌面")?;
-        if status.success() {
-            Ok(())
+        if self.desktop.connected {
+            return Err("Codex 桌面已经连上，不用重新打开");
+        }
+        let running = (self.desktop.running)()?;
+        if running && (self.desktop.turns_running)(&self.sources.codex_home)? {
+            return Err("Codex 里还有任务在运行，桌面不会被重启；等任务结束后再点");
+        }
+        let (relaunch, port) = (self.desktop.relaunch, self.db.desktop.port);
+        self.desktop.message = if running {
+            "正在以调试模式重启 Codex 桌面；没有任务在运行"
         } else {
-            Err("无法启动官方桌面")
+            "正在以调试模式打开 Codex 桌面"
         }
+        .into();
+        self.desktop_log("restart", None, "用户点了以调试模式重新打开");
+        self.desktop.job = Some(std::thread::spawn(move || {
+            Completion::Restart(relaunch(port))
+        }));
+        Ok(())
     }
     pub(super) fn desktop_owns(&self, id: &str) -> bool {
         let Ok(index) = self.index(id) else {
@@ -187,7 +194,7 @@ impl Accounts {
             return Err("只有 Codex 账号可以通过桌面切换");
         }
         if (self.desktop.turns_running)(&self.sources.codex_home)? {
-            return Err("Codex 里还有任务在运行；等它结束后再切换，桌面不会被重启");
+            return Err("Codex 里还有任务在运行，桌面不会被重启；等任务结束后再切换");
         }
         let (relaunch, port, id) = (self.desktop.relaunch, self.db.desktop.port, id.to_string());
         self.desktop.message = "正在以调试模式重启 Codex 桌面；没有任务在运行".into();

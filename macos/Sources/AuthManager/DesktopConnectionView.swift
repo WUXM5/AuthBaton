@@ -157,9 +157,9 @@ struct CodexConnectSheet: View {
 
     private var steps: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("用调试模式重开，分三步").font(.system(size: 12, weight: .medium))
+            Text("点「以调试模式重新打开」后会这样做").font(.system(size: 12, weight: .medium))
             HStack(alignment: .top, spacing: 14) {
-                step("01", "先退出 Codex 桌面", "桌面还开着时要你自己退出；AuthBaton 不会替你结束任务。")
+                step("01", "退出 Codex 桌面", "只在没有任务运行时退出，不会替你强停任务。")
                 step("02", "以调试模式打开", "用调试端口 \(desktop.map { String($0.port) } ?? "9522") 重新打开桌面。")
                 step("03", "连上后自动核对", "桌面账号与 auth.json 一致就能热切换；第一次连上还要点一次「接管桌面」。")
             }
