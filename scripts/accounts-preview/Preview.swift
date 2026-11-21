@@ -1219,7 +1219,8 @@ extension NSWindow {
     section(13, "Claude 5 小时窗口预热：开关沿用关闭前的时间，已开的显示起点、上次结果和下次时间；立即预热点一次发一条") {
         select(.claude, "synthetic-claude")
         check.visible("06:00", "已开启的账号显示每天的起点")
-        check.visible("5小时窗口开始计时", "显示上次预热结果")
+        // OCR reads 窗口 as 圈口 at some widths of the time in front of it.
+        check.visible("开始计时", "显示上次预热结果")
         check.visible("下次约", "显示下次预热时间")
         state.calls.removeAll()
         Driver.press("立即预热")
