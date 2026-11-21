@@ -1848,6 +1848,10 @@ extension NSWindow {
         check.expect(first == (try! Fixture.decoder.decode(AccountDirectory.self, from: json)), "同一份目录解出来相等，轮询不会重复刷新界面")
         check.expect(first != (try! Fixture.decoder.decode(AccountDirectory.self, from: JSONSerialization.data(withJSONObject: other))),
                      "目录里有一处变了就不相等")
+
+        let ownLogin = Fixture.snapshot.replacingOccurrences(of: "AuthBaton 本机服务", with: "ChatGPT OAuth")
+        check.expect(state.snapshot?.piFollows == true && !(try! Fixture.decoder.decode(Snapshot.self, from: Data(ownLogin.utf8))).piFollows,
+                     "pi 没装 AuthBaton 插件时，不写它跟着 Codex 换号")
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")

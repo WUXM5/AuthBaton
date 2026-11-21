@@ -158,7 +158,7 @@ struct CodexPage: View {
         if accounts.isEmpty { return "还没有账号" }
         var parts = ["\(accounts.count) 个账号"]
         if let current = directory.current("codex") { parts.append("在用 \(current.displayName)") }
-        let pi = service.snapshot?.providers.first(where: { $0.id == "pi" }).map { $0.state == "configured" && $0.viaAuthBaton } == true
+        let pi = service.snapshot?.piFollows == true
         switch use {
         case .both: parts.append(pi ? "CLI 与 pi 同步切换" : "CLI 同步切换")
         case .desktop: break

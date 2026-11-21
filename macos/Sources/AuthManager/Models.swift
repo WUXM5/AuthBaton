@@ -30,6 +30,9 @@ struct Snapshot: Decodable, Equatable, Sendable {
     let serviceVersion: String
     let providers: [ProviderStatus]
     let verification: String
+
+    // Whether pi's new tasks follow the Codex account in use.
+    var piFollows: Bool { providers.contains { $0.id == "pi" && $0.state == "configured" && $0.viaAuthBaton } }
 }
 
 struct RPCRequest: Encodable {

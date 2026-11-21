@@ -73,6 +73,7 @@ struct SwitchSheet: View {
     private var from: ManagedAccount? { directory?.current(account.provider) }
     private var attempt: DesktopConnection.Action? { since.flatMap { directory?.desktopAttempt(for: account.id, since: $0) } }
     private var use: CodexUse { directory.map { CodexUse.resolve(useSetting, $0) } ?? .both }
+    private var piFollows: Bool { service.snapshot?.piFollows == true }
 
     var body: some View {
         Group {
@@ -123,13 +124,13 @@ struct SwitchSheet: View {
                         CheckItem(kind: .system, text: "接管后立刻换到「\(account.displayName)」，之后换号不用退出桌面。")
                     } else if !account.native {
                         // Taking over the account in use changes no account; the lead already says what it does.
-                        CheckItem(kind: .system, text: "同时更新 Codex 桌面和 ~/.codex/auth.json，pi 新任务跟着换。")
+                        CheckItem(kind: .system, text: "同时更新 Codex 桌面和 ~/.codex/auth.json" + (piFollows ? "，pi 新任务跟着换。" : "。"))
                     }
                     CheckItem(kind: .you, text: use == .desktop ? "先等桌面里正在跑的任务结束；桌面窗口不用退出。"
                                                               : "先结束桌面里的任务，退出独立的 Codex CLI，停用 VS Code 插件；桌面窗口可以开着。")
                 default:
                     if account.provider == "codex" {
-                        CheckItem(kind: .system, text: "更新 ~/.codex/auth.json；pi 的新任务跟着换。")
+                        CheckItem(kind: .system, text: "更新 ~/.codex/auth.json" + (piFollows ? "；pi 的新任务跟着换。" : "。"))
                         CheckItem(kind: .you, text: use.desk ? "请先结束任务并退出 Codex 桌面和 CLI，停用 VS Code 插件，换完再打开。"
                                                              : "请先退出正在运行的 Codex CLI，停用 VS Code 的 Codex 插件，换完再打开。")
                     } else {

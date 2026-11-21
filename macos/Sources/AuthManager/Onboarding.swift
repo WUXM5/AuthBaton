@@ -244,7 +244,7 @@ struct CodexStarter: View {
 
     private func note(_ use: CodexUse) -> String {
         switch use {
-        case .both: "桌面、CLI、VS Code 插件、pi 共用 ~/.codex/auth.json；连上桌面可热切换。"
+        case .both: "桌面、CLI、VS Code 插件" + (service.snapshot?.piFollows == true ? "、pi " : "") + "共用 ~/.codex/auth.json；连上桌面可热切换。"
         case .desktop: "通过调试端口连上 Codex 桌面后，换号不用退出窗口。"
         case .cli: "仅改写 ~/.codex/auth.json，不连接桌面，换号前先退出 CLI。"
         }
