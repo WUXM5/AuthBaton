@@ -50,6 +50,14 @@ impl Accounts {
         if running && (self.desktop.turns_running)(&self.sources.codex_home)? {
             return Err("Codex 里还有任务在运行，桌面不会被重启；等任务结束后再点");
         }
+        // Quit before its startup has finished, the desktop shows "failed to start" and stays open.
+        if running
+            && let Some((pid, age)) = (self.desktop.undebugged)(self.db.desktop.port)?
+            && age <= desktop::STARTUP_WAIT_SECS
+            && (self.desktop.startup_finished)(&self.home, pid, age).is_none()
+        {
+            return Err("Codex 桌面还在启动，等它启动完再点");
+        }
         let (relaunch, port) = (self.desktop.relaunch, self.db.desktop.port);
         self.desktop.message = if running {
             "正在以调试模式重启 Codex 桌面；没有任务在运行"

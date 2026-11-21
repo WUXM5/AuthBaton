@@ -749,10 +749,19 @@ fn reopening_restarts_an_idle_desktop_and_leaves_a_busy_one_running() {
     );
     assert!(manager.desktop.job.is_none());
     manager.desktop.turns_running = |_| Ok(false);
+    // One that has not finished starting is left alone: quitting it then makes it fail to start.
+    manager.desktop.undebugged = fresh_desktop;
+    DESKTOP_AGE.store(3, SeqCst);
+    manager.desktop.startup_finished = |_, _, _| None;
+    assert!(manager.launch_desktop().unwrap_err().contains("还在启动"));
+    assert!(manager.desktop.job.is_none());
+    manager.desktop.startup_finished = |_, _, age| Some(now().saturating_sub(age));
     manager.launch_desktop().unwrap();
     assert_eq!(manager.snapshot()["desktop"]["busy"], true);
     // A second click while it restarts starts nothing.
     assert!(manager.launch_desktop().is_err());
+    // The desktop that comes back has the debug port.
+    manager.desktop.undebugged = |_| Ok(None);
     finish(&mut manager);
     assert_eq!(RESTARTS.load(SeqCst), before + 1);
     // The restarted desktop is polled at once; once it answers there is nothing to reopen.
