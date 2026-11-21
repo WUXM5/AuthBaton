@@ -2,7 +2,7 @@ import Foundation
 
 // Safe network switching (v0.22): what the service publishes. It never carries a password: a
 // Wi-Fi only says whether AuthBaton remembers one for it.
-struct NetworkStatus: Decodable, Sendable {
+struct NetworkStatus: Decodable, Equatable, Sendable {
     let available: Bool
     let current: Current
     // No model reply in flight anywhere right now.
@@ -16,7 +16,7 @@ struct NetworkStatus: Decodable, Sendable {
     var operation: Operation? = nil
     let history: [Record]
 
-    struct Current: Decodable, Sendable {
+    struct Current: Decodable, Equatable, Sendable {
         // wifi, hotspot, none
         let kind: String
         // Only known when AuthBaton joined it: macOS gives the name to no app without Location Services.
@@ -31,7 +31,7 @@ struct NetworkStatus: Decodable, Sendable {
         }
     }
 
-    struct Source: Decodable, Sendable, Identifiable {
+    struct Source: Decodable, Equatable, Sendable, Identifiable {
         let name: String
         // live, held, idle
         let state: String
@@ -40,7 +40,7 @@ struct NetworkStatus: Decodable, Sendable {
         var id: String { name }
     }
 
-    struct Phone: Decodable, Sendable, Identifiable {
+    struct Phone: Decodable, Equatable, Sendable, Identifiable {
         let name: String
         var battery: Int? = nil
         var network: String? = nil
@@ -48,14 +48,14 @@ struct NetworkStatus: Decodable, Sendable {
         var id: String { name }
     }
 
-    struct Network: Decodable, Sendable, Identifiable {
+    struct Network: Decodable, Equatable, Sendable, Identifiable {
         let ssid: String
         let remembered: Bool
         let current: Bool
         var id: String { ssid }
     }
 
-    struct Operation: Decodable, Sendable {
+    struct Operation: Decodable, Equatable, Sendable {
         // phone, wifi
         let kind: String
         let target: String
@@ -70,7 +70,7 @@ struct NetworkStatus: Decodable, Sendable {
         var remaining: Int? = nil
     }
 
-    struct Record: Decodable, Sendable, Identifiable {
+    struct Record: Decodable, Equatable, Sendable, Identifiable {
         let at: Double
         let from: String
         let to: String

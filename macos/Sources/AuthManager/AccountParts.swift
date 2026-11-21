@@ -35,7 +35,7 @@ struct QuotaFigures<Trailing: View>: View {
                 trailingRow(text: due != nil ? leftText(windows[0]) : windows[0].refill(compact: !exact, exact: exact))
             } else {
                 // On a card (caption beside the number) the two windows sit 12 apart, so two 100% fit a 384 card.
-                HStack(alignment: .top, spacing: inlineCaption ? 12 : 20) {
+                EqualColumns(spacing: inlineCaption ? 12 : 20) {
                     ForEach(Array(windows.enumerated()), id: \.offset) { index, window in
                         let due = index == waiting ? RefillDue(window) : nil
                         VStack(alignment: .leading, spacing: 10) {
@@ -44,10 +44,16 @@ struct QuotaFigures<Trailing: View>: View {
                                 Text(leftText(window)).font(.system(size: 12)).foregroundStyle(Palette.ink3).lineLimit(1)
                                     .help(window.resetDate.map(When.exact) ?? "")
                             } else {
-                                // The clock time goes first when the column is too narrow for both.
-                                ViewThatFits(in: .horizontal) {
-                                    Text(window.refill(compact: !exact, exact: exact))
-                                    Text(window.refill(compact: !exact))
+                                Group {
+                                    if exact {
+                                        // The clock time goes first when the column is too narrow for both.
+                                        ViewThatFits(in: .horizontal) {
+                                            Text(window.refill(compact: false, exact: true))
+                                            Text(window.refill(compact: false))
+                                        }
+                                    } else {
+                                        Text(window.refill())
+                                    }
                                 }
                                 .font(.system(size: 12)).foregroundStyle(Palette.ink2)
                                 .help(window.resetDate.map(When.exact) ?? "")

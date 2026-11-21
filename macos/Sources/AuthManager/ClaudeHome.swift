@@ -859,7 +859,7 @@ struct DeskOnlyQuota: View {
     // Quota read through Claude 桌面's sign-in: the same figures an AuthBaton login gets, and where they came from.
     private func figures(_ quota: ClaudeDesktopStatus.DeskQuota) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 20) {
+            EqualColumns(spacing: 20) {
                 ForEach(Array(quota.primary.enumerated()), id: \.offset) { _, window in
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .firstTextBaseline, spacing: 7) {

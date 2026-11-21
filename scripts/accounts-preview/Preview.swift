@@ -1821,6 +1821,86 @@ extension NSWindow {
     }
 }
 
+// MARK: Main-thread cost
+// perf [directory.json] [rounds]: how long the main thread stays busy after each sidebar switch and after
+// each service poll, per page. Busy time is what the run loop spends between waking and sleeping again, so
+// it covers body evaluation, layout, drawing and the Core Animation commit. With a directory saved from
+// the running service the numbers are for that Mac's own accounts; nothing is sent back to the service.
+@MainActor enum Perf {
+    static var wake = 0.0
+    static var busy: [Double] = []
+
+    static func watch() {
+        let start = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.afterWaiting.rawValue, true, -.max) { _, _ in
+            MainActor.assumeIsolated { wake = CACurrentMediaTime() }
+        }
+        let end = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue | CFRunLoopActivity.exit.rawValue, true, .max) { _, _ in
+            MainActor.assumeIsolated {
+                if wake > 0 { busy.append((CACurrentMediaTime() - wake) * 1000) }
+                wake = 0
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), start, .commonModes)
+        CFRunLoopAddObserver(CFRunLoopGetMain(), end, .commonModes)
+    }
+
+    // Runs `change`, then lets the run loop work for `window` seconds: (longest single block, total), in ms.
+    static func cost(_ window: Double = 0.35, _ change: () -> Void) -> (longest: Double, total: Double) {
+        busy = []
+        let began = CACurrentMediaTime()
+        change()
+        let own = (CACurrentMediaTime() - began) * 1000
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: window))
+        // The change itself runs before the loop wakes; it belongs to the first block.
+        let blocks = busy.isEmpty ? [own] : [busy[0] + own] + busy.dropFirst()
+        return (blocks.max() ?? 0, blocks.reduce(0, +))
+    }
+
+    static func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+
+    static func run(_ live: String?, rounds: Int) -> Int {
+        let state = ServiceController.shared
+        if let live {
+            state.directory = try! Fixture.decoder.decode(AccountDirectory.self, from: Data(contentsOf: URL(fileURLWithPath: live)))
+            state.snapshot = try! Fixture.decoder.decode(Snapshot.self, from: Data(Fixture.snapshot.utf8))
+        } else {
+            Fixture.load("full", into: state)
+        }
+        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
+        var pages: [(String, Page)] = [("账号", .accounts), ("Codex", .codex), ("Claude", .claude), ("换号与重置", .automation),
+                                      ("客户端与服务", .clients), ("个人云端", .cloud), ("网络", .network)]
+        // PERF_ONLY=Claude,网络 keeps the run to those pages, for sampling one of them.
+        if let only = ProcessInfo.processInfo.environment["PERF_ONLY"]?.split(separator: ",").map(String.init) {
+            pages = pages.filter { only.contains($0.0) }
+        }
+        AppNavigation.shared.show(.clients)
+        let (window, _) = makeWindow(DashboardView(), size: NSSize(width: 1020, height: 660))
+        window.orderFrontRegardless()
+        watch()
+        Driver.settle(1)
+        var first: [String: Double] = [:], again: [String: [Double]] = [:], total: [String: [Double]] = [:], poll: [String: [Double]] = [:]
+        for round in 0...rounds {
+            for (name, page) in pages {
+                let switched = cost { AppNavigation.shared.show(page) }
+                if round == 0 { first[name] = switched.longest } else { again[name, default: []].append(switched.longest); total[name, default: []].append(switched.total) }
+                // What the 2-second poll does: the same directory, published again.
+                let polled = cost(0.15) { state.directory = state.directory }
+                if round > 0 { poll[name, default: []].append(polled.total) }
+            }
+        }
+        let idle = (0..<5).map { _ in cost(0.15) {}.total }
+        print("页面            首次切入  再次切入(中位/最大)  切入总计  一次轮询")
+        for (name, _) in pages {
+            let a = again[name]!, t = total[name]!, p = poll[name]!
+            print(name.padding(toLength: 10, withPad: "　", startingAt: 0),
+                  String(format: "%7.1f  %8.1f /%6.1f  %8.1f  %8.1f", first[name]!, median(a), a.max()!, median(t), median(p)))
+        }
+        print(String(format: "空转（什么都不做）%.1f ms；单位 ms，%d 轮", median(idle), rounds))
+        window.orderOut(nil)
+        return 0
+    }
+}
+
 @main struct Preview {
     static func page(_ name: String) -> Page {
         ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation,
@@ -1833,7 +1913,20 @@ extension NSWindow {
         if args.count >= 2 && args[1] == "interact" {
             exit(Int32(interact()))
         }
+        if args.count >= 2 && args[1] == "perf" {
+            app.setActivationPolicy(.accessory)
+            let live = args.count > 2 && args[2] != "-" ? args[2] : nil
+            exit(Int32(Perf.run(live, rounds: args.count > 3 ? Int(args[3])! : 6)))
+        }
         // dump [scenario] [page] [selection]: OCR lines with their window positions, for writing locators.
+        if args.count >= 4 && args[1] == "same" {
+            // Polls saved from a running service: how many decode to the same directory as the one before,
+            // which is how many the app would not redraw for.
+            let polls = args[2...].map { try! Fixture.decoder.decode(AccountDirectory.self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
+            let same = zip(polls, polls.dropFirst()).filter { $0 == $1 }.count
+            print("相邻两次轮询 \(polls.count - 1) 对，解出来相同 \(same) 对")
+            exit(0)
+        }
         if args.count >= 2 && args[1] == "dump" {
             app.setActivationPolicy(.accessory)
             Fixture.load(args.count > 2 ? args[2] : "default", into: ServiceController.shared)

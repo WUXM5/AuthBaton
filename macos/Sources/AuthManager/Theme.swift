@@ -160,35 +160,83 @@ struct CardGrid: Layout {
     var minWidth: CGFloat = 384
     var spacing: CGFloat = 12
 
-    private func columns(_ width: CGFloat) -> Int { max(1, min(4, Int((width + spacing) / (minWidth + spacing)))) }
-
-    private func rows(_ width: CGFloat, _ subviews: Subviews) -> (cell: CGFloat, columns: Int, heights: [CGFloat]) {
-        let n = columns(width)
-        let cell = (width - spacing * CGFloat(n - 1)) / CGFloat(n)
-        let heights = stride(from: 0, to: subviews.count, by: n).map { start in
-            subviews[start..<min(start + n, subviews.count)].map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }.max() ?? 0
-        }
-        return (cell, n, heights)
+    // The cards measured for one width. SwiftUI asks for the grid's size, sometimes more than once, and then
+    // places it; measuring a card lays out everything in it, so each card is measured once per width until a
+    // card changes (SwiftUI then starts a fresh cache).
+    struct Rows {
+        var width: CGFloat = -1
+        var cell: CGFloat = 0
+        var columns = 1
+        var cards: [CGFloat] = []
+        var heights: [CGFloat] = []
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    func makeCache(subviews: Subviews) -> Rows { Rows() }
+
+    private func columns(_ width: CGFloat) -> Int { max(1, min(4, Int((width + spacing) / (minWidth + spacing)))) }
+
+    private func rows(_ width: CGFloat, _ subviews: Subviews, _ cache: inout Rows) -> Rows {
+        if cache.width == width, cache.cards.count == subviews.count { return cache }
+        let n = columns(width)
+        let cell = (width - spacing * CGFloat(n - 1)) / CGFloat(n)
+        let cards = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }
+        let heights = stride(from: 0, to: cards.count, by: n).map { cards[$0..<min($0 + n, cards.count)].max() ?? 0 }
+        cache = Rows(width: width, cell: cell, columns: n, cards: cards, heights: heights)
+        return cache
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Rows) -> CGSize {
         // An unbounded proposal (asking for the ideal size) gets two columns' worth.
         let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minWidth * 2 + spacing
-        let layout = rows(width, subviews)
+        let layout = rows(width, subviews, &cache)
         return CGSize(width: width, height: layout.heights.reduce(0, +) + spacing * CGFloat(max(0, layout.heights.count - 1)))
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let layout = rows(bounds.width, subviews)
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Rows) {
+        let layout = rows(bounds.width, subviews, &cache)
         var y = bounds.minY
         for (row, height) in layout.heights.enumerated() {
             for column in 0..<layout.columns {
                 let index = row * layout.columns + column
                 guard index < subviews.count else { break }
+                // A card that is already as tall as its row keeps the proposal it was measured with, so
+                // the layout made for measuring it is the one that is shown; only shorter cards stretch.
+                let stretch = height - layout.cards[index] > 0.01
                 subviews[index].place(at: CGPoint(x: bounds.minX + CGFloat(column) * (layout.cell + spacing), y: y),
-                                      proposal: ProposedViewSize(width: layout.cell, height: height))
+                                      proposal: ProposedViewSize(width: layout.cell, height: stretch ? height : nil))
             }
             y += height + spacing
+        }
+    }
+}
+
+// Columns of one width, side by side from the top. An HStack of flexible columns first asks each one how
+// narrow and how wide it can be, which lays out everything in it twice more; here a column is measured
+// once, at the width it gets.
+struct EqualColumns: Layout {
+    var spacing: CGFloat = 12
+
+    private func cell(_ width: CGFloat, _ count: Int) -> CGFloat {
+        max(0, (width - spacing * CGFloat(count - 1)) / CGFloat(count))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        guard let width = proposal.width, width.isFinite else {
+            // Asked for its ideal size: every column as wide as the widest wants to be.
+            let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+            let widest = ideal.map(\.width).max() ?? 0
+            return CGSize(width: widest * CGFloat(subviews.count) + spacing * CGFloat(subviews.count - 1), height: ideal.map(\.height).max() ?? 0)
+        }
+        let column = ProposedViewSize(width: cell(width, subviews.count), height: nil)
+        return CGSize(width: width, height: subviews.map { $0.sizeThatFits(column).height }.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let width = cell(bounds.width, subviews.count)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + CGFloat(index) * (width + spacing), y: bounds.minY),
+                          proposal: ProposedViewSize(width: width, height: nil))
         }
     }
 }

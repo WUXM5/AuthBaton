@@ -1,6 +1,11 @@
 import AppKit
 import Foundation
 
+// Views observe this object as a whole, so every assignment to a published property redraws the window.
+// The directory is polled every two seconds and is almost always the same as the last one: what the
+// service answers is published when it differs from what is already shown. Times on screen ("3 分钟前",
+// "2 小时后回满") are worked out when a view is drawn, so an unchanged directory is still published
+// every ten seconds to keep them moving.
 @MainActor
 final class ServiceController: ObservableObject {
     static let shared = ServiceController()
@@ -9,12 +14,25 @@ final class ServiceController: ObservableObject {
     @Published private(set) var errorText: String?
     @Published private(set) var isConnected = false
     @Published private(set) var isConnecting = false
-    @Published private(set) var login: LoginAttempt?
+    @Published private var shownLogin: LoginAttempt?
+    private(set) var login: LoginAttempt? {
+        get { shownLogin }
+        set { if newValue != shownLogin { shownLogin = newValue } }
+    }
     // The attempt only names its provider; this is the account the app started it for.
     @Published private(set) var loginTarget: LoginTarget?
     @Published private(set) var loginBusy = false
     @Published private(set) var loginError: String?
-    @Published private(set) var directory: AccountDirectory?
+    @Published private var shownDirectory: AccountDirectory?
+    private var shownAt = Date.distantPast
+    private(set) var directory: AccountDirectory? {
+        get { shownDirectory }
+        set {
+            guard newValue != shownDirectory || Date().timeIntervalSince(shownAt) >= 10 else { return }
+            shownDirectory = newValue
+            shownAt = Date()
+        }
+    }
     @Published private(set) var accountError: String?
     @Published private(set) var accountErrorID: String?
     @Published private(set) var directoryError: String?
@@ -201,7 +219,7 @@ final class ServiceController: ObservableObject {
         let path = socketPath
         do {
             login = try await Task.detached { try IPCClient.login(method: "login.status", socketPath: path) }.value.attempt
-            loginError = nil
+            if loginError != nil { loginError = nil }
         } catch { loginError = error.localizedDescription }
     }
 
@@ -248,7 +266,7 @@ final class ServiceController: ObservableObject {
             guard !Task.isCancelled else { return }
             reached(nil)
             directory = result.directory
-            directoryError = nil
+            if directoryError != nil { directoryError = nil }
             if result.attempt?.isActive == true || (login != nil && login?.attemptId == result.attempt?.attemptId) { login = result.attempt }
         } catch {
             guard !Task.isCancelled else { return }
