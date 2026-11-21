@@ -184,6 +184,7 @@ pub struct Runtime {
     pub other_clients: fn() -> bool,
     pub relaunch: fn(u16) -> Result<()>,
     pub turns_running: fn(&Path) -> Result<bool>,
+    pub running: fn() -> Result<bool>,
     // A switch asked for but not started yet, with a deadline: it waits for a desktop restarted
     // for it to connect, or for a poll or check that holds the slots a switch needs.
     pub pending_switch: Option<(String, u64)>,
@@ -220,6 +221,7 @@ impl Default for Runtime {
             other_clients: other_codex_clients,
             relaunch,
             turns_running,
+            running: desktop_running,
             pending_switch: None,
             finish_after: 0,
             #[cfg(not(test))]
@@ -246,7 +248,7 @@ impl Default for Runtime {
             owner: None,
             mode: None,
             hash: None,
-            message: "未启用桌面实验连接".into(),
+            message: "热切换关着".into(),
             connected: false,
             observed_at: None,
             last_poll: 0,
@@ -317,7 +319,7 @@ impl Runtime {
 pub fn external_auth(bundle: &Bundle) -> Result<Value> {
     let metadata = bundle.metadata()?;
     if bundle.provider != "codex" {
-        return Err("桌面实验连接仅支持 Codex");
+        return Err("热切换只支持 Codex");
     }
     let access = bundle.credential["tokens"]["access_token"]
         .as_str()
@@ -512,7 +514,7 @@ pub fn relaunch(port: u16) -> Result<()> {
         while desktop_running()? {
             if std::time::Instant::now() > deadline {
                 let _ = quit.kill();
-                return Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再切换");
+                return Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再试");
             }
             std::thread::sleep(Duration::from_millis(500));
         }

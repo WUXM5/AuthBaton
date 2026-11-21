@@ -491,7 +491,10 @@ export const register: Register = on => {
       const switched = attempt > 0
       if (switched) {
         setStatus(state, $, label)
-        $.ui.toast(`原账号额度已满，已无感切到 ${label}，对话继续`)
+        // The account switched to may be refused as well; only a served request carries the conversation on.
+        if (status >= 200 && status < 300) {
+          $.ui.toast(`原账号额度已满，已无感切到 ${label}，对话继续`)
+        }
       }
       void reportOutcome($, socketPath, {
         id: accountId,

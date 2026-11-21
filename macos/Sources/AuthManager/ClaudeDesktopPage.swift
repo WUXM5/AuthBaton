@@ -224,7 +224,7 @@ struct DesktopSheetView: View {
     private func rename(_ handle: String) -> some View {
         let target = account(handle)
         return SheetScaffold(title: "给 \(target?.email ?? target?.display ?? "这个账号") 起个名字",
-                             lead: "列表里显示这个名字。小写字母、数字和 - _ .，最多 24 个字符；留空就显示邮箱。") {
+                             lead: "列表里显示这个名字。小写字母、数字和 - _ .，最多 24 个字符，不能全是数字；留空就显示邮箱。") {
             TextField("例如 work", text: $alias)
                 .textFieldStyle(.roundedBorder)
                 .onAppear { alias = target?.alias ?? "" }

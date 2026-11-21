@@ -2,7 +2,7 @@ import Foundation
 
 // Claude desktop: every account's list of local Code sessions kept the same, and switching the
 // desktop's sign-in without signing out. The service owns all of it; this is what it publishes.
-struct ClaudeDesktopStatus: Decodable, Sendable {
+struct ClaudeDesktopStatus: Decodable, Equatable, Sendable {
     let installed: Bool
     let running: Bool
     var version: String? = nil
@@ -28,7 +28,7 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
     // Seamless same-Team account switching for Claude 桌面's Code tab via vouched Mod in-place swap. Off by default.
     var codeRelay: CodeRelayStatus? = nil
 
-    struct CodeRelayStatus: Decodable, Sendable {
+    struct CodeRelayStatus: Decodable, Equatable, Sendable {
         let enabled: Bool
         // not_installed, installed, needs_update, blocked_remote
         let installState: String
@@ -45,7 +45,7 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         var isInstalled: Bool { installState == "installed" || installState == "needs_update" }
     }
 
-    struct TokenQuotaStatus: Decodable, Sendable {
+    struct TokenQuotaStatus: Decodable, Equatable, Sendable {
         let enabled: Bool
         // off, waiting_key (macOS is asking), key_denied, ready, error.
         let state: String
@@ -53,7 +53,7 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
     }
 
     // One account's quota read with Claude 桌面's cached access: ready, checking, no_token, unauthorized, limited, error.
-    struct DeskQuota: Decodable, Sendable {
+    struct DeskQuota: Decodable, Equatable, Sendable {
         let state: String
         let message: String
         var checkedAt: Double? = nil
@@ -63,19 +63,19 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         var primary: [AccountQuota] { Array(windows.filter { $0.kind == nil }.prefix(2)) }
     }
 
-    struct Picks: Decodable, Sendable {
+    struct Picks: Decodable, Equatable, Sendable {
         var next: String? = nil
         var nextAvailable: String? = nil
         var best: String? = nil
     }
 
-    struct LastSync: Decodable, Sendable {
+    struct LastSync: Decodable, Equatable, Sendable {
         let at: Double
         let ok: Bool
         let message: String
     }
 
-    struct Account: Decodable, Sendable, Identifiable {
+    struct Account: Decodable, Equatable, Sendable, Identifiable {
         // An opaque handle the service maps back to the account; never its ID.
         let handle: String
         var number: Int? = nil
@@ -104,14 +104,14 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         var title: String { number.map { "#\($0) \(display)" } ?? display }
     }
 
-    struct Usage: Decodable, Sendable {
+    struct Usage: Decodable, Equatable, Sendable {
         let remaining: Int
         let at: Double
         // Older than the window it reads, so it says little about now.
         let stale: Bool
     }
 
-    struct Snapshot: Decodable, Sendable, Identifiable {
+    struct Snapshot: Decodable, Equatable, Sendable, Identifiable {
         let id: String
         let at: Double
         let kind: String
@@ -127,7 +127,7 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         }
     }
 
-    struct Retention: Decodable, Sendable {
+    struct Retention: Decodable, Equatable, Sendable {
         let atRisk: Bool
         var days: Int? = nil
         let kept: Bool
@@ -136,7 +136,7 @@ struct ClaudeDesktopStatus: Decodable, Sendable {
         let canKeep: Bool
     }
 
-    struct Operation: Decodable, Sendable {
+    struct Operation: Decodable, Equatable, Sendable {
         // switch, add, sync, restore, fix, retention
         let kind: String
         var target: String? = nil

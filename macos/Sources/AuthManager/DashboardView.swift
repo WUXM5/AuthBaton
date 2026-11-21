@@ -47,7 +47,7 @@ struct DashboardView: View {
     private var cloudMode: Bool { service.directory?.cloud?.mode == "cloud" }
 
     var body: some View {
-        HStack(spacing: 0) {
+        WindowColumns(sidebar: 182) {
             Sidebar()
                 .frame(width: 182)
                 .frame(maxHeight: .infinity)
@@ -91,6 +91,24 @@ struct DashboardView: View {
         case .cloud: CloudPage()
         case .network: NetworkPage()
         }
+    }
+}
+
+// The sidebar and the page next to it. An HStack would first ask the page how narrow and how wide it can
+// be, and the window asks its content for its smallest size on every update; each of those lays out the
+// whole page at a width it is never shown at. This layout takes the size it is offered without asking,
+// and lays the page out once, at the width it gets.
+private struct WindowColumns: Layout {
+    let sidebar: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions(by: CGSize(width: 1020, height: 660))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: sidebar, height: bounds.height))
+        subviews[1].place(at: CGPoint(x: bounds.minX + sidebar, y: bounds.minY),
+                          proposal: ProposedViewSize(width: max(0, bounds.width - sidebar), height: bounds.height))
     }
 }
 
@@ -283,7 +301,7 @@ struct ClientsPage: View {
                     Pill(provider.authKind, small: true)
                 }
                 Group {
-                    if provider.id == "pi", configured, let codex {
+                    if provider.id == "pi", configured, provider.viaAuthBaton, let codex {
                         HStack(spacing: 5) {
                             Text("跟着 Codex 在用的账号：")
                             Seal(codex.displayName, style: .inUse, size: 14)

@@ -562,7 +562,7 @@ fn relaunch_switch_refuses_running_turns_and_switches_once_the_desktop_connects(
     manager.desktop.turns_running = |_| Ok(true);
     assert_eq!(
         manager.relaunch_desktop_and_activate("b").unwrap_err(),
-        "Codex 里还有任务在运行；等它结束后再切换，桌面不会被重启"
+        "Codex 里还有任务在运行，桌面不会被重启；等任务结束后再切换"
     );
     assert_eq!(RELAUNCHES.load(SeqCst), before);
     assert!(manager.desktop.job.is_none());
@@ -604,7 +604,7 @@ fn failed_relaunch_reports_on_the_attempt_and_leaves_nothing_pending() {
     let fixture = Fixture::new();
     let (mut manager, a, _b) = setup(&fixture);
     manager.desktop.turns_running = |_| Ok(false);
-    manager.desktop.relaunch = |_| Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再切换");
+    manager.desktop.relaunch = |_| Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再试");
     manager.relaunch_desktop_and_activate("b").unwrap();
     finish(&mut manager);
     let action = manager.desktop.action.clone().unwrap();
@@ -733,11 +733,57 @@ fn only_a_turn_started_since_the_desktop_launched_keeps_it_from_restarting() {
 }
 
 #[test]
+fn reopening_restarts_an_idle_desktop_and_leaves_a_busy_one_running() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.running = || Ok(true);
+    manager.desktop.turns_running = |_| Ok(true);
+    let before = RESTARTS.load(SeqCst);
+    assert!(
+        manager
+            .launch_desktop()
+            .unwrap_err()
+            .contains("还有任务在运行")
+    );
+    assert!(manager.desktop.job.is_none());
+    manager.desktop.turns_running = |_| Ok(false);
+    manager.launch_desktop().unwrap();
+    assert_eq!(manager.snapshot()["desktop"]["busy"], true);
+    // A second click while it restarts starts nothing.
+    assert!(manager.launch_desktop().is_err());
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+    // The restarted desktop is polled at once; once it answers there is nothing to reopen.
+    assert!(manager.desktop.connected);
+    assert!(manager.launch_desktop().is_err());
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+}
+
+#[test]
+fn opening_a_closed_desktop_does_not_wait_for_turns_of_other_clients() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    manager.desktop.relaunch = counted_restart;
+    manager.desktop.running = || Ok(false);
+    manager.desktop.turns_running = |_| Ok(true);
+    let before = RESTARTS.load(SeqCst);
+    manager.launch_desktop().unwrap();
+    finish(&mut manager);
+    assert_eq!(RESTARTS.load(SeqCst), before + 1);
+    manager.db.desktop.enabled = false;
+    manager.desktop.connected = false;
+    assert_eq!(manager.launch_desktop().unwrap_err(), "请先开启热切换");
+}
+
+#[test]
 fn a_failed_restart_is_not_retried() {
     use std::sync::atomic::Ordering::SeqCst;
     let fixture = Fixture::new();
     let (mut manager, _, _) = setup(&fixture);
-    manager.desktop.relaunch = |_| Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再切换");
+    manager.desktop.relaunch = |_| Err("Codex 桌面没有退出，可能在等待确认；请手动退出后再试");
     manager.desktop.undebugged = fresh_desktop;
     DESKTOP_AGE.store(3, SeqCst);
     manager.desktop_tick();

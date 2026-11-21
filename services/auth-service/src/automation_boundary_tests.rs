@@ -719,7 +719,7 @@ fn disconnected_switch_waits_and_unknown_reset_does_not_block_other_accounts() {
     m.desktop.connected = false;
     m.automation_tick();
     assert!(m.db.automation.run.is_none());
-    assert!(m.automation.account_messages["a"].contains("等桌面"));
+    assert!(m.automation.account_messages["a"].contains("桌面没连上"));
     m.db.reset_attempts.push(crate::resets::Attempt {
         executions: vec![],
         account_id: "a".into(),

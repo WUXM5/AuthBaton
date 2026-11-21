@@ -284,9 +284,6 @@ impl Accounts {
         if manager.db.switch.as_ref().is_some_and(|s| s.desktop) {
             manager.db.switch = None;
         }
-        if manager.db.switch.is_some() {
-            manager.notice = Some("上次切换尚未确认，请结束任务后重试".into());
-        }
         // No login survives a restart: keep a staged result that can still be saved, drop the rest.
         let pending: Vec<String> = manager
             .db
@@ -454,7 +451,7 @@ impl Accounts {
     pub fn snapshot(&self) -> Value {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
-        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a)})).collect();
+        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"staged":a.pending_profile.is_some()&&a.state=="attention","check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a)})).collect();
         let mut desktop_snapshot = self.claude_desktop.snapshot(|uuid| {
             let prefix = format!("claude:{uuid}:");
             self.db
@@ -758,7 +755,7 @@ impl Accounts {
         } else if let Some(state) = &mut login.state {
             state.phase = "succeeded".into();
             state.message = if self.cloud.config.reauthorizations.contains_key(&id) {
-                "官方登录已完成；后台将核对身份并更新同一云端账号，请在云端页查看交接结果。"
+                "官方登录已完成；后台将核对身份并更新同一云端账号，请在「个人云端」查看交接结果。"
             } else if self.db.accounts.iter().any(|a| a.id == id && a.native) {
                 "当前账号已重新登录并完成存储校验，请重新打开官方客户端。"
             } else {
@@ -886,6 +883,17 @@ impl Accounts {
     pub fn request_check(&mut self, id: &str, online: bool) -> Result<()> {
         self.ensure_check_admission()?;
         self.validate_check(id, online)?;
+        // The official client renews the login it is using, and a check could renew it too. Started
+        // anyway, the check would only observe and leave the account looking untouched.
+        let account = &self.db.accounts[self.index(id)?];
+        if online
+            && account.native
+            && account.provider != "claude"
+            && !self.desktop_owns(id)
+            && (self.client_running)(&account.provider)
+        {
+            return Err(CLIENT_RENEWS);
+        }
         if self
             .active_check
             .as_ref()
@@ -1063,7 +1071,7 @@ impl Accounts {
                         && (!manual || client_running(&account.provider))
                     {
                         let message = if manual {
-                            "认证检查可能续期，请先退出官方客户端；查额度请用「检查用量」"
+                            CLIENT_RENEWS
                         } else {
                             "当前默认账号由官方客户端续期；额度可独立查询，无需退出客户端"
                         };
@@ -1999,6 +2007,7 @@ mod reset_accounts;
 #[path = "warmup_accounts.rs"]
 mod warmup_accounts;
 const IDENTITY_CHANGED: &str = "原生登录身份已变化，请重新纳管当前登录";
+const CLIENT_RENEWS: &str = "认证检查可能续期，请先退出官方客户端；查额度请用「查询额度」";
 const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
 /// `lookup` is the profile request an authentication check may make; a local check reads only.
 fn read_account_bundle(

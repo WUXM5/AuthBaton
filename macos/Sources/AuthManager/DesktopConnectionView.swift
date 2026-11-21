@@ -161,7 +161,7 @@ struct CodexConnectSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 step("01", "退出 Codex 桌面", "只在没有任务运行时退出，不会替你强停任务。")
                 step("02", "以调试模式打开", "用调试端口 \(desktop.map { String($0.port) } ?? "9522") 重新打开桌面。")
-                step("03", "连上后自动核对", "核对桌面账号与 auth.json 一致后即可热切换。")
+                step("03", "连上后自动核对", "桌面账号与 auth.json 一致就能热切换；第一次连上还要点一次「接管桌面」。")
             }
         }
     }
@@ -190,7 +190,7 @@ struct CodexConnectSheet: View {
                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 .disabled(disabled || desktop.busy)
             }
-            Text("开启时通过 Codex 桌面换号并支持自动换号；关掉后改用普通切换，换号前要自己退出桌面，见底只会重置。")
+            Text("开启时通过 Codex 桌面换号并支持自动换号；关掉后改用普通切换，换号前要自己退出桌面，见底时不再自动换号。")
                 .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
             if desktop.enabled {
                 Text("照常打开的桌面在刚启动且没有任务时，会自动以调试模式重开；AuthBaton 启动前就在用的桌面不会重启，需要时在上方重开一次。")

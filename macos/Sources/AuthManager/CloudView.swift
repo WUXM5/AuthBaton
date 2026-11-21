@@ -321,7 +321,7 @@ struct CloudAccountsView: View {
             }
             if let error = account.usageError { Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText) }
             HStack(spacing: 7) {
-                Button("检查用量") { Task { await service.cloudAction("usage", id: account.id) } }.buttonStyle(.pill(.secondary))
+                Button("查询额度") { Task { await service.cloudAction("usage", id: account.id) } }.buttonStyle(.pill(.secondary))
                 Button("认证检查") { Task { await service.cloudAction("check", id: account.id) } }.buttonStyle(.pill(.secondary))
                 if account.provider == "codex" {
                     Button("用于 pi") { Task { await service.cloudAction("select", id: account.id) } }.buttonStyle(.pill(.secondary))

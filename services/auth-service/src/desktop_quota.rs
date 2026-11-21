@@ -564,7 +564,7 @@ fn run_job(job: Job, shared: &Shared, fetch: Fetch) {
                 }
                 Query::Unauthorized => {
                     row.state = "unauthorized";
-                    row.message = "额度接口没有接受访问令牌，没有续期";
+                    row.message = "额度接口没接受桌面登录里的令牌，AuthBaton 不会替桌面续期";
                     row.windows.clear();
                     row.unauthorized = true;
                     row.blocked_hash = hash;

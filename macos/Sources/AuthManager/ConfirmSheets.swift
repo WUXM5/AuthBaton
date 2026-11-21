@@ -73,6 +73,7 @@ struct SwitchSheet: View {
     private var from: ManagedAccount? { directory?.current(account.provider) }
     private var attempt: DesktopConnection.Action? { since.flatMap { directory?.desktopAttempt(for: account.id, since: $0) } }
     private var use: CodexUse { directory.map { CodexUse.resolve(useSetting, $0) } ?? .both }
+    private var piFollows: Bool { service.snapshot?.piFollows == true }
 
     var body: some View {
         Group {
@@ -104,7 +105,7 @@ struct SwitchSheet: View {
     }
 
     private var go: String {
-        if working || attempt?.pending == true { return "正在换…" }
+        if working || attempt?.pending == true { return account.native ? "正在接管…" : "正在换…" }
         if attempt?.state == "failed" { return "重试" }
         if claudeInPlace { return "换上" }
         if account.native { return "已结束任务，接管" }
@@ -121,14 +122,15 @@ struct SwitchSheet: View {
                 case .desktop:
                     if takesOver {
                         CheckItem(kind: .system, text: "接管后立刻换到「\(account.displayName)」，之后换号不用退出桌面。")
-                    } else {
-                        CheckItem(kind: .system, text: "同时更新 Codex 桌面和 ~/.codex/auth.json，pi 新任务跟着换。")
+                    } else if !account.native {
+                        // Taking over the account in use changes no account; the lead already says what it does.
+                        CheckItem(kind: .system, text: "同时更新 Codex 桌面和 ~/.codex/auth.json" + (piFollows ? "，pi 新任务跟着换。" : "。"))
                     }
                     CheckItem(kind: .you, text: use == .desktop ? "先等桌面里正在跑的任务结束；桌面窗口不用退出。"
                                                               : "先结束桌面里的任务，退出独立的 Codex CLI，停用 VS Code 插件；桌面窗口可以开着。")
                 default:
                     if account.provider == "codex" {
-                        CheckItem(kind: .system, text: "更新 ~/.codex/auth.json；pi 的新任务跟着换。")
+                        CheckItem(kind: .system, text: "更新 ~/.codex/auth.json" + (piFollows ? "；pi 的新任务跟着换。" : "。"))
                         CheckItem(kind: .you, text: use.desk ? "请先结束任务并退出 Codex 桌面和 CLI，停用 VS Code 插件，换完再打开。"
                                                              : "请先退出正在运行的 Codex CLI，停用 VS Code 的 Codex 插件，换完再打开。")
                     } else {
@@ -187,7 +189,7 @@ struct SwitchSheet: View {
                     .padding(.leading, 14)
                 }
                 choice(plainChoice, title: "关闭热切换，改用普通切换", recommended: false,
-                       detail: "仅改写 auth.json，换号前要自己退出桌面和 CLI。之后自动换号停用，见底只会重置。") { plainChoice = true }
+                       detail: "仅改写 auth.json，换号前要自己退出桌面和 CLI。之后 Codex 见底时不再自动换号。") { plainChoice = true }
             }
             SheetError()
         } actions: {
@@ -318,11 +320,11 @@ struct ResetSheet: View {
                              selection: offer.kind, select: { chosen = $0 }, fill: true)
             }
             ticket
-            if !retry, let remaining = account.lowestPrimary, remaining > 50 {
+            if !retry, let remaining = refilled, remaining > 50 {
                 HStack(alignment: .top, spacing: 9) {
                     Icon(.alert, size: 14, color: Palette.attention).padding(.top, 1)
-                    (Text("额度还剩 \(remaining)%。").fontWeight(.semibold).foregroundStyle(Palette.attentionText)
-                     + Text("现在用会浪费大部分额度；自动规则一般在见底时才用。").foregroundStyle(Palette.attentionInk))
+                    (Text("\(offer?.kind == "fable" ? "Fable 额度" : "额度")还剩 \(remaining)%。").fontWeight(.semibold).foregroundStyle(Palette.attentionText)
+                     + Text(offer?.kind == "fable" ? "现在用会浪费大部分额度。" : "现在用会浪费大部分额度；自动规则一般在见底时才用。").foregroundStyle(Palette.attentionInk))
                         .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
@@ -347,6 +349,18 @@ struct ResetSheet: View {
         }
     }
 
+    // What is left of the windows the chosen card refills: the fuller they are, the more a reset wastes.
+    // A 5 小时 or 每周 card refills that window, a Fable card the Fable week, any other card every main window.
+    private var refilled: Int? {
+        func main(_ name: String) -> Int? { account.primaryWindows.first { $0.label.hasPrefix(name) }?.remaining }
+        switch offer?.kind {
+        case "session": return main("5 小时") ?? account.lowestPrimary
+        case "weekly": return main("7 天") ?? account.lowestPrimary
+        case "fable": return account.extraWindows.first(where: \.isFable)?.remaining
+        default: return account.lowestPrimary
+        }
+    }
+
     // The card being spent, drawn as a ticket: which one on the left, how many stay on the right.
     private var ticket: some View {
         // Listed Codex credits, or Claude's official count; nil when Claude's count did not come back.
@@ -355,7 +369,7 @@ struct ResetSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(retry ? "重试上次操作" : offer.map { ClaudeResetKind.phrase("用这张", $0.kind) } ?? "用这张")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink2)
-                Text((offer?.endsAt ?? expiresAt).map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
+                Text((offer.map(\.endsAt) ?? expiresAt).map { "\(Self.expiry($0)) 到期" } ?? (account.provider == "claude" ? "Claude 官方重置卡" : "到期时间没返回"))
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
                 if let offer {
                     Text(offer.limits.isEmpty ? "适用额度没返回" : "适用 \(offer.limits.joined(separator: "、"))")
@@ -435,16 +449,20 @@ struct RecoverSaveSheet: View {
 
     var body: some View {
         SheetScaffold(title: claudeNative ? "恢复「\(account.displayName)」的续期同步？" : "重试保存「\(account.displayName)」的续期结果？",
-                      lead: claudeNative ? "重新读取 Claude CLI 在钥匙串里的最新登录，确认是同一个账号后，重写 AuthBaton 自己的备份。"
-                                         : "按已保存的续期结果重试写回；不会重复发送续期请求。") {
+                      lead: !claudeNative ? "按已保存的续期结果重试写回；不会重复发送续期请求。"
+                          // A renewal that was never written back goes into the CLI's keychain first.
+                          : account.state == "unsaved" ? "先核对 Claude CLI 在钥匙串里的登录：还是续期前那份，就把已保存的续期结果写回去；再重写 AuthBaton 自己的备份。"
+                          : "重新读取 Claude CLI 在钥匙串里的最新登录，确认是同一个账号后，重写 AuthBaton 自己的备份。") {
             VStack(alignment: .leading, spacing: 9) {
                 if claudeNative {
                     CheckItem(kind: .system, text: "这一步不联网；Claude CLI 可以开着。")
                     CheckItem(kind: .system, text: "身份对不上就停下并提示，不覆盖任何登录。")
-                    CheckItem(kind: .info, text: "完成约 1 分钟后，AuthBaton 重新和 Claude CLI 协同续期：access 快到期时会联网续期。")
+                    if account.automatic {
+                        CheckItem(kind: .info, text: "完成约 1 分钟后，AuthBaton 重新和 Claude CLI 协同续期：Access 快到期时会联网续期。")
+                    }
                 } else {
                     CheckItem(kind: .system, text: "保存成功后恢复自动维护。")
-                    CheckItem(kind: .you, text: "如果是在用账号，先退出对应的官方客户端。")
+                    if account.native { CheckItem(kind: .you, text: "这是在用账号，先退出对应的官方客户端。") }
                 }
             }
             SheetError()
@@ -501,10 +519,12 @@ struct StrategyStopSheet: View {
     var body: some View {
         let running = service.directory?.strategy?.run != nil
         SheetScaffold(title: running ? "停止这次换号并核对？" : "关闭自动换号与重置？",
-                      lead: "不再发起新的暂停、换号或接续。") {
+                      lead: running ? "不再发起新的暂停、换号或接续，自动换号与重置也会关闭。" : "见底时不再自动换号，也不再自动用重置卡；规则会保留。") {
             VStack(alignment: .leading, spacing: 9) {
-                CheckItem(kind: .system, text: "已经提交的操作会收尾。")
-                CheckItem(kind: .you, text: "已经暂停的会话，可能要你在 Codex 里手动继续。")
+                if running {
+                    CheckItem(kind: .system, text: "已经提交的操作会收尾。")
+                    CheckItem(kind: .you, text: "已经暂停的会话，可能要你在 Codex 里手动继续。")
+                }
                 CheckItem(kind: .info, text: "已经用掉的重置卡不能撤回。")
             }
             SheetError()

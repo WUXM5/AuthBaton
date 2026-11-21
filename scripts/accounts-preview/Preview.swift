@@ -195,7 +195,7 @@ enum Fixture {
                 ["id": "synthetic-p", "order": "reset_first", "participate": true, "below": 2],
                 ["id": "synthetic-team", "order": "switch_only", "participate": true, "below": 3],
                 ["id": "synthetic-nova", "order": "switch_only", "participate": true, "below": 3]]],
-                         "busy": false, "message": "正在独立监测 4 个账号；重置无需桌面连接", "phase": NSNull(), "run": NSNull(), "last_at": NSNull(),
+                         "busy": false, "message": "", "phase": NSNull(), "run": NSNull(), "last_at": NSNull(),
                          "account_states": [["id": "synthetic-orbit", "message": "额度充足，高于见底线 3%"],
                                             ["id": "synthetic-p", "message": "额度充足，高于见底线 2%"]]],
             "claude_desktop": claudeDesktop(now),
@@ -251,6 +251,29 @@ enum Fixture {
             strategy["config"] = config
             strategy["message"] = ""
             data["strategy"] = strategy
+        case "switchonly":
+            // Strategy off, and every rule only switches: nothing here may promise a reset.
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            config["enabled"] = false
+            config["accounts"] = (config["accounts"] as! [[String: Any]]).map { rule -> [String: Any] in
+                var rule = rule
+                rule["order"] = "switch_only"
+                return rule
+            }
+            strategy["config"] = config
+            strategy["message"] = ""
+            data["strategy"] = strategy
+        case "staged":
+            // The account in use signed in again while its client was running: the new login waits to be saved.
+            data["accounts"] = (data["accounts"] as! [[String: Any]]).map { account -> [String: Any] in
+                guard account["id"] as? String == "synthetic-claude" else { return account }
+                var account = account
+                account["state"] = "attention"
+                account["message"] = "新授权已暂存，请退出官方客户端后点「本地检查」保存"
+                account["staged"] = true
+                return account
+            }
         case "empty":
             data["accounts"] = []
         case "fresh":
@@ -1663,7 +1686,7 @@ extension NSWindow {
         select(.automation)
         check.visible("开启自动接力前，先核对这两件事", "从没开过时出现起手卡")
         check.visible("Codex：桌面没连上，目前只会重置", "桌面没连上时写明 Codex 只会重置")
-        check.visible("默认未参与，接力需手动开", "写明 Claude 账号默认不参与")
+        check.visible("默认未参与，暂无法接力", "写明 Claude 账号默认不参与")
         check.expect(!Driver.visible("已关闭 · 打开后按下面的规则自动处理", wait: 0.3), "起手卡替换原来的总开关卡")
         state.calls.removeAll()
         Driver.press("开启自动接力", .exact)
@@ -1803,6 +1826,54 @@ extension NSWindow {
         check.expect(check.lastCall("accounts.claude_desktop") == nil, "没有发出桌面换号")
         Driver.press("取消", .exact)
     }
+    section(35, "文案跟着规则走：没有规则会重置时哪里都不说会重置；确认框只写这些规则会做的事") {
+        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
+        Fixture.load("switchonly", into: state)
+        select(.accounts)
+        select(.automation)
+        check.visible("桌面没连上：现在不会换号", "都只换号、桌面没连上：只写不会换号")
+        check.expect(!Driver.visible("只会重置", wait: 0.3), "都只换号时页面上不出现「只会重置」")
+        func rule(_ id: String, _ order: CodexStrategyOrder, on: Bool = true) -> CodexStrategyConfig.Rule {
+            CodexStrategyConfig.Rule(id: id, order: order, participate: on)
+        }
+        let tool: (String) -> String? = { $0.hasPrefix("claude") ? "claude" : "codex" }
+        // The report this fix came from: one Claude account, 只换号.
+        var text = AutomationPage.confirmation([rule("claude-a", .switchOnly)], tool: tool)
+        check.expect(text.contains("没有账号会自动用重置卡") && !text.contains("用掉") && !text.contains("官方"),
+                     "Claude 账号只换号：确认框只说不会用重置卡，不再说会用掉官方的卡")
+        check.expect(text.contains("Claude 直接换默认登录") && !text.contains("Codex"), "只有 Claude 换号时不提 Codex")
+        text = AutomationPage.confirmation([rule("claude-a", .resetFirst), rule("codex-a", .switchOnly)], tool: tool)
+        check.expect(text.contains("会自动用掉重置卡") && text.contains("官方排的下一张") && !text.contains("没有账号会自动用重置卡"),
+                     "有 Claude 账号会重置：写明会用卡、用的是官方排的下一张")
+        text = AutomationPage.confirmation([rule("codex-a", .resetOnly), rule("claude-a", .switchOnly, on: false)], tool: tool)
+        check.expect(text.contains("会自动用掉重置卡") && !text.contains("官方") && !text.contains("换号按接力顺序") && !text.contains("Fable"),
+                     "只有 Codex 只重置：不提换号、Claude 的卡和 Fable")
+        text = AutomationPage.confirmation([rule("claude-a", .resetOnly, on: false)], tool: tool)
+        check.expect(text.contains("现在没有账号参与") && !text.contains("见底线"), "没有账号参与：只说现在什么都不会自动做")
+        // The same answer from the service is not news: the directory is published only when it changes.
+        let json = try! JSONSerialization.data(withJSONObject: Fixture.directory("default"))
+        var other = Fixture.directory("default")
+        other["busy"] = true
+        let first = try! Fixture.decoder.decode(AccountDirectory.self, from: json)
+        check.expect(first == (try! Fixture.decoder.decode(AccountDirectory.self, from: json)), "同一份目录解出来相等，轮询不会重复刷新界面")
+        check.expect(first != (try! Fixture.decoder.decode(AccountDirectory.self, from: JSONSerialization.data(withJSONObject: other))),
+                     "目录里有一处变了就不相等")
+
+        let ownLogin = Fixture.snapshot.replacingOccurrences(of: "AuthBaton 本机服务", with: "ChatGPT OAuth")
+        check.expect(state.snapshot?.piFollows == true && !(try! Fixture.decoder.decode(Snapshot.self, from: Data(ownLogin.utf8))).piFollows,
+                     "pi 没装 AuthBaton 插件时，不写它跟着 Codex 换号")
+    }
+    section(36, "登录完成但还没保存：主按钮是说明里让点的「本地检查」，不是「恢复同步」") {
+        Fixture.load("staged", into: state)
+        select(.accounts)
+        check.visible("新授权已暂存", "卡片写明新授权已暂存")
+        check.expect(Driver.hits("恢复同步").isEmpty, "不给「恢复同步」按钮")
+        state.calls.removeAll()
+        Driver.press("本地检查", .exact)
+        check.expect(check.lastCall("accounts.check").map { $0.contains("synthetic-claude") && $0.contains("\"online\":false") } == true,
+                     "点「本地检查」发的是这个账号的本地检查")
+        Fixture.load("default", into: state)
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -1821,6 +1892,86 @@ extension NSWindow {
     }
 }
 
+// MARK: Main-thread cost
+// perf [directory.json] [rounds]: how long the main thread stays busy after each sidebar switch and after
+// each service poll, per page. Busy time is what the run loop spends between waking and sleeping again, so
+// it covers body evaluation, layout, drawing and the Core Animation commit. With a directory saved from
+// the running service the numbers are for that Mac's own accounts; nothing is sent back to the service.
+@MainActor enum Perf {
+    static var wake = 0.0
+    static var busy: [Double] = []
+
+    static func watch() {
+        let start = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.afterWaiting.rawValue, true, -.max) { _, _ in
+            MainActor.assumeIsolated { wake = CACurrentMediaTime() }
+        }
+        let end = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue | CFRunLoopActivity.exit.rawValue, true, .max) { _, _ in
+            MainActor.assumeIsolated {
+                if wake > 0 { busy.append((CACurrentMediaTime() - wake) * 1000) }
+                wake = 0
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), start, .commonModes)
+        CFRunLoopAddObserver(CFRunLoopGetMain(), end, .commonModes)
+    }
+
+    // Runs `change`, then lets the run loop work for `window` seconds: (longest single block, total), in ms.
+    static func cost(_ window: Double = 0.35, _ change: () -> Void) -> (longest: Double, total: Double) {
+        busy = []
+        let began = CACurrentMediaTime()
+        change()
+        let own = (CACurrentMediaTime() - began) * 1000
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: window))
+        // The change itself runs before the loop wakes; it belongs to the first block.
+        let blocks = busy.isEmpty ? [own] : [busy[0] + own] + busy.dropFirst()
+        return (blocks.max() ?? 0, blocks.reduce(0, +))
+    }
+
+    static func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+
+    static func run(_ live: String?, rounds: Int) -> Int {
+        let state = ServiceController.shared
+        if let live {
+            state.directory = try! Fixture.decoder.decode(AccountDirectory.self, from: Data(contentsOf: URL(fileURLWithPath: live)))
+            state.snapshot = try! Fixture.decoder.decode(Snapshot.self, from: Data(Fixture.snapshot.utf8))
+        } else {
+            Fixture.load("full", into: state)
+        }
+        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
+        var pages: [(String, Page)] = [("账号", .accounts), ("Codex", .codex), ("Claude", .claude), ("换号与重置", .automation),
+                                      ("客户端与服务", .clients), ("个人云端", .cloud), ("网络", .network)]
+        // PERF_ONLY=Claude,网络 keeps the run to those pages, for sampling one of them.
+        if let only = ProcessInfo.processInfo.environment["PERF_ONLY"]?.split(separator: ",").map(String.init) {
+            pages = pages.filter { only.contains($0.0) }
+        }
+        AppNavigation.shared.show(.clients)
+        let (window, _) = makeWindow(DashboardView(), size: NSSize(width: 1020, height: 660))
+        window.orderFrontRegardless()
+        watch()
+        Driver.settle(1)
+        var first: [String: Double] = [:], again: [String: [Double]] = [:], total: [String: [Double]] = [:], poll: [String: [Double]] = [:]
+        for round in 0...rounds {
+            for (name, page) in pages {
+                let switched = cost { AppNavigation.shared.show(page) }
+                if round == 0 { first[name] = switched.longest } else { again[name, default: []].append(switched.longest); total[name, default: []].append(switched.total) }
+                // What the 2-second poll does: the same directory, published again.
+                let polled = cost(0.15) { state.directory = state.directory }
+                if round > 0 { poll[name, default: []].append(polled.total) }
+            }
+        }
+        let idle = (0..<5).map { _ in cost(0.15) {}.total }
+        print("页面            首次切入  再次切入(中位/最大)  切入总计  一次轮询")
+        for (name, _) in pages {
+            let a = again[name]!, t = total[name]!, p = poll[name]!
+            print(name.padding(toLength: 10, withPad: "　", startingAt: 0),
+                  String(format: "%7.1f  %8.1f /%6.1f  %8.1f  %8.1f", first[name]!, median(a), a.max()!, median(t), median(p)))
+        }
+        print(String(format: "空转（什么都不做）%.1f ms；单位 ms，%d 轮", median(idle), rounds))
+        window.orderOut(nil)
+        return 0
+    }
+}
+
 @main struct Preview {
     static func page(_ name: String) -> Page {
         ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation,
@@ -1833,7 +1984,20 @@ extension NSWindow {
         if args.count >= 2 && args[1] == "interact" {
             exit(Int32(interact()))
         }
+        if args.count >= 2 && args[1] == "perf" {
+            app.setActivationPolicy(.accessory)
+            let live = args.count > 2 && args[2] != "-" ? args[2] : nil
+            exit(Int32(Perf.run(live, rounds: args.count > 3 ? Int(args[3])! : 6)))
+        }
         // dump [scenario] [page] [selection]: OCR lines with their window positions, for writing locators.
+        if args.count >= 4 && args[1] == "same" {
+            // Polls saved from a running service: how many decode to the same directory as the one before,
+            // which is how many the app would not redraw for.
+            let polls = args[2...].map { try! Fixture.decoder.decode(AccountDirectory.self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
+            let same = zip(polls, polls.dropFirst()).filter { $0 == $1 }.count
+            print("相邻两次轮询 \(polls.count - 1) 对，解出来相同 \(same) 对")
+            exit(0)
+        }
         if args.count >= 2 && args[1] == "dump" {
             app.setActivationPolicy(.accessory)
             Fixture.load(args.count > 2 ? args[2] : "default", into: ServiceController.shared)

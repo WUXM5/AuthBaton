@@ -254,11 +254,13 @@ struct MenuBarPanel: View {
     // Same way out as the window's account cards: their fix, one click away in the window.
     private func unavailable(_ account: ManagedAccount, _ action: PrimaryAction) -> some View {
         let text: String = switch action {
+        case .capture: "\(account.health.title)：登录还没保存。先在窗口里点「本地检查」保存，再换上。"
         case .recover: "\(account.health.title)：现在换过去会写入旧的登录。先在窗口里\(account.recoverTitle)，再换上。"
         case .relogin: "\(account.health.title)：先在窗口里重新登录，再换上。"
         default: "\(account.health.title)，现在不能换上。" + (account.health.detail ?? account.message)
         }
         let fix: String? = switch action {
+        case .capture: "本地检查…"
         case .recover: account.recoverTitle + "…"
         case .relogin: "重新登录…"
         default: nil

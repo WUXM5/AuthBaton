@@ -1,6 +1,6 @@
 import Foundation
 
-struct ProviderStatus: Decodable, Identifiable, Sendable {
+struct ProviderStatus: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let name: String
     let state: String
@@ -9,6 +9,10 @@ struct ProviderStatus: Decodable, Identifiable, Sendable {
     let source: String
     let expiresAt: Double?
     let details: [String]
+
+    // pi takes its Codex login from AuthBaton only through the AuthBaton plugin; with its own sign-in it
+    // does not follow the account in use.
+    var viaAuthBaton: Bool { authKind == "AuthBaton 本机服务" }
 
     var stateLabel: String {
         switch state {
@@ -21,11 +25,14 @@ struct ProviderStatus: Decodable, Identifiable, Sendable {
     }
 }
 
-struct Snapshot: Decodable, Sendable {
+struct Snapshot: Decodable, Equatable, Sendable {
     let checkedAt: Double
     let serviceVersion: String
     let providers: [ProviderStatus]
     let verification: String
+
+    // Whether pi's new tasks follow the Codex account in use.
+    var piFollows: Bool { providers.contains { $0.id == "pi" && $0.state == "configured" && $0.viaAuthBaton } }
 }
 
 struct RPCRequest: Encodable {
@@ -79,7 +86,7 @@ struct LoginTarget: Equatable, Sendable {
     var cloudAccountID: String?
 }
 
-struct LoginAttempt: Decodable, Sendable {
+struct LoginAttempt: Decodable, Equatable, Sendable {
     let attemptId: String
     let provider: String
     let phase: String
@@ -136,7 +143,7 @@ enum ServiceError: LocalizedError {
     }
 }
 
-struct AccountDirectory: Decodable, Sendable {
+struct AccountDirectory: Decodable, Equatable, Sendable {
     let accounts: [ManagedAccount]
     let busy: Bool
     let checksBlocked: Bool?
@@ -202,7 +209,7 @@ struct CodexStrategyConfig: Decodable, Equatable, Sendable {
             accounts: accounts.map { .init(id: $0.id, order: $0.order, participate: $0.participate, below: $0.below) })
     }
 }
-struct CodexStrategyStatus: Decodable, Sendable {
+struct CodexStrategyStatus: Decodable, Equatable, Sendable {
     let config: CodexStrategyConfig
     let phase: String?
     let busy: Bool
@@ -210,12 +217,12 @@ struct CodexStrategyStatus: Decodable, Sendable {
     let lastAt: Double?
     let run: Run?
     var accountStates: [AccountState]? = nil
-    struct AccountState: Decodable, Identifiable, Sendable { let id: String; let message: String }
-    struct Run: Decodable, Sendable {
+    struct AccountState: Decodable, Equatable, Identifiable, Sendable { let id: String; let message: String }
+    struct Run: Decodable, Equatable, Sendable {
         let id: String; let source: String; let target: String; let createdAt: Double
         let tasks: [TaskState]
     }
-    struct TaskState: Decodable, Sendable {
+    struct TaskState: Decodable, Equatable, Sendable {
         let threadId: String; let state: String
         var label: String {
             switch state {
@@ -231,7 +238,7 @@ struct CodexStrategyStatus: Decodable, Sendable {
     }
 }
 
-struct CloudStatus: Decodable, Sendable {
+struct CloudStatus: Decodable, Equatable, Sendable {
     let mode: String
     let endpoint: String
     let label: String
@@ -246,10 +253,10 @@ struct CloudStatus: Decodable, Sendable {
     let pendingActivation: String?
     let transfers: [CloudTransfer]
 }
-struct CloudPair: Decodable, Sendable { let id: String; let code: String; let url: String; let expiresAt: Double }
-struct CloudDevice: Decodable, Identifiable, Sendable { let id: String; let label: String; let lastSeen: Double? }
-struct CloudTransfer: Decodable, Sendable { let localId: String; let cloudId: String?; let phase: String }
-struct CloudAccount: Decodable, Identifiable, Sendable {
+struct CloudPair: Decodable, Equatable, Sendable { let id: String; let code: String; let url: String; let expiresAt: Double }
+struct CloudDevice: Decodable, Equatable, Identifiable, Sendable { let id: String; let label: String; let lastSeen: Double? }
+struct CloudTransfer: Decodable, Equatable, Sendable { let localId: String; let cloudId: String?; let phase: String }
+struct CloudAccount: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let provider: String
     let label: String
@@ -268,16 +275,16 @@ struct CloudAccount: Decodable, Identifiable, Sendable {
         switch state { case "ready": "云端维护中"; case "awaiting_handoff": "等待交接"; case "verification_pending": "续期已保存，待验证"; case "refreshing": "正在续期"; case "uncertain": "等待重新确认"; case "reauthorization_required": "需要重新授权"; default: "需要处理" }
     }
 }
-struct CloudUsage: Decodable, Sendable { let windows: [CloudWindow]; let checkedAt: Double }
-struct CloudWindow: Decodable, Sendable { let label: String; let usedPercent: Double; let resetsAt: Double? }
-struct LoginNotice: Decodable, Sendable {
+struct CloudUsage: Decodable, Equatable, Sendable { let windows: [CloudWindow]; let checkedAt: Double }
+struct CloudWindow: Decodable, Equatable, Sendable { let label: String; let usedPercent: Double; let resetsAt: Double? }
+struct LoginNotice: Decodable, Equatable, Sendable {
     let state: String
     let expiresAt: Double?
     let message: String
     let source: String?
     var needsAttention: Bool { ["soon", "expired"].contains(state) }
 }
-struct DesktopConnection: Decodable, Sendable {
+struct DesktopConnection: Decodable, Equatable, Sendable {
     let enabled: Bool
     let port: UInt16
     let selected: String?
@@ -295,7 +302,7 @@ struct DesktopConnection: Decodable, Sendable {
         var pending: Bool { ["relaunching", "checking", "switching"].contains(state) }
     }
 }
-struct ManagedAccount: Decodable, Identifiable, Sendable {
+struct ManagedAccount: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let provider: String
     let label: String
@@ -307,6 +314,8 @@ struct ManagedAccount: Decodable, Identifiable, Sendable {
     let automatic: Bool
     let state: String
     let message: String
+    // A finished login the service could not save yet; 「本地检查」 saves it.
+    let staged: Bool?
     let lastLocal: Double?
     let lastOnline: Double?
     let lastRefresh: Double?
@@ -347,7 +356,7 @@ struct ManagedAccount: Decodable, Identifiable, Sendable {
         }
     }
 }
-struct AccountQuota: Decodable, Sendable {
+struct AccountQuota: Decodable, Equatable, Sendable {
     let label: String
     let usedPercent: Double
     let resetsAt: Double?
@@ -358,8 +367,8 @@ struct AccountQuota: Decodable, Sendable {
     var resetDate: Date? { resetsAt.map(Date.init(timeIntervalSince1970:)) ?? QuotaResetCredit.date(resetsAtIso) }
     var remaining: Int { Int(max(0, 100 - usedPercent).rounded(.down)) }
 }
-struct ClaudeWarmup: Decodable, Sendable {
-    struct Record: Decodable, Sendable {
+struct ClaudeWarmup: Decodable, Equatable, Sendable {
+    struct Record: Decodable, Equatable, Sendable {
         let at: Double
         let ok: Bool
         let message: String
@@ -371,7 +380,7 @@ struct ClaudeWarmup: Decodable, Sendable {
     let next: Double?
 }
 
-struct QuotaStatus: Decodable, Sendable {
+struct QuotaStatus: Decodable, Equatable, Sendable {
     let state: String
     let message: String
     let windows: [AccountQuota]
@@ -382,7 +391,7 @@ struct QuotaStatus: Decodable, Sendable {
     let resetCredits: QuotaResetCredits?
     let claudeResets: ClaudeResetStatus?
 }
-struct ClaudeResetStatus: Decodable, Sendable {
+struct ClaudeResetStatus: Decodable, Equatable, Sendable {
     let grants: ClaudeResetGrants?
     let weekly: ClaudeWeeklyReset?
     // The grant a rule would claim now (the official next); the service keeps its ID.
@@ -390,7 +399,7 @@ struct ClaudeResetStatus: Decodable, Sendable {
     // One card per kind a person can choose, in the official order; the service keeps their IDs.
     let offers: [ClaudeResetOffer]
 }
-struct ClaudeResetOffer: Decodable, Sendable {
+struct ClaudeResetOffer: Decodable, Equatable, Sendable {
     let kind: String
     let limits: [String]
     let remaining: Int
@@ -415,7 +424,7 @@ enum ClaudeResetKind {
     // "1 张完整重置卡", "没有 Fable 重置卡".
     static func counted(_ count: Int, _ kind: String) -> String { phrase(count > 0 ? "\(count) 张" : "没有", kind) }
 }
-struct ClaudeResetGrants: Decodable, Sendable {
+struct ClaudeResetGrants: Decodable, Equatable, Sendable {
     let eligible: Bool
     let message: String
     let remaining: Int?
@@ -423,7 +432,7 @@ struct ClaudeResetGrants: Decodable, Sendable {
     let cooldownUntil: String?
     let weeklyResetsAt: String?
 }
-struct ClaudeResetGrant: Decodable, Sendable {
+struct ClaudeResetGrant: Decodable, Equatable, Sendable {
     let label: String
     let kind: String
     let remaining: Int
@@ -443,7 +452,7 @@ struct ClaudeResetGrant: Decodable, Sendable {
         switch usableNow { case true: return "当前可用"; case false: return "当前不可用"; default: return "未提供可用状态" }
     }
 }
-struct ClaudeWeeklyReset: Decodable, Sendable {
+struct ClaudeWeeklyReset: Decodable, Equatable, Sendable {
     let eligible: Bool
     let message: String
     let available: Bool?
@@ -451,22 +460,22 @@ struct ClaudeWeeklyReset: Decodable, Sendable {
     let nextAvailableAt: String?
     let weeklyResetsAt: String?
 }
-struct QuotaResetCredits: Decodable, Sendable {
+struct QuotaResetCredits: Decodable, Equatable, Sendable {
     let availableCount: Int
     let details: [QuotaResetCredit]?
 }
-struct QuotaResetCredit: Decodable, Identifiable, Sendable {
+struct QuotaResetCredit: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let resetType: String
     let status: String
     let expiresAt: String?
 
+    // Views ask for this on every update, for every card: the parse strategies cost a fraction of a
+    // microsecond, an ISO8601DateFormatter built per call cost over a hundred.
     static func date(_ value: String?) -> Date? {
         guard let value else { return nil }
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
+        return (try? Date(value, strategy: .iso8601))
+            ?? (try? Date(value, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
     }
     static func expiryLabel(_ value: String?) -> String {
         guard let value else { return "未提供到期时间" }
@@ -478,7 +487,7 @@ struct QuotaResetCredit: Decodable, Identifiable, Sendable {
             && (expiresAt == nil || Self.date(expiresAt).map { $0 > Date() } == true)
     }
 }
-struct QuotaResetAttempt: Decodable, Sendable {
+struct QuotaResetAttempt: Decodable, Equatable, Sendable {
     let requestId: String
     let creditId: String?  // nil for Claude: grant IDs stay in the service, a retry names the operation
     let expiresAt: String?

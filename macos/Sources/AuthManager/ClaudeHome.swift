@@ -226,7 +226,7 @@ struct ClaudeHomePage: View {
             }
             addButton(use, directory: directory).fixedSize()
         } content: {
-            if use.code && directory.recoveryNeeded { RecoveryBanner() }
+            if (use.code || codeRelayOn) && directory.recoveryNeeded { RecoveryBanner() }
             if let error = service.accountError, service.accountErrorID == nil {
                 Banner(text: error) { Button("知道了") { service.clearAccountError() }.buttonStyle(.pill(.onAttention)) }
             }
@@ -264,7 +264,7 @@ struct ClaudeHomePage: View {
             }
             if !starting {
                 hints(use, directory: directory)
-                footer(use, status: status)
+                footer(use, status: status, managed: entries.contains { $0.cli != nil })
             }
         }
     }
@@ -406,7 +406,8 @@ struct ClaudeHomePage: View {
         }
     }
 
-    private func footer(_ use: ClaudeUse, status: ClaudeDesktopStatus?) -> some View {
+    // managed: some account is signed in to AuthBaton, so its page has 预热 and 续期 to show.
+    private func footer(_ use: ClaudeUse, status: ClaudeDesktopStatus?, managed: Bool) -> some View {
         let showCode = use.code || status?.codeRelay?.enabled == true
         return VStack(alignment: .leading, spacing: 5) {
             if showCode {
@@ -415,7 +416,7 @@ struct ClaudeHomePage: View {
                     Button("换号与重置") { nav.show(.automation) }.buttonStyle(.pill(.link))
                     Text("。")
                 }
-            } else {
+            } else if managed {
                 Text("点卡片看 5 小时窗口预热与续期。")
             }
             if use.desk, let feature = status?.tokenQuota, feature.enabled {
@@ -469,7 +470,7 @@ struct DesktopNotices: View {
             }
         }
         if !status.installed {
-            Banner(glyph: .info, text: "这台 Mac 上没找到 Claude 桌面。装好并登录以后，这里会显示会话同步。")
+            Banner(glyph: .info, text: "这台 Mac 上没找到 Claude 桌面。装好并登录以后，会话同步才能用。")
         } else if !status.switchSupported {
             Banner(glyph: .info, text: "这一版 Claude 桌面不能在 AuthBaton 里换号；会话同步照常。")
         }
@@ -631,13 +632,13 @@ private struct CodeRelayStrip: View {
             } else if relay.state == "uninstalling" {
                 HStack(spacing: 5) {
                     ProgressView().controlSize(.mini)
-                    Text("正在卸载系统插件…")
+                    Text("正在卸载系统插件，请在弹窗输入管理员密码…")
                 }.foregroundStyle(Palette.ink2)
             } else if relay.state == "active" {
-                let countNote = relay.relayedCount > 0 ? " · 已接力 \(relay.relayedCount) 次" : ""
+                let countNote = relay.relayedCount > 0 ? " · 已发 \(relay.relayedCount) 次请求" : ""
                 Text("当前账号 \(relay.activeLabel ?? "—")\(countNote)")
                     .foregroundStyle(Palette.ink2)
-                    .help("在上方切 Claude Code 账号时，桌面 Code 对话会立即切过去，无需重启桌面")
+                    .help("切 Claude Code 账号时，桌面 Code 对话会立即切过去，无需重启桌面")
             } else if ["team_mismatch", "blocked_remote", "error"].contains(relay.state) {
                 Text(relay.message).foregroundStyle(Palette.attentionText).help(relay.message)
             } else {
@@ -700,9 +701,10 @@ private struct ClaudeEntryCard: View {
                             .help("开着 5 小时窗口预热")
                         }
                         if use.desk && entry.desk == nil {
-                            if codeRelayOn {
+                            if directory.claudeDesktop?.codeRelay?.state == "active" {
                                 Text("Code 无感可用").font(.system(size: 11)).foregroundStyle(Palette.deep).lineLimit(1)
-                                    .help("已开启 Code 无感换号：同 Team 账号无需在桌面重复登录，点「换上」即可在桌面 Code 对话里直接切换")
+                                    .help(entry.inCode ? "已开启 Code 无感换号：桌面 Code 对话已经在用这个账号，无需在桌面重复登录"
+                                          : "已开启 Code 无感换号：同 Team 账号无需在桌面重复登录，点「换上」即可在桌面 Code 对话里直接切换")
                             } else {
                                 Text("还没在桌面登录过").font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                             }
@@ -816,10 +818,11 @@ struct LowPill: View {
     private func help(_ low: [AccountQuota], waited: AccountQuota, notch: Int) -> String {
         let name = { (window: AccountQuota) in window.shortLabel.trimmingCharacters(in: .whitespaces) }
         if low.count > 1 {
-            return low.map { "\(name($0))剩 \($0.remaining)%" }.joined(separator: "、")
-                + "，都到了见底线 \(notch)%：自动换号不会换到它；两个都回满才能再用，最晚的是\(name(waited))额度，\(waited.refill())。"
+            return low.map { "\(name($0))剩 \($0.remaining)%" }.joined(separator: "、") + "，都到了见底线 \(notch)%："
+                + (account.native ? "" : "自动换号不会换到它；两个都回满才能再用，")
+                + "最晚回满的是 \(name(waited))额度，\(waited.refill())。"
         }
-        return "\(name(waited))剩 \(waited.remaining)%，到了见底线 \(notch)%：自动换号不会换到它，\(waited.refill())。"
+        return "\(name(waited))剩 \(waited.remaining)%，到了见底线 \(notch)%：" + (account.native ? "" : "自动换号不会换到它，") + "\(waited.refill())。"
     }
 }
 
@@ -859,7 +862,7 @@ struct DeskOnlyQuota: View {
     // Quota read through Claude 桌面's sign-in: the same figures an AuthBaton login gets, and where they came from.
     private func figures(_ quota: ClaudeDesktopStatus.DeskQuota) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 20) {
+            EqualColumns(spacing: 20) {
                 ForEach(Array(quota.primary.enumerated()), id: \.offset) { _, window in
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -945,7 +948,7 @@ struct TokenQuotaSheet: View {
                 CheckItem(kind: .you, text: "macOS 会问能不能让 AuthBaton 使用「Claude Safe Storage」，点「允许」。AuthBaton 重启或更新后会再问一次")
                 CheckItem(kind: .system, text: "用这把钥匙读出 Claude 桌面登录里的令牌，每 5 分钟查一次额度；钥匙只在内存里，不存盘")
                 CheckItem(kind: .info, text: "只查额度：不续期、不用重置卡、不发模型请求，也不改 Claude 的任何文件")
-                CheckItem(kind: .info, text: "已经补登过的账号照旧用自己的登录；随时可以在页面底部关掉")
+                CheckItem(kind: .info, text: "已经补登过的账号照旧用自己的登录；随时可以在 Claude 页底部关掉")
             }
             if let error = service.accountError {
                 Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
@@ -985,7 +988,7 @@ struct CodeRelaySheet: View {
                 CheckItem(kind: .you, text: "首次开启会弹出一次 macOS 管理员密码框，用来在系统目录登记 AuthBaton 插件（只作用于 Claude 桌面 Code 标签）")
                 CheckItem(kind: .info, text: "开启后 Claude 桌面可能提示「已加载托管策略/本机托管配置」，这是系统级插件生效后的正常提示，不影响日常使用，也不会覆盖你的其他设置")
                 CheckItem(kind: .system, text: "插件通过本机私密通道获取当前同 Team 账号的短期访问令牌（不触碰刷新令牌、不写盘、不改环境变量），仍由 Claude 桌面内置引擎原生直连官方接口；切账号后下一轮立即生效，遇到限流还可自动无感切到下一个同 Team 账号继续回复")
-                CheckItem(kind: .info, text: "桌面壳只需登录 1 个该 Team 账号；其他同 Team 账号登录到 AuthBaton 即可在桌面 Code 模式无感切换，日后使用终端 CLI 也可直接复用。跨 Team 或 AuthBaton 退出时自动回退桌面默认登录，随时可在页面底部一键关闭或完整卸载")
+                CheckItem(kind: .info, text: "桌面壳只需登录 1 个该 Team 账号；其他同 Team 账号登录到 AuthBaton 即可在桌面 Code 模式无感切换，日后使用终端 CLI 也可直接复用。跨 Team 或 AuthBaton 退出时自动回退桌面默认登录；随时可以关掉开关，或在 Claude 页底部卸载插件")
             }
             if let error = service.accountError {
                 Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
@@ -1118,7 +1121,7 @@ private struct ClaudeEntryMenu: View {
             Button("账号详情") { nav.claudeDetail = entry.id }
             if let cli = entry.cli {
                 let querying = service.quotaRequests.contains(cli.id) || cli.usage?.refreshing == true
-                Button(querying ? "正在查询额度…" : "立即查询额度") { Task { await service.checkQuota(id: cli.id) } }.disabled(querying)
+                Button(querying ? "正在查询额度…" : "查询额度") { Task { await service.checkQuota(id: cli.id) } }.disabled(querying)
             }
             if use.desk, let desk = entry.desk {
                 Divider()
@@ -1209,7 +1212,7 @@ struct ClaudeSwitchSheet: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 if moves.code {
-                    let note = status?.codeRelay?.enabled == true
+                    let note = status?.codeRelay?.enabled == true && !moves.desk
                         ? "不用退出客户端：同 Team 的 Claude 桌面 Code 对话下一轮立即生效，终端 CLI 约 30 秒生效。"
                         : "不用退出 CLI，约 30 秒生效；被额度打断的会话按一次回车继续。"
                     impact(.terminal, "Claude Code", from: codeFrom, to: name, note: note)
@@ -1233,7 +1236,7 @@ struct ClaudeSwitchSheet: View {
                             .buttonStyle(.pill(.onAttention, height: 20))
                             .disabled(working || service.accountBusy || directory?.busy == true)
                     }
-                } else {
+                } else if entry?.inCode != true {
                     Banner(glyph: .relay, text: "你已开启 Code 无感换号：若与桌面在同一 Team，只换 Claude Code 即可让桌面 Code 对话立即切换，无需重启桌面。")
                 }
             }

@@ -39,7 +39,7 @@ impl Accounts {
             }
             Some(_) => return Err("重置卡类别无效"),
         }
-        .ok_or("请先检查用量，取得有效的重置卡明细")
+        .ok_or("请先查询额度，取得有效的重置卡明细")
     }
     pub(super) fn reset_quota_with_trigger(
         &mut self,
@@ -112,7 +112,7 @@ impl Accounts {
             let expires_at = self
                 .quota
                 .credit(id, credit_id, now())
-                .ok_or("请先检查用量，取得有效的重置卡明细")?;
+                .ok_or("请先查询额度，取得有效的重置卡明细")?;
             self.db.reset_attempts.push(Attempt {
                 account_id: id.into(),
                 owner,
@@ -270,11 +270,21 @@ impl Accounts {
             } else {
                 attempt.executions.clone()
             };
+            let count = executions.len();
             for (index, execution) in executions.into_iter().enumerate() {
                 let id = format!("{}:{index}", attempt.request_id);
+                // Outcome messages speak of the present; a line of the record is about what happened then.
+                let message = match (execution.detail.as_deref(), execution.outcome) {
+                    (Some(detail), _) => detail,
+                    (None, ResetOutcome::Unknown) if index + 1 < count => {
+                        "这次没收到结果，后来又重试过"
+                    }
+                    (None, ResetOutcome::Reset) => "已用 1 张重置卡",
+                    (None, outcome) => outcome.message(),
+                };
                 let value = json!({"id":id,"account_id":attempt.account_id,"account_label":execution.account_label,
                     "source":execution.source,"started_at":execution.started_at,"finished_at":execution.finished_at,
-                    "outcome":execution.outcome,"message":execution.detail.as_deref().unwrap_or(execution.outcome.message()),
+                    "outcome":execution.outcome,"message":message,
                     "trigger":execution.trigger,"retry":index>0});
                 entries.push(((execution.started_at, ordinal, index), value));
             }

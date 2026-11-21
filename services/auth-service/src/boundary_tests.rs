@@ -645,6 +645,37 @@ fn independent_quota_works_with_running_client_without_auth_writes_or_duplicate_
 }
 
 #[test]
+fn a_check_of_the_codex_login_in_use_is_refused_while_its_client_runs() {
+    let fixture = Fixture::new();
+    let mut manager = fixture.manager();
+    let bundle = codex_bundle();
+    private_dir(&manager.sources.codex_home).unwrap();
+    write_json(
+        &manager.sources.codex_home.join("auth.json"),
+        &bundle.credential,
+    )
+    .unwrap();
+    manager.db.accounts.push(account("native", &bundle, true));
+    manager.client_running = |_| true;
+    let before = serde_json::to_value(&manager.db.accounts[0]).unwrap();
+    assert!(
+        manager
+            .request_check("native", true)
+            .unwrap_err()
+            .contains("请先退出官方客户端")
+    );
+    assert!(manager.job.is_none() && manager.check_queue.is_empty());
+    assert_eq!(
+        serde_json::to_value(&manager.db.accounts[0]).unwrap(),
+        before
+    );
+    // Reading the saved login renews nothing and stays allowed.
+    manager.request_check("native", false).unwrap();
+    assert_eq!(manager.job.as_ref().unwrap().id, "native");
+    manager.finish_job();
+}
+
+#[test]
 fn requested_quota_reads_as_refreshing_from_request_until_result() {
     fn usage(
         _: &crate::codex_api::Access,
