@@ -404,6 +404,13 @@ struct AccountStrips: View {
         let detail = health.detail ?? (account.message.isEmpty ? nil : account.message)
         let text = health.title + (detail.map { "。\($0)" } ?? "")
         switch directory.primaryAction(for: account) {
+        case .capture:
+            IssueStrip(glyph: .alert, text: text) {
+                Button("本地检查") {
+                    Task { await service.accountOperation("accounts.check", params: LoginParams(id: account.id, online: false)) }
+                }
+                .buttonStyle(.pill(.primary, height: 22)).disabled(locked)
+            }
         case .recover:
             IssueStrip(glyph: .sync, text: text) {
                 Button(account.recoverTitle) { open(.recover(account.id)) }.buttonStyle(.pill(.primary, height: 22)).disabled(locked)

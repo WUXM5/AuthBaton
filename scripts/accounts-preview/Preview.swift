@@ -264,6 +264,16 @@ enum Fixture {
             strategy["config"] = config
             strategy["message"] = ""
             data["strategy"] = strategy
+        case "staged":
+            // The account in use signed in again while its client was running: the new login waits to be saved.
+            data["accounts"] = (data["accounts"] as! [[String: Any]]).map { account -> [String: Any] in
+                guard account["id"] as? String == "synthetic-claude" else { return account }
+                var account = account
+                account["state"] = "attention"
+                account["message"] = "新授权已暂存，请退出官方客户端后点「本地检查」保存"
+                account["staged"] = true
+                return account
+            }
         case "empty":
             data["accounts"] = []
         case "fresh":
@@ -1852,6 +1862,17 @@ extension NSWindow {
         let ownLogin = Fixture.snapshot.replacingOccurrences(of: "AuthBaton 本机服务", with: "ChatGPT OAuth")
         check.expect(state.snapshot?.piFollows == true && !(try! Fixture.decoder.decode(Snapshot.self, from: Data(ownLogin.utf8))).piFollows,
                      "pi 没装 AuthBaton 插件时，不写它跟着 Codex 换号")
+    }
+    section(36, "登录完成但还没保存：主按钮是说明里让点的「本地检查」，不是「恢复同步」") {
+        Fixture.load("staged", into: state)
+        select(.accounts)
+        check.visible("新授权已暂存", "卡片写明新授权已暂存")
+        check.expect(Driver.hits("恢复同步").isEmpty, "不给「恢复同步」按钮")
+        state.calls.removeAll()
+        Driver.press("本地检查", .exact)
+        check.expect(check.lastCall("accounts.check").map { $0.contains("synthetic-claude") && $0.contains("\"online\":false") } == true,
+                     "点「本地检查」发的是这个账号的本地检查")
+        Fixture.load("default", into: state)
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")

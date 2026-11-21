@@ -334,6 +334,11 @@ private struct BenchRow: View {
             let locked = service.accountBusy || directory.busy || directory.recoveryNeeded
             HStack(spacing: 5) {
                 switch action {
+                case .capture:
+                    Button("本地检查") {
+                        Task { await service.accountOperation("accounts.check", params: LoginParams(id: account.id, online: false)) }
+                    }
+                    .buttonStyle(.pill(.primary)).disabled(locked)
                 case .recover:
                     Button(account.recoverTitle) { open(.recover(account.id)) }.buttonStyle(.pill(.primary)).disabled(locked)
                 case .relogin:

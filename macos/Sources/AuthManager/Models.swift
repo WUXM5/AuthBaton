@@ -314,6 +314,8 @@ struct ManagedAccount: Decodable, Equatable, Identifiable, Sendable {
     let automatic: Bool
     let state: String
     let message: String
+    // A finished login the service could not save yet; 「本地检查」 saves it.
+    let staged: Bool?
     let lastLocal: Double?
     let lastOnline: Double?
     let lastRefresh: Double?

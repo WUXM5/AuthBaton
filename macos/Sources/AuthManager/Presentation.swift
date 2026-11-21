@@ -322,6 +322,7 @@ extension AccountDirectory {
     // so none offers a switch to an account whose saved login is broken or unconfirmed.
     func primaryAction(for account: ManagedAccount) -> PrimaryAction {
         if ["cloud_transfer", "cloud_managed"].contains(account.state) { return .wait }
+        if account.staged == true { return .capture }
         if account.recoverable { return .recover }
         if account.state == "reauth" || account.loginNotice?.needsAttention == true { return .relogin }
         guard canSwitch(to: account) else { return .current }
@@ -402,6 +403,7 @@ struct Issue: Identifiable {
 }
 
 enum PrimaryAction {
+    case capture    // 本地检查：保存已完成、还没存下来的登录
     case recover    // 恢复同步 / 重试保存
     case relogin    // 重新登录
     case switchTo   // 换上，或由 AuthManager 接管当前登录

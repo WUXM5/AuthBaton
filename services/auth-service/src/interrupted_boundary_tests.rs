@@ -356,9 +356,15 @@ fn after_a_restart_only_a_login_that_can_still_be_saved_is_kept() {
     assert_eq!(reopened.db.accounts[0].state, "saved");
     assert!(reopened.db.accounts[1].pending_profile.is_some());
     assert_eq!(reopened.db.accounts[1].state, "attention");
+    let staged = |m: &Accounts| {
+        let accounts = m.snapshot()["accounts"].clone();
+        (accounts[0]["staged"] == true, accounts[1]["staged"] == true)
+    };
+    assert_eq!(staged(&reopened), (false, true));
     reopened.local_check("b").unwrap();
     assert_eq!(fixture.platform.vault_read("b").unwrap(), fresh.encoded());
     assert!(reopened.db.accounts[1].pending_profile.is_none());
+    assert_eq!(staged(&reopened), (false, false));
 }
 
 #[test]
