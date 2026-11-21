@@ -75,8 +75,10 @@ struct LoginView: View {
                     MethodOption(title: "登录新账号",
                                  detail: provider == "codex" ? "拿到授权码后，在浏览器里选账号并确认。" : "Claude CLI 会打开浏览器，登录后保存在本机。",
                                  selected: !importing) { importing = false }
-                    MethodOption(title: "导入这台 Mac 上已有的登录",
-                                 detail: "把 \(name) 现在的登录交给 AuthBaton 一起管。",
+                    // Claude 桌面 users read 「这台 Mac 上已有的登录」 as their desktop sign-in, which can't be imported.
+                    MethodOption(title: provider == "codex" ? "导入这台 Mac 上已有的登录" : "导入 Claude Code CLI 的登录",
+                                 detail: provider == "codex" ? "把 \(name) 现在的登录交给 AuthBaton 一起管。"
+                                     : "把 Claude Code CLI 现在的登录交给 AuthBaton 一起管。\nClaude 桌面的登录不能导入。",
                                  selected: importing) { importing = true }
                 }
                 .padding(.top, 12)
