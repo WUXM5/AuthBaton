@@ -883,6 +883,17 @@ impl Accounts {
     pub fn request_check(&mut self, id: &str, online: bool) -> Result<()> {
         self.ensure_check_admission()?;
         self.validate_check(id, online)?;
+        // The official client renews the login it is using, and a check could renew it too. Started
+        // anyway, the check would only observe and leave the account looking untouched.
+        let account = &self.db.accounts[self.index(id)?];
+        if online
+            && account.native
+            && account.provider != "claude"
+            && !self.desktop_owns(id)
+            && (self.client_running)(&account.provider)
+        {
+            return Err(CLIENT_RENEWS);
+        }
         if self
             .active_check
             .as_ref()
@@ -1060,7 +1071,7 @@ impl Accounts {
                         && (!manual || client_running(&account.provider))
                     {
                         let message = if manual {
-                            "认证检查可能续期，请先退出官方客户端；查额度请用「查询额度」"
+                            CLIENT_RENEWS
                         } else {
                             "当前默认账号由官方客户端续期；额度可独立查询，无需退出客户端"
                         };
@@ -1996,6 +2007,7 @@ mod reset_accounts;
 #[path = "warmup_accounts.rs"]
 mod warmup_accounts;
 const IDENTITY_CHANGED: &str = "原生登录身份已变化，请重新纳管当前登录";
+const CLIENT_RENEWS: &str = "认证检查可能续期，请先退出官方客户端；查额度请用「查询额度」";
 const IDENTITY_UNCONFIRMED: &str = "Claude 默认登录旁的身份记录写着另一个账号（Claude 桌面会改写它），本机无法确认登录属于谁；认证检查核对后再继续";
 /// `lookup` is the profile request an authentication check may make; a local check reads only.
 fn read_account_bundle(
