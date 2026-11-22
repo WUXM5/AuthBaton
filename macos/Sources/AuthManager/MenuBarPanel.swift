@@ -179,12 +179,16 @@ struct MenuBarPanel: View {
 
     @ViewBuilder private func switchList(_ provider: String, directory: AccountDirectory) -> some View {
         let others = directory.relay(provider).filter { !$0.native }
+        // Claude's list moves Claude Code; with 无感换号 the desktop's Code tab follows it (11-22: the window's Code slot).
+        let relayOn = directory.claudeDesktop?.codeRelay?.enabled == true
+        let title = provider == "claude" ? (relayOn ? "换 Code 账号（无感）" : "换 Claude Code 账号") : "换 \(GlyphTile.name(provider)) 账号"
+        let next = provider == "claude" && directory.strategy?.config.enabled == true ? directory.strategy?.nextClaude : nil
         if !others.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                Text("换 \(GlyphTile.name(provider)) 账号").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3)
+                Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3)
                     .padding(.horizontal, 7).padding(.top, 12).padding(.bottom, 3.5)
                 ForEach(others) { account in
-                    SwitchRow(account: account, open: expanded == account.id) {
+                    SwitchRow(account: account, open: expanded == account.id, next: account.id == next) {
                         service.clearAccountError()
                         attemptSince = nil
                         expanded = expanded == account.id ? nil : account.id
@@ -365,9 +369,14 @@ struct MenuBarPanel: View {
         let state: String = desktop.busy ? (desktop.operation?.kind == "add" ? "正在添加账号…" : "正在换号…")
             : desktop.restartNeeded ? "要重启一次 Claude" : desktop.pending > 0 ? "\(desktop.pending) 处待同步"
             : desktop.background ? "会话一致" : "后台同步关着"
+        // Named as the window's desktop slot: with 无感换号 on, this is the desktop's chat / work only.
+        let relayOn = desktop.codeRelay?.enabled == true
         return VStack(alignment: .leading, spacing: 0) {
-            Text("Claude 桌面").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
-                .padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 3.5)
+            HStack(spacing: 4) {
+                Icon(.chat, size: 10, color: Palette.ink3)
+                Text(relayOn ? "桌面 · 对话 / 工作" : "Claude 桌面").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
+            }
+            .padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 3.5)
             HStack(spacing: 9) {
                 Seal(current?.display ?? "?", style: current == nil ? .out : .inUse, size: 19)
                 VStack(alignment: .leading, spacing: 0) {
@@ -441,6 +450,8 @@ struct MenuBarPanel: View {
 private struct SwitchRow: View {
     let account: ManagedAccount
     let open: Bool
+    // Where the rules take Claude Code next.
+    var next = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -449,6 +460,7 @@ private struct SwitchRow: View {
             HStack(spacing: 9) {
                 Seal(account.displayName, style: .standby, size: 19)
                 Text(account.displayName).font(.system(size: 12)).lineLimit(1)
+                if next { Pill("下一棒", style: .brand, small: true) }
                 if account.needsAction { Circle().fill(Palette.attentionDot).frame(width: 5, height: 5) }
                 Spacer(minLength: 3.5)
                 if let lowest = account.lowestPrimary {

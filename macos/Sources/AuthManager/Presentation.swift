@@ -121,10 +121,14 @@ extension ManagedAccount {
     }
     // The Claude kinds a person can choose from, one card each, in the official order.
     var claudeOffers: [ClaudeResetOffer] { usage?.claudeResets?.offers ?? [] }
-    // Preselected: the kind of the official next card, which the rules spend; otherwise the first kind.
+    // Preselected: a card that lapses within 30 minutes (the user, 11-22), else the kind of the official next
+    // card, which the rules spend; otherwise the first kind.
     var claudeDefaultOffer: ClaudeResetOffer? {
+        let lapsing = claudeOffers.compactMap { offer in QuotaResetCredit.date(offer.endsAt).map { (offer, $0.timeIntervalSinceNow) } }
+            .filter { $0.1 > 0 && $0.1 <= 1800 }
+            .min { $0.1 < $1.1 }?.0
         let next = usage?.claudeResets?.next?.kind
-        return claudeOffers.first { $0.kind == next } ?? claudeOffers.first
+        return lapsing ?? claudeOffers.first { $0.kind == next } ?? claudeOffers.first
     }
 
     // The reset chances as one ticket: how many, and how many run out within a week.

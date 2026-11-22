@@ -28,6 +28,17 @@ struct QuotaFigures<Trailing: View>: View {
                 Figure(value: nil, size: size)
                 Text(account.quotaCaption ?? "额度暂不可查").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                 trailingRow(text: nil)
+            } else if refillWhenLow, let week = account.weekSpent {
+                // The week used up: the 5-hour window and Fable have nothing to give, so only when the week is back shows (11-22).
+                VStack(alignment: .leading, spacing: 0) {
+                    if let due = RefillDue(week) {
+                        DueFigure(due: due, size: size)
+                    } else {
+                        Text(week.refill()).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                    }
+                    QuotaBar(remaining: 0, below: notch).padding(.top, 10)
+                }
+                trailingRow(text: "7 天剩 0%" + (notch.map { " · 见底线 \($0)%" } ?? ""))
             } else if windows.count == 1 {
                 let due = waiting == 0 ? RefillDue(windows[0]) : nil
                 column(windows[0], due: due)
@@ -306,6 +317,8 @@ struct AccountActions: View {
     let directory: AccountDirectory
     let open: (AccountSheet) -> Void
     var showSwitch = true
+    // A Claude account whose week is used up: the card is the way back, so it is the main button (11-22).
+    var prominent = false
 
     var body: some View {
         HStack(spacing: 5) {
@@ -313,7 +326,7 @@ struct AccountActions: View {
                 Button("用 1 张重置卡") {
                     open(.reset(accountID: account.id, creditID: next.creditID, requestID: UUID().uuidString, expiresAt: next.expiresAt, retry: false))
                 }
-                .buttonStyle(.pill(.secondary))
+                .buttonStyle(.pill(prominent ? .attention : .secondary))
                 .disabled(directory.resetBlocked(account, busy: service.accountBusy))
                 .help(help(next.expiresAt))
             }

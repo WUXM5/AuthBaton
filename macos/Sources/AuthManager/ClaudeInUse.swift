@@ -1,0 +1,1019 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+// The Claude page in three layers (11-22, Gemini 稿 A). On top, who is in use: one slot per client, Claude 桌面's
+// chat / work and Code (the desktop's Code tab and the CLI), or one card when both use the same account. Below,
+// the accounts the rules relay Code to, in relay order. At the bottom, a drawer of the ones they never switch to.
+
+// MARK: 规则与数据
+
+enum SlotSide: Hashable { case desk, code }
+
+extension ClaudeUse {
+    // Code is a slot of its own when this Mac uses it, or when the desktop's Code tab follows it.
+    static func sides(_ use: ClaudeUse, _ directory: AccountDirectory) -> (desk: Bool, code: Bool) {
+        let relayOn = directory.claudeDesktop?.codeRelay?.enabled == true
+        return (use.desk && directory.claudeDesktop != nil, use.code || relayOn)
+    }
+}
+
+extension AccountQuota {
+    var isWeek: Bool { kind == nil && label == "7 天窗口" }
+}
+
+extension ManagedAccount {
+    // A week used up leaves the 5-hour window nothing to give; only when the week is back counts (11-22).
+    var weekSpent: AccountQuota? { primaryWindows.first { $0.isWeek && $0.remaining <= 0 } }
+}
+
+extension AccountDirectory {
+    // Claude's rules in relay order. The place of each is its 第 N 位, as on 换号与重置.
+    var claudeRules: [CodexStrategyConfig.Rule] {
+        (strategy?.config.accounts ?? []).filter { rule in accounts.contains { $0.id == rule.id && $0.provider == "claude" } }
+    }
+
+    // The saved rules with one account joining or leaving the relay. Joining without a rule switches only:
+    // nothing spends a reset card until the person picks an order that does.
+    func relayConfig(_ id: String, participate: Bool) -> CodexStrategyConfig? {
+        guard var config = strategy?.config else { return nil }
+        if let index = config.accounts.firstIndex(where: { $0.id == id }) {
+            config.accounts[index].participate = participate
+        } else if participate {
+            config.accounts.append(.init(id: id, participate: true))
+        }
+        config.accounts.removeAll { rule in !accounts.contains { $0.id == rule.id } }
+        return config
+    }
+
+    // The saved rules with Claude's in a new order; every other rule keeps its place.
+    func relayConfig(order: [String]) -> CodexStrategyConfig? {
+        guard var config = strategy?.config else { return nil }
+        let ids = Set(claudeRules.map(\.id))
+        guard Set(order) == ids, order.count == ids.count else { return nil }
+        let rules = Dictionary(config.accounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let places = config.accounts.indices.filter { ids.contains(config.accounts[$0].id) }
+        for (offset, index) in places.enumerated() {
+            guard let rule = rules[order[offset]] else { return nil }
+            config.accounts[index] = rule
+        }
+        config.accounts.removeAll { rule in !accounts.contains { $0.id == rule.id } }
+        return config
+    }
+}
+
+// A change to the relay rules made on the Claude page. With the rules on it is confirmed first, as on 换号与重置.
+struct RelayEdit: Identifiable {
+    let id = UUID().uuidString
+    let config: CodexStrategyConfig
+    let title: String
+}
+
+struct RelayEditSheet: View {
+    @EnvironmentObject private var service: ServiceController
+    let edit: RelayEdit
+    let close: () -> Void
+    @State private var working = false
+
+    var body: some View {
+        SheetScaffold(title: edit.title, lead: "换号与重置开着，保存后马上按新规则自动换号。") {
+            if let error = service.accountError {
+                Text(error).font(.system(size: 11)).foregroundStyle(Palette.attentionText).fixedSize(horizontal: false, vertical: true)
+            }
+        } actions: {
+            Button("取消", action: close).keyboardShortcut(.cancelAction).buttonStyle(.pill(.secondary, height: 27))
+            Button(working ? "正在保存…" : "保存") {
+                working = true
+                Task {
+                    await service.accountOperation("accounts.strategy", params: LoginParams(confirm: true, strategy: edit.config.input))
+                    working = false
+                    if service.accountError == nil { close() }
+                }
+            }
+            .keyboardShortcut(.defaultAction).buttonStyle(.pill(.primary, height: 27))
+            .disabled(working || service.accountBusy)
+        }
+        .onAppear { service.clearAccountError() }
+    }
+}
+
+// MARK: 在用
+
+// The slots for the clients in use. Two clients on different accounts sit side by side, the same account is
+// one card under both heads, one client is one card.
+struct ClaudeStage: View {
+    let entries: [ClaudeEntry]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+
+    var body: some View {
+        let sides = ClaudeUse.sides(use, directory)
+        let code = entries.first { $0.inCode }
+        let desk = entries.first { $0.inDesk }
+        VStack(alignment: .leading, spacing: 8) {
+            bridge(sides)
+            if sides.desk && sides.code, let code, let desk, code.id == desk.id {
+                slot(code, [.desk, .code])
+            } else if sides.desk && sides.code {
+                HStack(alignment: .top, spacing: 12) {
+                    slot(desk, [.desk])
+                    slot(code, [.code])
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            } else if sides.desk {
+                slot(desk, [.desk])
+            } else {
+                slot(code, [.code])
+            }
+        }
+    }
+
+    private func slot(_ entry: ClaudeEntry?, _ sides: [SlotSide]) -> some View {
+        ClaudeSlotCard(entry: entry, sides: sides, use: use, directory: directory, entries: entries,
+                       present: present, switchTo: switchTo)
+    }
+
+    // "正在使用", where Code goes next, and, while the desktop's Code tab follows Code, that the two are apart.
+    private func bridge(_ sides: (desk: Bool, code: Bool)) -> some View {
+        let next = directory.strategy?.config.enabled == true ? directory.strategy?.nextClaude : nil
+        let target = next.flatMap { id in entries.first { $0.cli?.id == id } }
+        let rank = next.flatMap { id in directory.claudeRules.firstIndex { $0.id == id } }.map { $0 + 1 }
+        let apart = sides.desk && sides.code && directory.claudeDesktop?.codeRelay?.enabled == true
+        return HStack(spacing: 8) {
+            Text("在用").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+            if let target, let rank, sides.code {
+                Text("Code 见底后接第 \(rank) 位 \(target.name)").font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if apart {
+                HStack(spacing: 5) {
+                    Icon(.chat, size: 11, color: Palette.ink2)
+                    Text("桌面对话").foregroundStyle(Palette.ink2)
+                    Text("已解耦").foregroundStyle(Palette.ink3)
+                    HStack(spacing: 2) {
+                        Icon(.code, size: 11, color: Palette.deep)
+                        Text("+").foregroundStyle(Palette.deep)
+                        Icon(.terminal, size: 11, color: Palette.deep)
+                        Text("Code").foregroundStyle(Palette.deep)
+                    }
+                    .padding(.horizontal, 6).frame(height: 18)
+                    .background(Palette.wash, in: Capsule())
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.leading, 9).padding(.trailing, 3).frame(height: 24)
+                .background(Capsule().fill(Palette.card))
+                .overlay(Capsule().strokeBorder(Palette.ring, lineWidth: 1))
+                .help("Claude 桌面的对话 · 工作一直用一个号；桌面 Code 模式和终端 CLI 跟着 Code 账号换，不重启桌面")
+            }
+        }
+        .padding(.horizontal, 3.5)
+    }
+}
+
+// What a slot's head says: the client's icons, as Claude 桌面 draws them, and its name.
+struct ClaudeChannel: View {
+    let side: SlotSide
+    let relayOn: Bool
+
+    var body: some View {
+        // Without 无感换号 the desktop's Code tab stays with the desktop's sign-in, so its </> sits there.
+        let glyphs: [Glyph] = side == .desk ? (relayOn ? [.chat] : [.chat, .code]) : (relayOn ? [.code, .terminal] : [.terminal])
+        let title = side == .desk ? (relayOn ? "桌面 · 对话 / 工作" : "Claude 桌面") : (relayOn ? "Code · 桌面与 CLI" : "Claude Code")
+        HStack(spacing: 5) {
+            ForEach(Array(glyphs.enumerated()), id: \.offset) { _, glyph in
+                Icon(glyph, size: 12, color: side == .code ? Palette.deep : Palette.ink2, weight: 1.9)
+                    .frame(width: 21, height: 21)
+                    .background(side == .code ? Palette.wash : Palette.chip, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(side == .code ? Palette.deep : Palette.ink)
+                .lineLimit(1).fixedSize()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+}
+
+struct ClaudeSlotCard: View {
+    @EnvironmentObject private var service: ServiceController
+    let entry: ClaudeEntry?
+    let sides: [SlotSide]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let entries: [ClaudeEntry]
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+
+    private var status: ClaudeDesktopStatus? { directory.claudeDesktop }
+    private var relayOn: Bool { status?.codeRelay?.enabled == true }
+    private var deskLocked: Bool { service.accountBusy || status?.busy == true || status?.installed != true }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            head
+            if let entry {
+                // 下一棒 is about Code: on a page without it, the desktop's account is nobody's next.
+                ClaudeEntryCard(entry: entry, use: use, directory: directory, open: present, switchTo: { switchTo(entry, $0) },
+                                chrome: false, next: ClaudeUse.sides(use, directory).code && entry.cli != nil
+                                    && directory.strategy?.config.enabled == true && directory.strategy?.nextClaude == entry.cli?.id)
+            } else {
+                placeholder
+            }
+            Spacer(minLength: 0)
+            if sides.contains(.code), let entry, entry.inCode {
+                ClaudeRelayNext(entry: entry, entries: entries, directory: directory, switchTo: switchTo)
+            }
+            if sides.contains(.desk), let status {
+                DesktopNotices(status: status, locked: deskLocked, compact: true) { present(.desktop($0)) }
+                // Without Claude 桌面 there is nothing to sync; the notice above says so.
+                if status.installed { SyncStrip(status: status, locked: deskLocked, embedded: true) { present(.desktop($0)) } }
+            }
+            if sides.contains(.code), let status, status.installed, let relay = status.codeRelay {
+                CodeRelayStrip(relay: relay, locked: deskLocked || relay.busy, embedded: true) { present($0) }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .loopCard(radius: 17, raised: true)
+    }
+
+    private var head: some View {
+        HStack(spacing: 8) {
+            ForEach(sides, id: \.self) { side in ClaudeChannel(side: side, relayOn: relayOn) }
+            if sides.count > 1 { Pill("当前同号", style: .brand, small: true) }
+            Spacer(minLength: 6)
+            if sides.contains(.code) { nextBaton }
+            if sides.contains(.desk), let status { ClaudeDeskNext(status: status, entries: entries, locked: deskLocked || !status.switchSupported, present: present) }
+        }
+        .padding(.horizontal, 14).frame(height: 42)
+        .background(sides == [.code] ? Palette.wash.opacity(0.55) : Palette.panel.opacity(0.7))
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.divider).frame(height: 1) }
+    }
+
+    // 换下一棒: move Code to where the rules would take it now, without waiting for the line.
+    @ViewBuilder private var nextBaton: some View {
+        if directory.strategy?.config.enabled == true, let id = directory.strategy?.nextClaude,
+           let next = entries.first(where: { $0.cli?.id == id }), let cli = next.cli,
+           directory.primaryAction(for: cli) == .switchTo {
+            Button("换下一棒") {
+                Task { await service.accountOperation("accounts.activate", params: LoginParams(id: cli.id, confirm: true)) }
+            }
+            .buttonStyle(.pill(.soft))
+            .disabled(service.accountBusy || directory.switchDisabled(for: cli))
+            .help("现在就把 Code 换到 \(next.name)")
+        }
+    }
+
+    private var placeholder: some View {
+        let text: String = sides.contains(.desk)
+            ? (status?.installed == false ? "没找到 Claude 桌面" : "桌面还没认出在用的账号")
+            : "还没有在用的 Code 账号"
+        return Text(text).font(.system(size: 12)).foregroundStyle(Palette.ink3)
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
+    }
+}
+
+// Round the desktop's numbered list, as the menu bar's 下一个 does; the menu offers the other two ways.
+struct ClaudeDeskNext: View {
+    let status: ClaudeDesktopStatus
+    let entries: [ClaudeEntry]
+    let locked: Bool
+    let present: (ClaudeSheet) -> Void
+
+    var body: some View {
+        let picks = status.picks
+        HStack(spacing: 0) {
+            Button { ask(picks?.next) } label: { Text("下一个桌面号…").padding(.leading, 11).padding(.trailing, 8).frame(height: 24).contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+                .help("Claude 桌面按编号换到下一个已保存登录、参与「下一个」的账号")
+                .disabled(picks?.next == nil || locked)
+            Rectangle().fill(Palette.edge).frame(width: 1, height: 24)
+            Menu {
+                Button("下一个还有额度的") { ask(picks?.nextAvailable) }.disabled(picks?.nextAvailable == nil)
+                Button("剩余最多的") { ask(picks?.best) }.disabled(picks?.best == nil)
+            } label: {
+                Icon(.chevronDown, size: 9, color: Palette.ink3, weight: 2.4).frame(width: 22, height: 24).contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .accessibilityLabel("换号方式")
+            .disabled(locked)
+        }
+        .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink)
+        .background(Capsule().fill(Palette.card))
+        .overlay(Capsule().strokeBorder(Palette.edge, lineWidth: 1))
+        .fixedSize()
+    }
+
+    private func ask(_ handle: String?) {
+        guard let handle, let entry = ClaudeEntry.find(handle, in: entries) else { return }
+        present(.switching(ClaudeSwitchRequest(entryID: entry.id, code: false, desk: true, choice: false)))
+    }
+}
+
+// Under the Code slot once its account is at its line: where the rules take it next, or that nothing in
+// the queue can take over, with the best account outside it.
+struct ClaudeRelayNext: View {
+    @EnvironmentObject private var service: ServiceController
+    let entry: ClaudeEntry
+    let entries: [ClaudeEntry]
+    let directory: AccountDirectory
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+
+    var body: some View {
+        if directory.strategy?.config.enabled == true, let cli = entry.cli, let notch = directory.notch(for: cli),
+           cli.primaryWindows.prefix(2).map(\.remaining).contains(where: { $0 <= notch }) {
+            HStack(spacing: 8) {
+                Icon(.relay, size: 13, color: target == nil ? Palette.attention : Palette.brand)
+                if let target, let next = target.cli {
+                    Text("到了见底线，接下来换到第 \(rank(next.id)) 位 \(target.name)").foregroundStyle(Palette.deep)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("现在换") { Task { await service.accountOperation("accounts.activate", params: LoginParams(id: next.id, confirm: true)) } }
+                        .buttonStyle(.pill(.soft)).disabled(service.accountBusy || directory.switchDisabled(for: next))
+                } else {
+                    Text("队列里没有能接力的账号").foregroundStyle(Palette.attentionText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let spare, let account = spare.cli {
+                        Button("换上 \(spare.name)") { switchTo(spare, .code) }
+                            .buttonStyle(.pill(.onAttention))
+                            .disabled(service.accountBusy || directory.switchDisabled(for: account))
+                            .help("\(spare.name) 不参与自动接力，还剩 \(account.lowestPrimary ?? 0)%")
+                    }
+                }
+            }
+            .font(.system(size: 12)).lineLimit(1)
+            .padding(.horizontal, 14).frame(minHeight: 40)
+            .background(target == nil ? Palette.attentionWash : Palette.wash.opacity(0.6))
+            .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
+        }
+    }
+
+    private var target: ClaudeEntry? {
+        directory.strategy?.nextClaude.flatMap { id in entries.first { $0.cli?.id == id } }
+    }
+
+    private func rank(_ id: String) -> Int { (directory.claudeRules.firstIndex { $0.id == id } ?? 0) + 1 }
+
+    // Outside the relay, switchable, and with the most left of what it has least of.
+    private var spare: ClaudeEntry? {
+        entries.filter { candidate in
+            guard let account = candidate.cli, !candidate.inCode, directory.rule(for: account.id)?.participate != true,
+                  directory.primaryAction(for: account) == .switchTo, account.weekSpent == nil else { return false }
+            return (account.lowestPrimary ?? 0) > 0
+        }
+        .max { ($0.cli?.lowestPrimary ?? 0) < ($1.cli?.lowestPrimary ?? 0) }
+    }
+}
+
+// MARK: 接力队列
+
+struct ClaudeRelayDeck: View {
+    static let expandedKey = "claude.deckExpanded"
+    @EnvironmentObject private var service: ServiceController
+    @ObservedObject private var nav = AppNavigation.shared
+    @AppStorage(ClaudeRelayDeck.expandedKey) private var expanded = false
+    @State private var draft: [String]?
+    @State private var dragging: String?
+    @State private var openRow: String?
+    let entries: [ClaudeEntry]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+
+    private var saved: [String] { directory.claudeRules.map(\.id) }
+    private var order: [String] { draft ?? saved }
+    private var enabled: Bool { directory.strategy?.config.enabled == true }
+    private var next: String? { enabled ? directory.strategy?.nextClaude : nil }
+    private var changed: Bool { draft != nil && draft != saved }
+
+    // The accounts that take part, in the order being shown (a drag in progress included).
+    private var queue: [ClaudeEntry] {
+        order.compactMap { id in
+            directory.rule(for: id)?.participate == true ? entries.first { $0.cli?.id == id } : nil
+        }
+    }
+
+    private var movable: Bool { queue.count > 1 && !service.accountBusy && directory.strategy?.busy != true && directory.strategy != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            header
+            if changed { orderBar }
+            if queue.isEmpty {
+                HStack(spacing: 10) {
+                    Text("还没有账号参与自动接力").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                    Spacer(minLength: 8)
+                    Button("去换号与重置") { nav.show(.automation) }.buttonStyle(.pill(.soft))
+                }
+                .padding(.horizontal, 14).frame(minHeight: 44)
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.dash, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            } else if expanded {
+                VStack(spacing: 6) {
+                    ForEach(queue.filter { anchor($0) != nil }) { row($0) }
+                }
+                CardGrid {
+                    ForEach(queue.filter { anchor($0) == nil }) { entry in
+                        ClaudeEntryCard(entry: entry, use: use, directory: directory, open: present, switchTo: { switchTo(entry, $0) },
+                                        next: entry.cli?.id == next)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    }
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(queue) { row($0) }
+                }
+            }
+        }
+        .onChange(of: saved) { _, _ in draft = nil }
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Icon(.relay, size: 13, color: Palette.brand, weight: 1.9)
+            Text("自动接力队列").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+            if !enabled && directory.strategy != nil { Pill("已关闭", style: .dashed, small: true) }
+            Text(enabled ? "\(queue.count) 个参与 · 从第 1 位往下找能接的号" : "关着时不会自动换号")
+                .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+            Spacer(minLength: 8)
+            Button(enabled ? "换号与重置 ›" : "去开启换号与重置 ›") { nav.show(.automation) }.buttonStyle(.pill(.link))
+            if !queue.isEmpty {
+                PillSegments(segments: [.init(value: false, title: "紧凑"), .init(value: true, title: "展开")],
+                             selection: expanded, select: { expanded = $0; openRow = nil })
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 3.5)
+    }
+
+    private var orderBar: some View {
+        HStack(spacing: 8) {
+            Icon(.relay, size: 13, color: Palette.deep, weight: 1.9)
+            Text("顺位已改").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.deep)
+            Spacer(minLength: 8)
+            Button("撤销") { withAnimation(.easeOut(duration: 0.18)) { draft = nil } }.buttonStyle(.pill(.link))
+            Button("保存") {
+                if let draft, let config = directory.relayConfig(order: draft) {
+                    present(.relayEdit(RelayEdit(config: config, title: "按新的接力顺序自动换号？")))
+                }
+            }
+            .buttonStyle(.pill(.primary))
+            .disabled(service.accountBusy)
+        }
+        .padding(.leading, 12).padding(.trailing, 7).frame(height: 36)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // Which slot above shows this account; nil when it waits in the queue.
+    private func anchor(_ entry: ClaudeEntry) -> String? {
+        let sides = ClaudeUse.sides(use, directory)
+        let code = sides.code && entry.inCode
+        let desk = sides.desk && entry.inDesk
+        return code && desk ? "桌面 + Code 在用" : desk ? "桌面在用" : code ? "Code 在用" : nil
+    }
+
+    @ViewBuilder private func row(_ entry: ClaudeEntry) -> some View {
+        let id = entry.cli?.id ?? entry.id
+        let rank = order.firstIndex(of: id).map { $0 + 1 }
+        Group {
+            if let anchor = anchor(entry) {
+                ClaudeAnchorRow(entry: entry, place: rank.map { "第 \($0) 位" } ?? "–", slot: anchor, next: id == next, movable: movable)
+            } else if openRow == id {
+                ClaudeEntryCard(entry: entry, use: use, directory: directory, open: present, switchTo: { switchTo(entry, $0) },
+                                next: id == next, collapse: { withAnimation(.easeOut(duration: 0.18)) { openRow = nil } })
+            } else {
+                ClaudeRelayRow(entry: entry, kind: .queue(rank: rank, movable: movable), use: use, directory: directory,
+                               tag: id == next ? "下一棒" : nil, present: present, switchTo: { switchTo(entry, $0) },
+                               expand: { withAnimation(.easeOut(duration: 0.18)) { openRow = id } })
+            }
+        }
+        .opacity(dragging == id ? 0.4 : 1)
+        .modifier(RowDrag(id: id, enabled: movable, dragging: $dragging))
+        .onDrop(of: [UTType.text], delegate: RowDrop(target: id, dragging: $dragging) { from, to in
+            withAnimation(.easeOut(duration: 0.18)) { place(from, at: to) }
+        })
+    }
+
+    private func place(_ id: String, at target: String) {
+        var ids = order
+        guard id != target, let from = ids.firstIndex(of: id), let to = ids.firstIndex(of: target) else { return }
+        ids.remove(at: from)
+        ids.insert(id, at: to)
+        draft = ids
+    }
+}
+
+// Dragging over a row moves the dragged one into its place; the drop only ends the drag.
+struct RowDrop: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    let move: (String, String) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        move(dragging, target)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+}
+
+// A whole row picks up for dragging, as the bricks on 换号与重置 do.
+struct RowDrag: ViewModifier {
+    let id: String
+    let enabled: Bool
+    @Binding var dragging: String?
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.onDrag {
+                dragging = id
+                return NSItemProvider(object: id as NSString)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+// Six dots: this row can be picked up and moved.
+struct DragGrip: View {
+    var active = true
+
+    var body: some View {
+        VStack(spacing: 2.4) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 2.4) {
+                    Circle().frame(width: 2.6, height: 2.6)
+                    Circle().frame(width: 2.6, height: 2.6)
+                }
+            }
+        }
+        .foregroundStyle(active ? Palette.ink3 : Palette.dash)
+        .frame(width: 12, height: 16)
+        .accessibilityHidden(true)
+    }
+}
+
+// An account shown in a slot above keeps its place in the queue as a thin line, so the order reads 1 to N.
+struct ClaudeAnchorRow: View {
+    let entry: ClaudeEntry
+    // 第 N 位 in the relay, #N in the desktop's list.
+    let place: String
+    let slot: String
+    let next: Bool
+    let movable: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            DragGrip(active: movable)
+            Pill(place, style: next ? .brand : .neutral, small: true).frame(width: 50, alignment: .leading)
+            Seal(entry.name, style: .inUse, size: 18)
+            Text(entry.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+            Pill(slot, style: .brand, small: true)
+            if next { Pill("下一棒", style: .brand, small: true) }
+            Spacer(minLength: 8)
+            HStack(spacing: 3) {
+                Text("↑")
+                Text("在上方")
+            }
+            .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+        }
+        .padding(.leading, 8).padding(.trailing, 12).frame(height: 34)
+        .background(next ? Palette.wash.opacity(0.5) : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(next ? Palette.brand.opacity(0.35) : Palette.dash, style: StrokeStyle(lineWidth: 1, dash: next ? [] : [4, 3])))
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: 紧凑行
+
+struct ClaudeRelayRow: View {
+    enum Kind {
+        case queue(rank: Int?, movable: Bool)   // 自动接力队列: a place and a handle
+        case rotation(movable: Bool)            // 只用桌面: the desktop's numbered list
+        case drawer                             // outside the relay
+    }
+
+    @EnvironmentObject private var service: ServiceController
+    @ObservedObject private var nav = AppNavigation.shared
+    let entry: ClaudeEntry
+    let kind: Kind
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    var tag: String? = nil
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (SwitchScope?) -> Void
+    var expand: (() -> Void)? = nil
+    var join: (title: String, action: () -> Void)? = nil
+
+    private var cli: ManagedAccount? { entry.cli }
+    private var notch: Int? { cli.flatMap { directory.notch(for: $0) } }
+    private var spent: Bool { cli?.weekSpent != nil }
+
+    var body: some View {
+        // Two fixed layouts, so every row's numbers line up: a wide window (rows over 1080) gives the name 300
+        // and the bars 452 and leaves the rest before the buttons; otherwise the name takes what is left.
+        ViewThatFits(in: .horizontal) {
+            line(wide: true).frame(minWidth: 1080)
+            line(wide: false)
+        }
+        .padding(.leading, 9).padding(.trailing, 9).padding(.vertical, 8)
+        .background(spent ? Palette.attentionWash.opacity(0.6) : Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(spent ? Palette.attentionDash.opacity(0.55) : tag != nil ? Palette.brand.opacity(0.35) : Palette.ring, lineWidth: 1))
+    }
+
+    private func line(wide: Bool) -> some View {
+        HStack(spacing: 9) {
+            switch kind {
+            case .queue(let rank, let movable):
+                DragGrip(active: movable)
+                Pill(rank.map { "第 \($0) 位" } ?? "–", style: tag != nil ? .brand : .neutral, small: true).frame(width: 50, alignment: .leading)
+            case .rotation(let movable):
+                DragGrip(active: movable)
+                if let desk = entry.desk { DeskNumber(desk: desk).frame(width: 30, alignment: .leading) }
+            case .drawer:
+                EmptyView()
+            }
+            if wide {
+                identity.frame(width: 300, alignment: .leading)
+                telemetry(wide: true).frame(width: 452, alignment: .leading)
+                Spacer(minLength: 0)
+            } else {
+                identity.frame(minWidth: 116, maxWidth: .infinity, alignment: .leading)
+                telemetry(wide: false).frame(width: 298, alignment: .leading)
+            }
+            // Most rows' buttons fit 186, so their numbers line up; a longer set just takes more.
+            actions.fixedSize().frame(minWidth: 186, alignment: .trailing)
+        }
+    }
+
+    private var identity: some View {
+        Button { nav.claudeDetail = entry.id } label: {
+            HStack(spacing: 8) {
+                ClaudeSeal(entry: entry, size: 24, rule: cli.flatMap { directory.rule(for: $0.id) })
+                VStack(alignment: .leading, spacing: 1) {
+                    // A long name leaves no room for 「Code 无感可用」: drop it rather than squeeze it to a sliver.
+                    ViewThatFits(in: .horizontal) {
+                        title(relayPill: true)
+                        title(relayPill: false)
+                    }
+                    Text(meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("点开看账号详情")
+    }
+
+    private func title(relayPill: Bool) -> some View {
+        HStack(spacing: 5) {
+            Text(entry.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                .layoutPriority(1)
+            if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk) }
+            if let tag { Pill(tag, style: .brand, small: true) }
+            // Signed in to AuthBaton only, while 无感换号 lends Code logins: the desktop's Code tab can use it.
+            if relayPill, use.desk, entry.desk == nil, cli != nil, directory.claudeDesktop?.codeRelay?.state == "active" {
+                Pill("Code 无感可用", style: .brand, small: true)
+                    .help(entry.inCode ? "已开启 Code 无感换号：桌面 Code 对话已在用这个账号，不用在桌面重复登录"
+                          : "已开启 Code 无感换号：同 Team 账号不用在桌面重复登录，点「换到 Code」就能在桌面 Code 对话里直接切换")
+            }
+            if let cli {
+                if directory.primaryAction(for: cli) == .relogin {
+                    Pill(cli.health.title, style: .attention, small: true)
+                } else {
+                    LowPill(account: cli, notch: notch)
+                }
+            } else {
+                Pill("仅桌面", small: true)
+            }
+        }
+    }
+
+    private var meta: String {
+        if let cli { return cli.subtitle.isEmpty ? " " : cli.subtitle }
+        return entry.desk?.email ?? "只在 Claude 桌面登录过"
+    }
+
+    @ViewBuilder private func telemetry(wide: Bool) -> some View {
+        if let cli {
+            if directory.primaryAction(for: cli) == .relogin {
+                Text(cli.health.detail ?? "登录失效了，自动接力会跳过它").font(.system(size: 11)).foregroundStyle(Palette.attentionText).lineLimit(2)
+            } else if cli.primaryWindows.isEmpty {
+                quiet(cli.usage?.refreshing == true || service.quotaRequests.contains(cli.id) ? "正在查询…" : cli.quotaCaption ?? "额度暂不可查")
+            } else {
+                ClaudeMiniQuota(windows: Array(cli.primaryWindows.prefix(2)), extras: cli.extraWindows, notch: notch,
+                                skipped: directory.rule(for: cli.id)?.participate == true && directory.strategy?.config.enabled == true, wide: wide)
+            }
+        } else if let quota = entry.desk?.tokenQuota, !quota.primary.isEmpty {
+            ClaudeMiniQuota(windows: quota.primary, extras: [], notch: nil, skipped: false, wide: wide)
+        } else if directory.claudeDesktop?.tokenQuota?.enabled == true {
+            VStack(alignment: .leading, spacing: 1) {
+                quiet(entry.desk?.tokenQuota?.message ?? "还没读到额度")
+                if entry.desk?.tokenQuota?.state == "no_token" {
+                    // A new account has no Claude Code login in Claude 桌面 until its first Code-mode conversation.
+                    Text("去 Claude 桌面用 Code 模式聊一次，5 分钟内自动刷新").font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                quiet("读不到额度")
+                Button("用桌面登录查") { present(.tokenQuota) }.buttonStyle(.pill(.link))
+            }
+        }
+    }
+
+    private func quiet(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 6) {
+            if let join { Button(join.title, action: join.action).buttonStyle(.pill(.link)).disabled(service.accountBusy) }
+            if let count = cli?.creditCount, count > 0 { Pill("\(count) 张", small: true).help("剩 \(count) 张重置卡") }
+            primary
+            if let expand, cli != nil {
+                Button(action: expand) {
+                    Icon(.chevronRight, size: 11, color: Palette.ink3, weight: 2).frame(width: 22, height: 24).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("在这里展开")
+                .accessibilityLabel("展开 \(entry.name)")
+            }
+        }
+    }
+
+    @ViewBuilder private var primary: some View {
+        if let cli {
+            let low = notch.map { line in cli.primaryWindows.prefix(2).contains { $0.remaining <= line } } ?? false
+            if directory.primaryAction(for: cli) == .relogin {
+                Button("重新登录") { present(.account(.login(provider: "claude", accountID: cli.id))) }
+                    .buttonStyle(.pill(.onAttention))
+                    .disabled(service.accountBusy)
+            } else if (spent || low), let next = cli.nextReset {
+                Button("用 1 张重置卡") {
+                    present(.account(.reset(accountID: cli.id, creditID: next.creditID, requestID: UUID().uuidString, expiresAt: next.expiresAt, retry: false)))
+                }
+                .buttonStyle(.pill(.attention))
+                .disabled(directory.resetBlocked(cli, busy: service.accountBusy))
+            } else {
+                ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo,
+                                    login: { present(.desktop(.add)) })
+            }
+        } else {
+            Button("补登 Code") { present(.account(.login(provider: "claude", accountID: nil))) }
+                .buttonStyle(.pill(.soft))
+                .help("用这个账号登录 AuthBaton，之后就能参与 Code 换号、用重置卡和预热")
+            ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo,
+                                login: { present(.desktop(.add)) })
+        }
+    }
+}
+
+// A row's windows as small numbers on thin bars. A used-up week replaces them all with when it is back.
+struct ClaudeMiniQuota: View {
+    let windows: [AccountQuota]
+    let extras: [AccountQuota]
+    let notch: Int?
+    // The rules skip this account while its week is gone.
+    let skipped: Bool
+    // 452 wide instead of 298.
+    var wide = false
+
+    var body: some View {
+        if let week = windows.first(where: { $0.isWeek && $0.remaining <= 0 }) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    if let due = RefillDue(week) {
+                        Text("\(due.number) \(due.unit)").font(.system(size: 15, weight: .semibold, design: .rounded)).foregroundStyle(Palette.ink)
+                        Text(due.caption).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                    } else {
+                        Text(week.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    }
+                    Spacer(minLength: 6)
+                    Text("7 天剩 0%" + (notch.map { " · 见底线 \($0)%" } ?? "") + (skipped ? " · 自动跳过" : ""))
+                        .font(.system(size: 10.5)).foregroundStyle(Palette.attentionText).lineLimit(1)
+                }
+                MiniBar(remaining: 0, amber: true)
+            }
+        } else {
+            HStack(spacing: 10) {
+                ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                    mini(window).frame(width: window.isWeek ? (wide ? 220 : 140) : (wide ? 124 : 80), alignment: .leading)
+                }
+                if let fable = extras.first(where: \.isFable) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("Fable").font(.system(size: 10)).foregroundStyle(Palette.ink3).fixedSize()
+                            Spacer(minLength: 2)
+                            Text("\(fable.remaining)%").font(.system(size: 11, weight: .semibold)).monospacedDigit().fixedSize()
+                                .foregroundStyle(low(fable) ? Palette.attentionText : Palette.ink2)
+                        }
+                        MiniBar(remaining: fable.remaining, amber: low(fable))
+                    }
+                    .frame(width: wide ? 88 : 58)
+                    .help("Fable 周额度" + (low(fable) ? "：到了见底线，用 Fable 时会换号" : ""))
+                }
+            }
+        }
+    }
+
+    private func low(_ window: AccountQuota) -> Bool { notch.map { window.remaining <= $0 } ?? false }
+
+    private func mini(_ window: AccountQuota) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                if low(window), let due = RefillDue(window) {
+                    Text("\(due.number) \(due.unit)").font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundStyle(Palette.ink)
+                    Text("回满").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                } else {
+                    Text("\(window.remaining)%").font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.ink)
+                    Spacer(minLength: 3)
+                    Text(window.isWeek ? "7 天 · " + window.refill() : window.shortLabel.trimmingCharacters(in: .whitespaces))
+                        .font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
+                }
+            }
+            MiniBar(remaining: window.remaining, amber: low(window))
+        }
+        .help(window.resetDate.map(When.exact) ?? "")
+    }
+}
+
+struct MiniBar: View {
+    let remaining: Int
+    var amber = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(amber ? Palette.attentionFill : Palette.chip)
+                Capsule().fill(amber ? Palette.attention : Palette.brand)
+                    .frame(width: max(0, min(1, CGFloat(remaining) / 100)) * proxy.size.width)
+            }
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: 不参与
+
+// The accounts the rules never switch Code to: their own choice, or no Code login yet (only signed in to
+// Claude 桌面). They are still a click away; collapsed, the drawer is one line.
+struct ClaudeDrawer: View {
+    static let openKey = "claude.drawerOpen"
+    @EnvironmentObject private var service: ServiceController
+    @AppStorage(ClaudeDrawer.openKey) private var opened = true
+    let title: String
+    let entries: [ClaudeEntry]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+    // What joins an account: 加入接力 on Code pages, 参与「下一个」 on the desktop-only page.
+    let join: (ClaudeEntry) -> (title: String, action: () -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button { withAnimation(.easeOut(duration: 0.18)) { opened.toggle() } } label: {
+                HStack(spacing: 7) {
+                    Icon(.tray, size: 13, color: Palette.ink2)
+                    Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+                    Text("\(entries.count) 个账号 · " + (opened ? "只能手动换上" : entries.map(\.name).joined(separator: "、")))
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    Spacer(minLength: 8)
+                    HStack(spacing: 4) {
+                        Text(opened ? "收起" : "展开")
+                        Icon(.chevronDown, size: 9, color: Palette.ink3, weight: 2.4).rotationEffect(.degrees(opened ? 180 : 0))
+                    }
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
+                }
+                .padding(.horizontal, 4).frame(height: 26)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if opened {
+                ForEach(entries) { entry in
+                    ClaudeRelayRow(entry: entry, kind: .drawer, use: use, directory: directory, present: present,
+                                   switchTo: { switchTo(entry, $0) }, join: join(entry))
+                }
+            }
+        }
+        .padding(8)
+        .background(Palette.panel, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+    }
+}
+
+// MARK: 只用桌面
+
+// Claude 桌面 never switches by itself: in place of the relay, its numbered list for 下一个账号, which a drag
+// reorders on the spot as 移到第几位 does.
+struct ClaudeDeskRotation: View {
+    @EnvironmentObject private var service: ServiceController
+    @State private var dragging: String?
+    @State private var draft: [String]?
+    let entries: [ClaudeEntry]
+    let use: ClaudeUse
+    let directory: AccountDirectory
+    let present: (ClaudeSheet) -> Void
+    let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+
+    private var listed: [ClaudeEntry] {
+        entries.filter { $0.desk?.participates == true && $0.desk?.known == true }
+            .sorted { ($0.desk?.number ?? .max) < ($1.desk?.number ?? .max) }
+    }
+    private var shown: [ClaudeEntry] {
+        guard let draft else { return listed }
+        return draft.compactMap { handle in listed.first { $0.desk?.handle == handle } }
+    }
+    private var movable: Bool { listed.count > 1 && !service.accountBusy && directory.claudeDesktop?.busy != true }
+
+    var body: some View {
+        let status = directory.claudeDesktop
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Icon(.chat, size: 13, color: Palette.ink2)
+                Text("桌面「下一个」轮换").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+                Text("\(listed.count) 个参与 · 点「下一个桌面号」时按编号轮换").font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 3.5)
+            VStack(spacing: 6) {
+                ForEach(shown) { entry in
+                    let handle = entry.desk?.handle ?? entry.id
+                    Group {
+                        if entry.inDesk {
+                            ClaudeAnchorRow(entry: entry, place: entry.desk?.number.map { "#\($0)" } ?? "–", slot: "桌面在用", next: false, movable: movable)
+                        } else {
+                            ClaudeRelayRow(entry: entry, kind: .rotation(movable: movable), use: use, directory: directory,
+                                           tag: status?.picks?.next == handle ? "下一个" : nil, present: present,
+                                           switchTo: { switchTo(entry, $0) })
+                        }
+                    }
+                    .opacity(dragging == handle ? 0.4 : 1)
+                    .modifier(RowDrag(id: handle, enabled: movable, dragging: $dragging))
+                    .onDrop(of: [UTType.text], delegate: RotationDrop(target: handle, dragging: $dragging, move: { from, to in
+                        withAnimation(.easeOut(duration: 0.18)) { place(from, at: to) }
+                    }, commit: commit))
+                }
+            }
+        }
+        .onChange(of: listed.map(\.id)) { _, _ in draft = nil }
+    }
+
+    private func place(_ handle: String, at target: String) {
+        var handles = shown.compactMap { $0.desk?.handle }
+        guard handle != target, let from = handles.firstIndex(of: handle), let to = handles.firstIndex(of: target) else { return }
+        handles.remove(at: from)
+        handles.insert(handle, at: to)
+        draft = handles
+    }
+
+    // Dropped: the desktop's number of the place it landed on, kept by the service as 移到第几位 keeps it.
+    private func commit(_ handle: String) {
+        guard let draft, let offset = draft.firstIndex(of: handle), let number = listed[offset].desk?.number,
+              listed[offset].desk?.handle != handle else { self.draft = nil; return }
+        Task { await service.claudeDesktop("move", account: handle, number: number) }
+    }
+}
+
+struct RotationDrop: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    let move: (String, String) -> Void
+    let commit: (String) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        move(dragging, target)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        if let dragging { commit(dragging) }
+        dragging = nil
+        return true
+    }
+}
+
+// MARK: 只有一个账号
+
+struct ClaudeSecondAccount: View {
+    let add: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Icon(.relay, size: 13, color: Palette.brand, weight: 1.9)
+            Text("再添加 1 个账号，见底时就能自动接力").font(.system(size: 12)).foregroundStyle(Palette.ink2)
+            Spacer(minLength: 8)
+            Button("添加第 2 个账号", action: add).buttonStyle(.pill(.soft))
+        }
+        .padding(.horizontal, 14).frame(minHeight: 44)
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.dash, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+    }
+}

@@ -86,6 +86,96 @@ enum Fixture {
         ["id": id, "reset_type": "codex_rate_limits", "status": "available", "expires_at": iso(days * 86400)]
     }
     // Claude desktop with three signed-in accounts whose session lists match, one older folder.
+    // The Claude page of the 11-22 redesign (canvas 待确认, Gemini 稿 A): a*** in Claude 桌面, beta-3 in Code,
+    // beta-2 / beta-1 / beta-4 in the relay (beta-4's week used up), lab outside it, desk-only only in Claude 桌面.
+    static func inUse(_ data: inout [String: Any], _ variant: String, now: Double) {
+        let format = ISO8601DateFormatter()
+        func at(_ seconds: Double) -> String { format.string(from: Date(timeIntervalSince1970: now + seconds)) }
+        func claude(_ id: String, _ label: String, _ email: String, native: Bool = false, five: Double, week: Double, fable: Double? = nil,
+                    fiveIn: Double = 3 * 3600, weekIn: Double = 3 * 86400, cards: [String] = [], state: String = "healthy",
+                    usage: String = "ready") -> [String: Any] {
+            var windows: [[String: Any]] = [["label": "5 小时窗口", "used_percent": 100 - five, "resets_at_iso": at(fiveIn)],
+                                            ["label": "7 天窗口", "used_percent": 100 - week, "resets_at_iso": at(weekIn)]]
+            if let fable { windows.append(["label": "7 天窗口", "used_percent": 100 - fable, "scope": "Fable", "kind": "model", "resets_at_iso": at(weekIn)]) }
+            let limits: [String: [String]] = ["session": ["5 小时额度"], "weekly": ["每周额度"], "full": ["5 小时额度", "每周额度"], "fable": ["本周 Fable 用量"]]
+            let offers: [[String: Any]] = cards.map { ["kind": $0, "limits": limits[$0] ?? [], "remaining": 1, "ends_at": at(12 * 86400)] }
+            let items: [[String: Any]] = cards.map { ["label": "合成赠送", "kind": $0, "remaining": 1, "total": 1, "starts_at": at(-86400), "ends_at": at(12 * 86400),
+                                                     "limits": limits[$0] ?? [], "paused": false, "usable_now": true, "requires_limit": false] }
+            var resets: [String: Any] = ["offers": offers,
+                                         "grants": ["eligible": true, "message": "官方提供的重置卡", "remaining": cards.count, "weekly_resets_at": at(weekIn), "items": items]]
+            if let first = offers.first { resets["next"] = first }
+            return ["id": id, "provider": "claude", "label": label, "identity": email, "plan": "team", "native": native, "automatic": true,
+                    "state": state, "message": state == "reauth" ? "登录已过期，重新登录后才能换上" : "",
+                    "last_local": now - 3600, "last_online": now - 3600, "last_refresh": now - 3600, "expires_at": now + 3600,
+                    "refresh_expires_at": now + 20 * 86400, "next_check": now + 300, "quota": [], "renewal_mode": "claude_coordinated",
+                    "warmup": ["enabled": id == "c-a" || id == "c-b3", "hour": 6, "running": false],
+                    "login_notice": ["state": "normal", "expires_at": now + 20 * 86400, "message": "", "source": "本机登录记录"],
+                    "usage": ["state": usage, "message": usage == "ready" ? "额度已检查" : "额度查不到，请检查网络或代理", "checked_at": now - 60,
+                              "attempted_at": now - 60, "next_update": now + 240, "refreshing": false,
+                              "windows": usage == "ready" ? windows : [], "claude_resets": resets]]
+        }
+        let codeOn = variant == "inusesame" ? "c-a" : "c-b3"
+        let low = variant == "inuselow" || variant == "inusenone"
+        var claudes = [
+            claude("c-a", "a***@team.dev", "a***@team.dev", native: codeOn == "c-a", five: 99, week: variant == "inuselow" ? 0 : 48, fable: 94, fiveIn: 3600,
+                   weekIn: variant == "inuselow" ? 2 * 86400 : 3 * 86400, cards: variant == "inuselow" ? ["weekly"] : ["session"]),
+            claude("c-b3", "beta-3", "g***@team.dev", native: codeOn == "c-b3", five: low ? 2 : 95, week: variant == "inusesame" ? 2 : 83, fable: 77,
+                   fiveIn: low ? 2 * 3600 : 3 * 3600, cards: ["session"]),
+            claude("c-b2", "beta-2", "m***@team.dev", five: 100, week: variant == "inusenone" ? 0 : 78, fable: 95, weekIn: 2 * 86400,
+                   cards: variant == "inusenone" ? [] : ["session", "weekly"], usage: variant == "inusestates" ? "error" : "ready"),
+            claude("c-b1", "beta-1", "m***@team.dev", five: 100, week: variant == "inusenone" ? 1 : 74, fable: variant == "inusestates" ? 2 : 80, weekIn: 86400,
+                   cards: ["session", "weekly"], state: variant == "inusestates" ? "reauth" : "healthy"),
+            claude("c-b4", "beta-4", "k***@team.dev", five: 100, week: 0, weekIn: 2 * 86400, cards: ["weekly"]),
+            claude("c-lab", "lab", "l***@team.dev", five: 100, week: 91, fable: 88, weekIn: 6 * 86400),
+        ]
+        if variant == "inuseone" { claudes = [claudes[1]] }
+        data["accounts"] = (data["accounts"] as! [[String: Any]]).filter { $0["provider"] as? String != "claude" } + claudes
+        var desktop = claudeDesktop(now)
+        func row(_ handle: String, _ number: Int?, _ display: String, inUse: Bool = false, participates: Bool = true, linked: String?) -> [String: Any] {
+            var row: [String: Any] = ["handle": handle, "display": display, "email": display, "in_use": inUse, "login_saved": true, "participates": participates,
+                                      "sessions": 30, "behind": 0, "known": true, "bypass": false]
+            if let number { row["number"] = number }
+            if let linked { row["linked_account"] = linked }
+            return row
+        }
+        var deskOnly = row("h-desk", 6, "desk-only", linked: nil)
+        deskOnly["email"] = "d***@team.dev"
+        desktop["accounts"] = variant == "inuseone" ? [row("h-b3", 1, "beta-3", inUse: true, linked: "c-b3")] : [
+            row("h-a", 1, "a***@team.dev", inUse: true, linked: "c-a"),
+            row("h-b3", 2, "beta-3", linked: "c-b3"),
+            row("h-b2", 3, "beta-2", linked: "c-b2"),
+            row("h-b4", 4, "beta-4", linked: "c-b4"),
+            row("h-lab", 5, "lab", participates: false, linked: "c-lab"),
+            deskOnly,
+        ]
+        desktop["sessions"] = 30
+        desktop["picks"] = ["next": "h-b3", "next_available": "h-b3", "best": "h-b2"]
+        desktop["code_relay"] = variant == "inuseoff" || variant == "inusedesk"
+            ? ["enabled": false, "install_state": "installed", "state": "off", "message": "关着：桌面 Code 模式跟着桌面的登录", "busy": false, "relayed_count": 0]
+            : ["enabled": true, "install_state": "installed", "state": "active", "message": "已开启", "active_label": variant == "inusesame" ? "a***@team.dev" : "beta-3",
+               "same_team": true, "busy": false, "relayed_count": 3]
+        data["claude_desktop"] = desktop
+        var strategy = data["strategy"] as! [String: Any]
+        var config = strategy["config"] as! [String: Any]
+        let codex = (config["accounts"] as! [[String: Any]]).filter { rule in !(rule["id"] as! String).hasPrefix("c-") }
+        func rule(_ id: String, _ participate: Bool = true) -> [String: Any] { ["id": id, "order": "switch_only", "participate": participate, "below": 3] }
+        config["accounts"] = codex + (variant == "inuseone" ? [rule("c-b3")] : [rule("c-a"), rule("c-b3"), rule("c-b2"), rule("c-b1"), rule("c-b4"), rule("c-lab", false)])
+        config["enabled"] = variant != "inuserulesoff"
+        strategy["config"] = config
+        strategy["next_claude"] = variant == "inusenone" || variant == "inuserulesoff" || variant == "inuseone" ? NSNull()
+            : (variant == "inusesame" || variant == "inuselow" ? "c-b2" : "c-a")
+        data["strategy"] = strategy
+        switch variant {
+        case "inusecode": UserDefaults.standard.set(ClaudeUse.code.rawValue, forKey: ClaudeUse.key)
+        case "inuseexpanded":
+            UserDefaults.standard.set(ClaudeUse.both.rawValue, forKey: ClaudeUse.key)
+            UserDefaults.standard.set(true, forKey: ClaudeRelayDeck.expandedKey)
+        case "inusedesk": UserDefaults.standard.set(ClaudeUse.desktop.rawValue, forKey: ClaudeUse.key)
+        default: UserDefaults.standard.set(ClaudeUse.both.rawValue, forKey: ClaudeUse.key)
+        }
+        if variant != "inuseexpanded" { UserDefaults.standard.removeObject(forKey: ClaudeRelayDeck.expandedKey) }
+    }
+
     static func claudeDesktop(_ now: Double) -> [String: Any] {
         func usage(_ remaining: Int, _ age: Double) -> [String: Any] { ["remaining": remaining, "at": now - age, "stale": false] }
         func account(_ handle: String, _ number: Int?, _ display: String, _ email: String?, alias: String?, inUse: Bool, participates: Bool = true,
@@ -382,6 +472,8 @@ enum Fixture {
                 "busy": false, "relayed_count": 0,
             ]
             data["claude_desktop"] = desktop
+        case let name where name.hasPrefix("inuse"):
+            inUse(&data, name, now: now)
         case "claudeboth":
             // Claude 备用 also has nova's desktop login: its 换上 can move Claude Code, Claude 桌面 or both.
             var list = data["accounts"] as! [[String: Any]]
@@ -945,7 +1037,8 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
-        for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey, CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey] {
+        for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey, CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey,
+                    ClaudeRelayDeck.expandedKey, ClaudeDrawer.openKey] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         // Sections that are not about the first-time relay card start past it.
@@ -1197,9 +1290,10 @@ extension NSWindow {
         Fixture.load("claude2", into: state)
         select(.claude, "synthetic-claude-b")
         state.calls.removeAll()
-        Driver.press("换上", .exact)
+        // Both clients on this Mac and no desktop login for this account: the button says where it goes.
+        Driver.press("换到CLI", .exact)
         let activate = check.lastCall("accounts.activate") ?? ""
-        check.expect(activate.contains("synthetic-claude-b") && activate.contains("\"confirm\":true"), "点「换上」直接调用 accounts.activate(id, confirm:true)")
+        check.expect(activate.contains("synthetic-claude-b") && activate.contains("\"confirm\":true"), "点「换到 CLI」直接调用 accounts.activate(id, confirm:true)")
         check.expect(main.attachedSheet == nil, "只换 Claude Code 不弹确认框")
         check.expect(!state.calls.contains { $0.contains("claude_desktop") }, "没有桌面登录的账号不碰 Claude 桌面")
     }
@@ -1490,10 +1584,11 @@ extension NSWindow {
         check.visible("让 Claude 退出", "确认后同一个框接着显示步骤")
         Driver.press("好", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"dismiss\"") == true, "结束后点「好」清掉这次操作")
-        Driver.press("下一个账号", .exact)
-        check.visible("换上 Claude 当前账号", "「下一个账号」按编号挑到 #1，同样先确认")
+        Driver.press("下一个桌面号", .prefix)
+        check.visible("换上 Claude 当前账号", "桌面卡上的「下一个桌面号」按编号挑到 #1，同样先确认")
         Driver.press("取消", .exact)
-        if !Driver.pressNear("lab", "换上") { check.expect(false, "找到 lab 卡片上的「换上」") }
+        // OCR reads the short name lab as Iab; its address is steadier. A row's button sits on its line, to the right.
+        if !Driver.pressBeside("lab@example", "换到桌面") { check.expect(false, "找到 lab 那行的「换到桌面…」") }
         check.visible("换上 lab", "只有桌面登录的账号也能换上桌面")
         check.expect(Driver.visible("打开Bypass权限模式", wait: 0.3) == false, "要换上的账号已经开了 Bypass，确认里不提")
         Driver.press("取消", .exact)
@@ -1550,8 +1645,8 @@ extension NSWindow {
         select(.claude)
         check.expect(Driver.visible("只有会话、没保存登录") && Driver.visible("c***@example.invalid"), "只有会话目录的旧账号单独写一句")
         state.calls.removeAll()
-        // Only Claude 备用 can move both sides, so its split button is the one plain 「换上」 on the page.
-        if !Driver.press("换上", .exact) { check.expect(false, "找到 Claude 备用卡片上的「换上」") }
+        // Only Claude 备用 can move both sides; without 无感换号 its split button starts as 一起换….
+        if !Driver.press("一起换", .prefix) { check.expect(false, "找到 Claude 备用那行的「一起换…」") }
         check.expect(Driver.visible("一起换") && Driver.visible("只换Code") && Driver.visible("只换桌面"), "两边都能换：确认框给一起换 / 只换 Code / 只换桌面")
         check.visible("下次点「换上」默认按这次的选择来", "写明会记住这次的选择")
         check.expect(Driver.visible("不用退出CLI") && Driver.visible("会退出再打开Claude桌面"), "默认一起换：两边各写一句会怎样")
@@ -1564,7 +1659,7 @@ extension NSWindow {
         check.expect(UserDefaults.standard.string(forKey: ClaudeUse.scopeKey) == SwitchScope.code.rawValue, "记住了「只换 Code」")
         Driver.settle(0.5)
         state.calls.removeAll()
-        if !Driver.press("换上", .exact) { check.expect(false, "再次找到「换上」") }
+        if !Driver.press("换到CLI", .exact) { check.expect(false, "按钮改写成记住的「换到 CLI」") }
         check.expect(main.attachedSheet == nil && check.lastCall("accounts.activate") != nil, "下次按记住的「只换 Code」直接换，不弹框")
         print("  → 只用 Code")
         UserDefaults.standard.set(ClaudeUse.code.rawValue, forKey: ClaudeUse.key)
@@ -1595,7 +1690,8 @@ extension NSWindow {
                      "确认后发送 token_quota enabled:true confirm:true")
         Fixture.load("deskquota", into: state)
         select(.claude)
-        check.visible("用Claude桌面的登录查", "work 的卡片显示用桌面登录查到的额度和来源")
+        // OCR drops 的 now and then in this small grey line.
+        check.expect(Driver.visible("用Claude桌面的登录查") || Driver.visible("用Claude桌面登录查"), "work 的卡片显示用桌面登录查到的额度和来源")
         check.visible("还没在Claude桌面用过Code模式", "lab 没有 Claude Code 登录时写明原因")
         check.visible("用Code模式聊一次", "并提示去 Code 模式聊一次，之后自动刷新")
         check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
@@ -1675,6 +1771,13 @@ extension NSWindow {
         Driver.settle()
     }
     section(29, "Claude 卡见底：见底那栏的大数字换成多久后回满，条下写剩余和见底线，名字旁「已见底」；两个都见底只放大最晚回满的；独立额度是小进度条") {
+        // These are the whole cards: the queue shows them in place of its rows when switched to 展开, below the slots.
+        UserDefaults.standard.set(true, forKey: ClaudeRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1300))
+        defer {
+            UserDefaults.standard.removeObject(forKey: ClaudeRelayDeck.expandedKey)
+            main.setContentSize(NSSize(width: 1020, height: 765))
+        }
         Fixture.load("claudelow", into: state)
         select(.claude)
         check.visible("已见底", "7 天见底的账号名字旁写「已见底」")
@@ -1689,7 +1792,8 @@ extension NSWindow {
         check.visible("4天后回满", "7 天那栏照常写回满时间")
         Fixture.load("claudelowboth", into: state)
         select(.claude)
-        check.visible("剩1%·见底线4%", "两个都见底：放大的是回满最晚的 7 天")
+        // OCR reads this grey 1 as 7 now and then; the 5-hour column would say 剩0%.
+        check.expect(Driver.visible("剩1%·见底线4%") || Driver.visible("剩7%·见底线4%"), "两个都见底：放大的是回满最晚的 7 天")
         check.visible("2小时后回满", "两个都见底：5 小时那栏照常小字写回满时间")
         Fixture.load("default", into: state)
         select(.claude)
@@ -1778,6 +1882,9 @@ extension NSWindow {
         check.expect(strategy.contains("\"order\":\"switch_first\""), "只改了顺序，规则本身照旧")
     }
     section(34, "Claude 桌面 Code 无感换号：开启安装确认与托管提示说明、开启态展示、底部卸载插件闭环") {
+        // The strip is the bottom line of the Code slot now, below a 765-high window.
+        main.setContentSize(NSSize(width: 1020, height: 1100))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("default", into: state)
         select(.claude)
         state.calls.removeAll()
@@ -1822,7 +1929,7 @@ extension NSWindow {
         state.calls.removeAll()
         check.visible("Code无感可用", "只用桌面且开启无感换号时，仅登在 AuthBaton 的账号标注「Code 无感可用」")
         check.expect(!Driver.visible("去桌面登录", wait: 0.3), "不再要求去桌面重复登录")
-        if !Driver.press("换上", .exact) { check.expect(false, "找到 Claude 备用卡片上的「换上」") }
+        if !Driver.press("换到Code", .exact) { check.expect(false, "找到 Claude 备用那行的「换到 Code」") }
         let directActivate = check.lastCall("accounts.activate") ?? ""
         check.expect(main.attachedSheet == nil && directActivate.contains("synthetic-claude-b"),
                      "只用桌面开启无感换号时，点「换上」直接无感切 Code，不弹桌面重启框")
@@ -1834,7 +1941,7 @@ extension NSWindow {
         Fixture.load("coderelaydeskonly", into: state)
         select(.claude)
         state.calls.removeAll()
-        if !Driver.press("换上…", .exact) { check.expect(false, "找到只在桌面登录过的账号的「换上…」") }
+        if !Driver.press("换到桌面", .prefix) { check.expect(false, "找到只在桌面登录过的账号的「换到桌面…」") }
         // The long synthetic email wraps the banner after 「Code 账」; match the line OCR keeps whole.
         check.visible("这次只能重启Claude桌面", "确认框写明这个账号还没登录 Code 账号、这次只能重启 Claude 桌面")
         check.expect(!Driver.visible("只换ClaudeCode即可", wait: 0.3), "不再提示这个账号做不到的「只换 Claude Code」")
@@ -1890,6 +1997,80 @@ extension NSWindow {
         check.expect(check.lastCall("accounts.check").map { $0.contains("synthetic-claude") && $0.contains("\"online\":false") } == true,
                      "点「本地检查」发的是这个账号的本地检查")
         Fixture.load("default", into: state)
+    }
+
+    section(37, "Claude 页改版（11-22）：在用两个位置、按现行规则标下一棒、接力队列和不参与抽屉、周额度用完只写回满") {
+        main.setContentSize(NSSize(width: 1020, height: 1300))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("inuse", into: state)
+        select(.claude)
+        // OCR turns the middle dot and slash into other glyphs; match the words.
+        check.expect(Driver.visible("对话") && Driver.visible("工作") && Driver.visible("桌面与CLI"), "两个在用位置：桌面对话 · 工作和 Code · 桌面与 CLI")
+        check.visible("Code见底后接第1位", "按现行规则：Code 见底后接第 1 位（桌面在用的那个号）")
+        check.expect(Driver.hits("下一棒").count >= 2, "下一棒标在桌面卡和队列的第 1 位上")
+        // 方 reads as 万 now and then.
+        check.expect(Driver.hits("在上").count == 2, "在用的两个号在队列里留顺位锚点")
+        check.expect(Driver.visible("7天剩0%") && Driver.visible("自动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
+        check.expect(Driver.visible("不参与自动接力") && Driver.visible("desk-only") && Driver.visible("补登Code"), "只在桌面登录过的号放进不参与抽屉，给「补登 Code」")
+        state.calls.removeAll()
+        Driver.press("换下一棒", .exact)
+        check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-a\""), "「换下一棒」把 Code 换到第 1 位 a***")
+        check.expect(main.attachedSheet == nil, "换 Code 不弹框")
+        state.calls.removeAll()
+        if !Driver.press("+加入接力", .exact) { check.expect(false, "找到 lab 那行的「+ 加入接力」") }
+        check.visible("让lab加入自动接力", "规则开着时加入接力先确认")
+        check.expect(check.lastCall("accounts.strategy") == nil, "确认前不发请求")
+        if !Driver.press("保存", .exact) { check.expect(false, "找到确认框的「保存」") }
+        // The sheet saves from a Task; give it a moment to record the call.
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+        // Key order in the recorded JSON varies from run to run: look the rules up by id.
+        let saved = (check.lastCall("accounts.strategy") ?? "").drop { $0 != "{" }
+        let sent = ((try? JSONSerialization.jsonObject(with: Data(saved.utf8))) as? [String: Any])?["strategy"] as? [String: Any]
+        let rules = sent?["accounts"] as? [[String: Any]] ?? []
+        let lab = rules.first { $0["id"] as? String == "c-lab" }
+        check.expect(lab?["participate"] as? Bool == true && rules.contains { $0["id"] as? String == "c-b4" }, "确认后发送 lab 参与的完整规则")
+        Driver.press("展开", .exact)
+        check.expect(UserDefaults.standard.bool(forKey: ClaudeRelayDeck.expandedKey) && Driver.hits("用1张重置卡").count >= 5, "「展开」换成整卡并记住")
+        Driver.press("紧凑", .exact)
+        check.expect(!UserDefaults.standard.bool(forKey: ClaudeRelayDeck.expandedKey), "「紧凑」换回一行一个")
+        print("  → 周额度用完")
+        Fixture.load("inuselow", into: state)
+        select(.claude)
+        check.expect(!Driver.visible("59分钟后回满", wait: 0.3), "桌面在用号周额度用完：不再写 5 小时额度")
+        check.visible("7天剩0%·见底线3%", "条下写 7 天剩 0% 和见底线")
+        check.visible("接下来换到第3位beta-2", "Code 到了见底线：写明接下来换到谁（第 1 位周额度用完，被跳过）")
+        print("  → 队列里没有能接力的号")
+        Fixture.load("inusenone", into: state)
+        select(.claude)
+        check.visible("队列里没有能接力", "队列里没有能接的号时写明")
+        state.calls.removeAll()
+        if !Driver.press("换上lab", .exact) { check.expect(false, "找到「换上 lab」") }
+        check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-lab\""), "推荐不参与但有余量的 lab，一键换上")
+        print("  → 同号")
+        Fixture.load("inusesame", into: state)
+        select(.claude)
+        check.expect(Driver.visible("当前同号") && Driver.visible("Code见底后接第3位"), "桌面和 Code 同号时合成一张卡，下一棒是第 3 位")
+        print("  → 只用桌面")
+        Fixture.load("inusedesk", into: state)
+        select(.claude)
+        check.expect(Driver.visible("轮换") && Driver.visible("不参与「下一个」"), "只用桌面：队列换成按 #N 的轮换")
+        check.expect(!Driver.visible("下一棒", wait: 0.3), "只用桌面：不写 Code 的下一棒")
+        state.calls.removeAll()
+        if !Driver.press("+参与", .prefix) { check.expect(false, "找到 lab 那行的「+ 参与「下一个」」") }
+        let enable = check.lastCall("accounts.claude_desktop") ?? ""
+        check.expect(enable.contains("\"desktop_action\":\"enable\"") && enable.contains("\"account\":\"h-lab\""), "「+ 参与「下一个」」发送 enable")
+        print("  → 只用 Code")
+        Fixture.load("inusecode", into: state)
+        select(.claude)
+        check.expect(Driver.visible("Code无感换号") && !Driver.visible("个桌面会话", wait: 0.3), "只用 Code：Code 卡底下留着无感换号开关，没有桌面会话")
+        // A drag's new order: Claude's rules take it, every other rule keeps its place.
+        if let directory = state.directory, let config = directory.relayConfig(order: ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]) {
+            let ids = config.accounts.map(\.id)
+            check.expect(ids.filter { $0.hasPrefix("c-") } == ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]
+                         && ids.prefix(ids.count - 6).allSatisfy { !$0.hasPrefix("c-") }, "拖动后的顺位：Claude 规则换成新顺序，其余规则原地不动")
+        } else {
+            check.expect(false, "拖动后的顺位能生成规则")
+        }
     }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
@@ -2018,8 +2199,14 @@ extension NSWindow {
         if args.count >= 2 && args[1] == "dump" {
             app.setActivationPolicy(.accessory)
             Fixture.load(args.count > 2 ? args[2] : "default", into: ServiceController.shared)
-            AppNavigation.shared.show(page(args.count > 3 ? args[3] : "accounts"), select: args.count > 4 ? args[4] : nil)
-            let (window, _) = makeWindow(DashboardView(), size: NSSize(width: 1020, height: 765))
+            if !(args.count > 3 && args[3] == "menubar") {
+                AppNavigation.shared.show(page(args.count > 3 ? args[3] : "accounts"), select: args.count > 4 ? args[4] : nil)
+            }
+            // DUMP_SIZE=1020x1500 shows a long page whole; 1600x900 a wide window.
+            let size = (ProcessInfo.processInfo.environment["DUMP_SIZE"] ?? "1020x765").split(separator: "x").compactMap { Double($0) }
+            let menubar = args.count > 3 && args[3] == "menubar"
+            let (window, _) = menubar ? makeWindow(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: size.count > 1 ? size[1] : 765), chrome: false)
+                : makeWindow(DashboardView(), size: NSSize(width: size.first ?? 1020, height: size.count > 1 ? size[1] : 765))
             window.orderFrontRegardless()
             Driver.settle(1)
             for hit in Driver.read(window) { print(String(format: "%5.0f %5.0f  ", hit.rect.minX, hit.rect.minY), hit.text) }
@@ -2068,7 +2255,8 @@ extension NSWindow {
             let claude = state.directory!.accounts.first { $0.provider == "claude" }?.id
             for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude), ("automation", .automation, nil)] {
                 AppNavigation.shared.show(page, select: selection)
-                _ = render(DashboardView(), size: NSSize(width: 1020, height: 660), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
+                let size = (ProcessInfo.processInfo.environment["DUMP_SIZE"] ?? "1020x660").split(separator: "x").compactMap { Double($0) }
+                _ = render(DashboardView(), size: NSSize(width: size[0], height: size[1]), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
             }
             _ = render(MenuBarPanel(openWindow: {}), size: nil, appearance: "light", to: output.appendingPathComponent("live-menubar.png"))
             print("Rendered live masked data to \(output.path)")

@@ -252,7 +252,8 @@ extension PageScaffold where Trailing == EmptyView {
 struct PillButtonStyle: ButtonStyle {
     // danger is red text for a destructive link; destructive is the outlined confirm button in a sheet;
     // soft fills in a missing login (补登, 去桌面登录).
-    enum Kind { case primary, secondary, quiet, soft, link, onAttention, danger, destructive }
+    // attention fills amber for the one way back from a used-up account (用 1 张重置卡).
+    enum Kind { case primary, secondary, quiet, soft, link, onAttention, danger, destructive, attention }
     var kind: Kind = .secondary
     var height: CGFloat = 24
 
@@ -281,9 +282,9 @@ private struct PillButtonBody: View {
     }
 
     private var foreground: Color {
-        guard enabled else { return kind == .primary ? .white.opacity(0.9) : Palette.disabled }
+        guard enabled else { return kind == .primary || kind == .attention ? .white.opacity(0.9) : Palette.disabled }
         switch kind {
-        case .primary: return .white
+        case .primary, .attention: return .white
         case .secondary: return Palette.ink
         case .quiet: return Palette.ink2
         case .soft, .link: return Palette.solid
@@ -295,6 +296,7 @@ private struct PillButtonBody: View {
     private var background: Color {
         switch kind {
         case .primary: enabled ? Palette.solid : Palette.solid.opacity(0.35)
+        case .attention: enabled ? Palette.attention : Palette.attention.opacity(0.35)
         case .secondary, .onAttention, .destructive: Palette.card
         case .quiet: Palette.field
         case .soft: Palette.wash

@@ -145,6 +145,8 @@ enum Glyph: Sendable {
     case accounts, relay, desktop, clients, cloud, refresh, plus, sun, shield, sync, info, clock, alert
     case check, chevronDown, chevronLeft, chevronRight, external, copy, server, mac, window, codex, claude
     case wifi, hotspot, key, phone, terminal, close
+    // Claude 桌面's own two: a chat bubble for chat / work and </> for its Code tab; a tray for what sits out.
+    case chat, code, tray
 
     fileprivate var data: [String] {
         switch self {
@@ -179,6 +181,9 @@ enum Glyph: Sendable {
         // Claude Code in a terminal: a prompt and a cursor, no frame, so it never reads as the desktop's screen.
         case .terminal: ["M4 5.5l4.5 4.5L4 14.5", "M11 15h5.5"]
         case .close: ["M5.5 5.5l9 9M14.5 5.5l-9 9"]
+        case .chat: ["M5 4h10a2.5 2.5 0 0 1 2.5 2.5v5.5a2.5 2.5 0 0 1-2.5 2.5h-5l-3.5 3v-3H5a2.5 2.5 0 0 1-2.5-2.5V6.5a2.5 2.5 0 0 1 2.5-2.5z"]
+        case .code: ["M7 6.5 3.5 10 7 13.5", "M13 6.5l3.5 3.5-3.5 3.5", "M11.2 4.5 8.8 15.5"]
+        case .tray: ["M3 9h14v5.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "M3 9l2-4.5h10L17 9", "M7.5 12h5"]
         }
     }
 
