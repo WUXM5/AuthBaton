@@ -91,6 +91,7 @@ impl Accounts {
             "busy":self.automation.job.is_some(),
             "message":message,
             "last_at":store.last_at,
+            "next_claude":self.next_claude(),
             "account_states":store.config.accounts.iter().filter_map(|r|self.automation.account_messages.get(&r.id).map(|message|json!({"id":r.id,"message":message}))).collect::<Vec<_>>(),
             "run":store.run.as_ref().map(|r|json!({"id":r.id,"source":r.source,"target":r.target,"created_at":r.created_at,
                 "tasks":r.tasks.iter().map(|t|json!({"thread_id":t.thread_id,"state":t.state})).collect::<Vec<_>>() }))})
@@ -196,32 +197,52 @@ impl Accounts {
             .flatten();
         let fable = self.fable_in_use(current);
         let target = (rule.order.switches() && self.strategy_switch_blocker(current).is_none())
-            .then(|| {
-                config
-                    .accounts
-                    .iter()
-                    .filter(|r| r.participate && r.id != current.id)
-                    .find_map(|r| {
-                        let account = self.db.accounts.iter().find(|a| a.id == r.id)?;
-                        if account.provider != current.provider
-                            || !self.strategy_account_ready(account)
-                        {
-                            return None;
-                        }
-                        let usage = self.quota.automation_observation(&account.id, now())?;
-                        // While Fable is in use, a target must have its Fable week above its line
-                        // too, or the next check would move the login on again.
-                        let fable_left = !fable
-                            || self
-                                .quota
-                                .fable_remaining(&account.id, now())
-                                .is_none_or(|f| f > f64::from(r.below));
-                        (usage.remaining > f64::from(r.below) && fable_left)
-                            .then(|| account.id.clone())
-                    })
-            })
+            .then(|| self.relay_target(current, fable))
             .flatten();
         automation::decide(rule.order, reset, target)
+    }
+    /// Where the rules would move the default login from `current`: the first account in relay order
+    /// that takes part, is not `current`, is ready and is above its own line. The one rule both the
+    /// switch and the Claude page's 下一棒 use.
+    fn relay_target(&self, current: &Account, fable: bool) -> Option<String> {
+        self.db
+            .automation
+            .config
+            .accounts
+            .iter()
+            .filter(|r| r.participate && r.id != current.id)
+            .find_map(|r| {
+                let account = self.db.accounts.iter().find(|a| a.id == r.id)?;
+                if account.provider != current.provider || !self.strategy_account_ready(account) {
+                    return None;
+                }
+                let usage = self.quota.automation_observation(&account.id, now())?;
+                // While Fable is in use, a target must have its Fable week above its line
+                // too, or the next check would move the login on again.
+                let fable_left = !fable
+                    || self
+                        .quota
+                        .fable_remaining(&account.id, now())
+                        .is_none_or(|f| f > f64::from(r.below));
+                (usage.remaining > f64::from(r.below) && fable_left).then(|| account.id.clone())
+            })
+    }
+    /// The Claude account a switch would go to if the signed-in one reached its line now; none while
+    /// the rules are off or the signed-in account does not switch by rule.
+    fn next_claude(&self) -> Option<String> {
+        let config = &self.db.automation.config;
+        let current = self
+            .db
+            .accounts
+            .iter()
+            .find(|a| a.provider == "claude" && a.native)?;
+        let rule = config
+            .accounts
+            .iter()
+            .find(|r| r.id == current.id && r.participate)?;
+        (config.enabled && rule.order.switches() && self.strategy_switch_blocker(current).is_none())
+            .then(|| self.relay_target(current, self.fable_in_use(current)))
+            .flatten()
     }
     /// A Claude Code session on this account's default login sent a Fable request lately.
     fn fable_in_use(&self, account: &Account) -> bool {

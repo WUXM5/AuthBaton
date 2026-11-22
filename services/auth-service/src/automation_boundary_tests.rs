@@ -1326,6 +1326,8 @@ fn depleted_claude_switches_in_place_beside_running_clients() {
         true,
     )
     .unwrap();
+    // The Claude page marks where a switch would go now, by the same rule the switch uses.
+    assert_eq!(m.strategy_snapshot()["next_claude"], "d");
     // Companion mod readings only bring the GET forward, at the account's own line, at most
     // once per 30 s; they never decide a switch themselves.
     let report = |limited, used| crate::claude_mod::Report {
@@ -1376,6 +1378,8 @@ fn depleted_claude_switches_in_place_beside_running_clients() {
     m.automation_tick();
     assert!(native.read(&f.platform).unwrap() == d);
     assert!(m.automation.account_messages["c"].contains("已换走"));
+    // From d the only other account is at its line: nowhere to go next.
+    assert!(m.strategy_snapshot()["next_claude"].is_null());
 }
 
 // The real shape of November 2026: the Fable week is a model-scoped weekly limit.
