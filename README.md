@@ -99,7 +99,7 @@ The app is ad-hoc signed and not notarized by Apple, so macOS blocks it when it 
 xattr -dr com.apple.quarantine /Applications/AuthManager.app
 ```
 
-From the first release that ships with the updater, updates install themselves (an earlier version has to be replaced by hand once). AuthBaton checks GitHub once a day, downloads a new version in the background and installs it when you quit. If you don't quit it for about a week, it shows the update and lets you install and relaunch. AuthBaton → 检查更新… (Check for Updates) checks right away. Updates come through [Sparkle](https://sparkle-project.org) and are checked against an EdDSA signature before they are unpacked; they arrive without the download quarantine, so `xattr` is only needed the first time.
+From 0.31.0 on, updates install themselves (0.30 and earlier have to be replaced by hand once). AuthBaton checks GitHub once a day, downloads a new version in the background and installs it when you quit. If you don't quit it for about a week, it shows the update and lets you install and relaunch. AuthBaton → 检查更新… (Check for Updates) checks right away. Updates come through [Sparkle](https://sparkle-project.org) and are checked against an EdDSA signature before they are unpacked; they arrive without the download quarantine, so `xattr` is only needed the first time.
 
 ## Build
 

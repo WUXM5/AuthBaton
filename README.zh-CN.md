@@ -97,7 +97,7 @@ App 只有 ad-hoc 签名，没有经过 Apple 公证，从网上下载后 macOS 
 xattr -dr com.apple.quarantine /Applications/AuthManager.app
 ```
 
-从带更新功能的第一个版本起，更新会自己装上（更早的版本要手动换一次）：AuthBaton 每天查一次 GitHub，在后台下载新版本，退出时安装；连续一周左右没退出，会弹出提示，可以直接安装并重启。菜单「AuthBaton → 检查更新…」马上检查。更新经 [Sparkle](https://sparkle-project.org) 下发，解压前先核对 EdDSA 签名；装上的新版本没有下载隔离标记，所以 `xattr` 只需要第一次跑。
+从 0.31.0 起，更新会自己装上（0.30 及更早的版本要手动换一次）：AuthBaton 每天查一次 GitHub，在后台下载新版本，退出时安装；连续一周左右没退出，会弹出提示，可以直接安装并重启。菜单「AuthBaton → 检查更新…」马上检查。更新经 [Sparkle](https://sparkle-project.org) 下发，解压前先核对 EdDSA 签名；装上的新版本没有下载隔离标记，所以 `xattr` 只需要第一次跑。
 
 ## 构建
 
