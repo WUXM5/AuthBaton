@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The service runs with the app, not with the window: closing the window must not cut its start short.
         Task { await ServiceController.shared.start() }
+        AppUpdater.shared.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -39,6 +40,11 @@ struct AuthManagerApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1020, height: 660)
         .commands {
+            if AppUpdater.enabled {
+                CommandGroup(after: .appInfo) {
+                    Button("检查更新…") { AppUpdater.shared.checkForUpdates() }
+                }
+            }
             CommandGroup(after: .newItem) {
                 Button("刷新状态与额度") { Task { await service.refresh(); await service.refreshQuotaIfNeeded() } }
                     .keyboardShortcut("r")

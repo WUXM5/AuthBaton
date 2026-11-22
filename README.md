@@ -39,6 +39,7 @@ The interface is in Chinese.
 - Network switching: a Wi-Fi password typed in the switch sheet goes once from the UI to the service (it never comes back to the UI), is kept in memory until the join works, and is then stored in the Vault; a refused join forgets it. Joining runs `/usr/sbin/networksetup -setairportnetwork`, which takes the password as a command-line argument: for the few seconds it runs, processes of the same macOS user can see it in the process list. An iPhone hotspot's password comes from the phone through Sharing.framework's private `SFRemoteHotspotSession` (the hotspot helper) and is never stored. A switch changes the Mac's Wi-Fi only after you ask for it. The check afterwards is an unauthenticated request to `api.anthropic.com`, not a model request. `network-log.jsonl` (0600) records the time, the networks' names and the result.
 - The UI process never gets credentials other than the Wi-Fi password you type. The Rust service is the only source of account state, and IPC responses use a field allowlist.
 - Apart from the warm-up you turn on for a Claude account, AuthBaton sends no model requests and never uses one as an authentication check.
+- Updates: once a day AuthBaton downloads `appcast.xml` from this repository's latest GitHub Release, and the update zip when there is a new version. It sends no account data or system profile. An update is installed only if its EdDSA signature matches the public key built into the app.
 - The runtime directory `~/Library/Application Support/AuthManager/` has mode 0700; sockets and the database are 0600. The desktop operation log `desktop-log.jsonl` (0600, rotated once it passes 512 KB) records only the time, the operation on the Codex desktop app, the account ID and a fixed reason. It contains no credentials. These measures protect against mistakes and credential leaks; they cannot defend against malicious programs running as the same macOS user.
 
 ## Anthropic's terms
@@ -98,6 +99,8 @@ The app is ad-hoc signed and not notarized by Apple, so macOS blocks it when it 
 xattr -dr com.apple.quarantine /Applications/AuthManager.app
 ```
 
+From the first release that ships with the updater, updates install themselves (an earlier version has to be replaced by hand once). AuthBaton checks GitHub once a day, downloads a new version in the background and installs it when you quit. If you don't quit it for about a week, it shows the update and lets you install and relaunch. AuthBaton → 检查更新… (Check for Updates) checks right away. Updates come through [Sparkle](https://sparkle-project.org) and are checked against an EdDSA signature before they are unpacked; they arrive without the download quarantine, so `xattr` is only needed the first time.
+
 ## Build
 
 Requirements:
@@ -146,3 +149,5 @@ AuthBaton is released under the [MIT License](LICENSE.md).
 The Claude desktop session sync and account switching in `services/claude-desktop/` are derived from [cc-same](https://github.com/songkeys/cc-same) 0.1.12 by Songkeys, released under the MIT License; its notice is in [`services/claude-desktop/LICENSE-cc-same.txt`](services/claude-desktop/LICENSE-cc-same.txt).
 
 The description and command schema of the `web_run` tool in `integrations/pi/authmanager-codex/web-run.ts` are adapted from [OpenAI Codex](https://github.com/openai/codex) rust-v0.163.0, Copyright 2025 OpenAI, licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0); the file's header says what changed.
+
+Updates use [Sparkle](https://github.com/sparkle-project/Sparkle) 2.10.1, released under the MIT License together with the licenses of the code it includes; its notice ships in the app as `Contents/Resources/LICENSE-Sparkle.txt`.
