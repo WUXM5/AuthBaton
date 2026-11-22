@@ -37,6 +37,7 @@ macOS 菜单栏应用，集中管理多个 Codex（ChatGPT）和 Claude Code 订
 - 切换网络：在切换框里输入的 Wi-Fi 密码从界面单向传给服务一次（不会再回到界面），加入成功前只在内存里，成功后存进 Vault，加入被拒就丢掉。加入用 `/usr/sbin/networksetup -setairportnetwork`，它只接受命令行参数形式的密码：它运行的几秒内，同一 macOS 用户下的进程能在进程列表里看到。iPhone 热点的密码由手机经 Sharing.framework 的私有接口 `SFRemoteHotspotSession`（热点组件）给出，不保存。只有你发起后才会改 Mac 的 Wi-Fi。切完的核对是一个不带认证的 `api.anthropic.com` 请求，不是模型请求。`network-log.jsonl`（0600）只记时间、网络名和结果。
 - 界面进程拿不到凭据（你输入的 Wi-Fi 密码除外）；Rust 服务是账号状态的唯一来源，IPC 响应使用字段白名单。
 - 除你为某个 Claude 账号开启的预热外，AuthBaton 不发起模型请求，也不用模型请求冒充认证检查。
+- 更新：AuthBaton 每天从本仓库最新的 GitHub Release 下载一次 `appcast.xml`，有新版本时再下载更新包；不发送账号数据或系统信息。只有 EdDSA 签名和 App 内置公钥对得上的更新才会安装。
 - 运行目录 `~/Library/Application Support/AuthManager/` 权限 0700，socket 和数据库 0600。桌面操作记录 `desktop-log.jsonl`（0600，超过 512 KB 轮换一次）只记时间、对 Codex 桌面做的操作、账号 ID 和固定原因，不含凭据。保护对象是误操作和凭据外泄，不能防御同一 macOS 用户下的恶意程序。
 
 ## 对照 Anthropic 条款
@@ -96,6 +97,8 @@ App 只有 ad-hoc 签名，没有经过 Apple 公证，从网上下载后 macOS 
 xattr -dr com.apple.quarantine /Applications/AuthManager.app
 ```
 
+从 0.31.0 起，更新会自己装上（0.30 及更早的版本要手动换一次）：AuthBaton 每天查一次 GitHub，在后台下载新版本，退出时安装；连续一周左右没退出，会弹出提示，可以直接安装并重启。菜单「AuthBaton → 检查更新…」马上检查。更新经 [Sparkle](https://sparkle-project.org) 下发，解压前先核对 EdDSA 签名；装上的新版本没有下载隔离标记，所以 `xattr` 只需要第一次跑。
+
 ## 构建
 
 需要：
@@ -141,3 +144,5 @@ AuthBaton 按 [MIT License](LICENSE.md) 发布。
 `services/claude-desktop/` 里的 Claude 桌面会话同步与换号派生自 Songkeys 的 [cc-same](https://github.com/songkeys/cc-same) 0.1.12，按 MIT License 发布，许可声明见 [`services/claude-desktop/LICENSE-cc-same.txt`](services/claude-desktop/LICENSE-cc-same.txt)。
 
 `integrations/pi/authmanager-codex/web-run.ts` 里 `web_run` 工具的说明和参数结构改编自 [OpenAI Codex](https://github.com/openai/codex) rust-v0.163.0（Copyright 2025 OpenAI），按 [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0) 发布；改了哪些写在文件头。
+
+更新功能用的是 [Sparkle](https://github.com/sparkle-project/Sparkle) 2.10.1，按 MIT License 发布（另含它所带代码的许可），许可声明随 App 放在 `Contents/Resources/LICENSE-Sparkle.txt`。
