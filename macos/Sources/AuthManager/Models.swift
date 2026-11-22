@@ -217,6 +217,8 @@ struct CodexStrategyStatus: Decodable, Equatable, Sendable {
     let lastAt: Double?
     let run: Run?
     var accountStates: [AccountState]? = nil
+    // Where the rules would move Claude Code if its account reached its line now; the Claude page's 下一棒.
+    var nextClaude: String? = nil
     struct AccountState: Decodable, Equatable, Identifiable, Sendable { let id: String; let message: String }
     struct Run: Decodable, Equatable, Sendable {
         let id: String; let source: String; let target: String; let createdAt: Double
