@@ -35,10 +35,20 @@ pub fn claims(token: &str) -> Result<Value> {
         .map_err(|_| "账号 token 格式无效")?;
     serde_json::from_slice(&bytes).map_err(|_| "账号 token 字段无效")
 }
+/// How builds before 0.32 stored the login email. A name still in this form is one nobody chose.
 pub(crate) fn masked(email: &str) -> String {
     match email.split_once('@') {
         Some((name, domain)) => format!("{}***@{}", name.chars().next().unwrap_or('*'), domain),
         None => "未提供邮箱".into(),
+    }
+}
+/// The login email as AuthBaton shows it; a new account is named after it.
+fn shown(email: &str) -> String {
+    let email = email.trim();
+    if email.contains('@') {
+        email.into()
+    } else {
+        "未提供邮箱".into()
     }
 }
 impl Bundle {
@@ -84,7 +94,7 @@ impl Bundle {
             }
             Ok(Metadata {
                 owner: format!("codex:{user}:{workspace}"),
-                display: masked(
+                display: shown(
                     token["email"]
                         .as_str()
                         .or(token["https://api.openai.com/profile"]["email"].as_str())
@@ -111,7 +121,7 @@ impl Bundle {
                     required(&self.identity, "/accountUuid")?,
                     required(&self.identity, "/organizationUuid")?
                 ),
-                display: masked(required(&self.identity, "/emailAddress")?),
+                display: shown(required(&self.identity, "/emailAddress")?),
                 plan: self.credential["subscriptionType"]
                     .as_str()
                     .unwrap_or("未知")

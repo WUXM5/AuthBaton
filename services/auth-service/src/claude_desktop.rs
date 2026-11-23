@@ -559,7 +559,7 @@ impl Runtime {
                     "handle": handle_of(&a.account_id),
                     "number": a.number,
                     "display": display(a),
-                    "email": a.email.as_deref().map(crate::credentials::masked),
+                    "email": a.email,
                     "alias": a.alias,
                     "in_use": a.login == LoginState::SignedIn,
                     "login_saved": a.login != LoginState::Unknown,
@@ -769,7 +769,7 @@ fn display(account: &AccountView) -> String {
         return alias.clone();
     }
     match (&account.email, account.number) {
-        (Some(email), _) => crate::credentials::masked(email),
+        (Some(email), _) => email.clone(),
         (None, Some(number)) => format!("账号 {number}"),
         (None, None) => "没认出的账号".into(),
     }
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_gets_handles_and_masked_names_never_account_ids() {
+    fn the_window_gets_handles_and_names_never_account_ids() {
         let mut fixture = Fixture::new("view");
         let snapshot = fixture.settle();
         let text = snapshot.to_string();

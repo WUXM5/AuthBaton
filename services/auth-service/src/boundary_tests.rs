@@ -785,6 +785,99 @@ fn blank_import_name_defaults_to_login_identity_and_keeps_existing_name() {
 }
 
 #[test]
+fn a_new_login_is_named_after_its_email_and_handed_to_the_sheet() {
+    let fixture = Fixture::new();
+    let mut manager = fixture.manager();
+    let new = claude("a", "SYNTHETIC_A_REFRESH");
+    let mut entry = account("a", &new, false);
+    entry.label = placeholder_label("claude").into();
+    entry.metadata = None;
+    entry.state = "pending".into();
+    entry.pending_profile = Some("synthetic-pending".into());
+    manager.db.accounts.push(entry);
+    let staging = manager.staging("claude", "synthetic-pending").unwrap();
+    write_json(
+        &staging.directory.join(".credentials.json"),
+        &json!({"claudeAiOauth":new.credential}),
+    )
+    .unwrap();
+    write_json(&staging.config, &json!({"oauthAccount":new.identity})).unwrap();
+    manager.pending_login = Some("a".into());
+    let mut login = LoginManager::new();
+    login.state = Some(LoginState {
+        attempt_id: "synthetic".into(),
+        provider: "claude".into(),
+        phase: "stopped".into(),
+        message: String::new(),
+        verification_url: None,
+        user_code: None,
+        browser_url: None,
+        account_id: None,
+    });
+    manager.finish_login(&mut login);
+    let state = login.state.unwrap();
+    assert_eq!(state.phase, "succeeded");
+    assert_eq!(state.account_id.as_deref(), Some("a"));
+    assert_eq!(manager.db.accounts[0].label, "a@example.invalid");
+    assert_eq!(
+        manager.db.accounts[0].metadata.as_ref().unwrap().display,
+        "a@example.invalid"
+    );
+}
+
+#[test]
+fn names_earlier_builds_filled_in_become_the_full_login_email_once() {
+    let fixture = Fixture::new();
+    let mut manager = fixture.manager();
+    // a: the add sheet's old default name; b: the masked email an import stored; c: a chosen name;
+    // d: no saved login to read the full email from.
+    for (id, label) in [
+        ("a", "Claude Code 账号"),
+        ("b", "b***@example.invalid"),
+        ("c", "work"),
+        ("d", "Claude Code 账号"),
+    ] {
+        let bundle = claude(id, "SYNTHETIC_REFRESH");
+        if id != "d" {
+            fixture.platform.vault_write(id, &bundle.encoded()).unwrap();
+        }
+        let mut entry = account(id, &bundle, false);
+        entry.label = label.into();
+        entry.metadata.as_mut().unwrap().display =
+            crate::credentials::masked(&format!("{id}@example.invalid"));
+        manager.db.accounts.push(entry);
+    }
+    manager.save().unwrap();
+    let names = |manager: &Accounts| -> Vec<(String, String)> {
+        manager
+            .db
+            .accounts
+            .iter()
+            .map(|a| {
+                (
+                    a.label.clone(),
+                    a.metadata.as_ref().unwrap().display.clone(),
+                )
+            })
+            .collect()
+    };
+    let expected = vec![
+        (
+            "a@example.invalid".to_string(),
+            "a@example.invalid".to_string(),
+        ),
+        ("b@example.invalid".into(), "b@example.invalid".into()),
+        ("work".into(), "c@example.invalid".into()),
+        ("Claude Code 账号".into(), "d***@example.invalid".into()),
+    ];
+    assert_eq!(names(&fixture.manager()), expected);
+    // Saved: a later start finds nothing left to do, and a name chosen afterwards stays.
+    let mut reopened = fixture.manager();
+    reopened.configure("a", Some("personal"), None).unwrap();
+    assert_eq!(names(&fixture.manager())[0].0, "personal");
+}
+
+#[test]
 fn scheduler_advances_between_accounts_without_refreshing_native_shadow() {
     let fixture = Fixture::new();
     let mut manager = fixture.manager();
@@ -907,6 +1000,7 @@ fn cancelled_login_with_different_identity_never_overwrites_original() {
         verification_url: None,
         user_code: None,
         browser_url: None,
+        account_id: None,
     });
     manager.finish_login(&mut login);
     assert_eq!(fixture.platform.vault_read("a").unwrap(), old.encoded());
