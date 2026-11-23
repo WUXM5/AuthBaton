@@ -760,10 +760,9 @@ struct ClaudeEntryCard: View {
                             ClaudeSeal(entry: entry, size: 31, rule: rule)
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 6) {
-                                    Text(entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                    Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                                     InUsePill(entry: entry, use: use, codeRelayOn: codeRelayOn)
                                     if let cli = entry.cli { LowPill(account: cli, notch: directory.notch(for: cli)) }
-                                    if next { Pill("下一棒", style: .brand, small: true) }
                                 }
                                 Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                             }
@@ -772,7 +771,7 @@ struct ClaudeEntryCard: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("点开看账号详情")
+                    .help("\(entry.name) · 点开看账号详情")
                     if let collapse {
                         Button(action: collapse) {
                             Icon(.chevronDown, size: 11, color: Palette.ink3, weight: 2).rotationEffect(.degrees(180))
@@ -841,8 +840,13 @@ struct ClaudeEntryCard: View {
                 if use.desk, let desk = entry.desk { DeskNumber(desk: desk) }
                 if showCode, let cli = entry.cli, let rule {
                     if let rank = directory.rank(of: cli) {
-                        Pill("第 \(rank) 位", style: rule.participate ? .neutral : .dashed)
-                            .help("换号与重置里的顺序：≤ \(rule.below)% · \(rule.order.label)" + (rule.participate ? "" : " · 不参与"))
+                        let order = "换号与重置里的顺序：≤ \(rule.below)% · \(rule.order.label)"
+                        if next && rule.participate {
+                            PointerRank(text: "第 \(rank) 位", small: false, help: PointerRank.meaning + "\n" + order)
+                        } else {
+                            Pill("第 \(rank) 位", style: rule.participate ? .neutral : .dashed)
+                                .help(order + (rule.participate ? "" : " · 不参与"))
+                        }
                     }
                 }
                 Spacer(minLength: 7)

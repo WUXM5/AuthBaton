@@ -339,6 +339,72 @@ struct GlyphTile: View {
     }
 }
 
+// MARK: Relay pointer
+
+// The relay's pointer, a small filled triangle: Code moves to the account it marks once its own reaches the line.
+struct PointerMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// The pointer against a bar: move Code on now, before its account reaches the line. Takes the label's colour.
+struct SkipAheadMark: View {
+    var size: CGFloat = 9
+
+    var body: some View {
+        HStack(spacing: size * 0.12) {
+            PointerMark().fill(.foreground).frame(width: size * 0.62, height: size * 0.86)
+            RoundedRectangle(cornerRadius: size * 0.1).fill(.foreground).frame(width: size * 0.2, height: size * 0.86)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+// 「第 N 位」 where the relay's pointer stops. Same height as a Pill, a squarer box with a brand outline.
+struct PointerRank: View {
+    let text: String
+    var small = true
+    var help: String? = nil
+
+    var body: some View {
+        HStack(spacing: 4) {
+            PointerMark().fill(Palette.brand).frame(width: 5.5, height: 7)
+            Text(text).font(.system(size: small ? 10 : 11, weight: .semibold)).monospacedDigit()
+        }
+        .foregroundStyle(Palette.deep)
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 6)
+        .frame(height: small ? 17 : 19)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Palette.brand, lineWidth: 1))
+        .help(help ?? Self.meaning)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(text)，\(Self.meaning)")
+    }
+
+    static let meaning = "Code 见底后换到这个号"
+}
+
+extension Text {
+    // An account's name. A login email reads as its user part, with the domain (often the same for every account)
+    // a shade lighter in regular weight; cut short at the end, it loses the domain first.
+    init(accountName name: String) {
+        if let at = name.firstIndex(of: "@"), at != name.startIndex, !name.contains(" ") {
+            self = Text(String(name[..<at])) + Text(String(name[at...])).fontWeight(.regular).foregroundStyle(Palette.ink3)
+        } else {
+            self = Text(name)
+        }
+    }
+}
+
 // MARK: Seal
 
 // An account's monogram on a square turned 45°: solid while in use, soft on the bench,

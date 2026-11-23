@@ -305,7 +305,7 @@ struct ClientsPage: View {
                         HStack(spacing: 5) {
                             Text("跟着 Codex 在用的账号：")
                             Seal(codex.displayName, style: .inUse, size: 14)
-                            Text(codex.displayName).fontWeight(.semibold).foregroundStyle(Palette.ink)
+                            Text(accountName: codex.displayName).fontWeight(.semibold).foregroundStyle(Palette.ink)
                         }
                     } else {
                         Text(provider.summary)

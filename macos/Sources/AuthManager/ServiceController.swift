@@ -303,6 +303,18 @@ final class ServiceController: ObservableObject {
         await accountOperation("accounts.network", params: LoginParams(network_action: action, phone: phone, ssid: ssid, password: password))
     }
 
+    // Reads who the CLIs' default sign-ins belong to, for 「导入」 to show and name the account after. Not an
+    // account operation: it must not wait for one or report an error into the sheet.
+    func readClientSignIns() async {
+        guard isConnected else { return }
+        let path = socketPath
+        if let result = try? await Task.detached(operation: {
+            try IPCClient.accounts(method: "accounts.clients", params: LoginParams(), socketPath: path)
+        }).value, !Task.isCancelled {
+            directory = result.directory
+        }
+    }
+
     // Keeps the service reading traffic and nearby networks while a page that shows them is open.
     // Not an account operation: it must not wait for one or report "上一项操作尚未完成".
     func watchNetwork() async {

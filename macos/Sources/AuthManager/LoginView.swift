@@ -11,6 +11,12 @@ struct LoginView: View {
     @State private var provider: String
     @State private var importing = false
     @State private var accountLabel = ""
+    // 导入: the name, filled with the CLI's sign-in email until the person types their own.
+    @State private var importName = ""
+    @State private var importNameTyped = false
+    // A new login once saved: its name, filled with the login email.
+    @State private var savedName = ""
+    @State private var savedNameTyped = false
     @State private var authorizationCode = ""
     @State private var copiedLink: String?
     @State private var manualOpen = false
@@ -50,11 +56,30 @@ struct LoginView: View {
         .padding(20)
         .frame(width: 442, alignment: .leading)
         .background(Palette.card)
-        .onAppear { if accountLabel.isEmpty { accountLabel = account?.label ?? "\(name) 账号" } }
-        .onChange(of: provider) { old, new in
-            if account == nil, accountLabel == "\(GlyphTile.name(old)) 账号" { accountLabel = "\(GlyphTile.name(new)) 账号" }
+        // A new account needs no name up front: it is named after its login email.
+        .onAppear { if accountLabel.isEmpty { accountLabel = account?.label ?? "" } }
+        .task(id: importing && adding ? provider : "") {
+            if importing && adding { await service.readClientSignIns() }
         }
+        .onChange(of: signInEmail) { _, email in if !importNameTyped { importName = email ?? "" } }
+        .onChange(of: provider) { _, _ in importNameTyped = false; importName = signInEmail ?? "" }
+        .onChange(of: newAccountLabel) { _, label in if !savedNameTyped { savedName = label ?? "" } }
         .interactiveDismissDisabled(attempt?.isActive == true)
+    }
+
+    // The email of the CLI's default sign-in, as the service last read it.
+    private var signInEmail: String? {
+        service.directory?.clients?.first { $0.id == provider }?.identity.flatMap { $0.contains("@") ? $0 : nil }
+    }
+
+    // The account a new login just made, and the name the service gave it.
+    private var newAccountID: String? { adding && attempt?.phase == "succeeded" ? attempt?.accountId : nil }
+    private var newAccountLabel: String? {
+        newAccountID.flatMap { id in service.directory?.accounts.first { $0.id == id }?.label }
+    }
+
+    private func typed(_ text: Binding<String>, _ flag: Binding<Bool>) -> Binding<String> {
+        Binding(get: { text.wrappedValue }, set: { text.wrappedValue = $0; flag.wrappedValue = true })
     }
 
     private var title: String {
@@ -79,7 +104,7 @@ struct LoginView: View {
                     MethodOption(title: provider == "codex" ? "导入这台 Mac 上已有的登录" : "导入 Claude Code CLI 的登录",
                                  detail: provider == "codex" ? "把 \(name) 现在的登录交给 AuthBaton 一起管。"
                                      : "把 Claude Code CLI 现在的登录交给 AuthBaton 一起管。\nClaude 桌面的登录不能导入。",
-                                 selected: importing) { importing = true }
+                                 selected: importing, signIn: importing ? signInEmail : nil) { importing = true }
                 }
                 .padding(.top, 12)
             } else if account?.native == true {
@@ -92,17 +117,13 @@ struct LoginView: View {
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true).padding(.top, 15)
             }
             if importing && adding {
-                Text("名称用登录邮箱，之后可以重命名；现在的默认登录不变。")
+                NameField(text: typed($importName, $importNameTyped), note: "默认用登录邮箱，可以改。现在的默认登录不变。")
+                    .padding(.top, 14)
+            } else if adding {
+                Text("名称默认用登录邮箱，完成后可以改。现在的默认登录不变。")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 14)
             } else {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("账号名称").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
-                    LoopField(placeholder: "例如：个人 / 工作", text: $accountLabel)
-                    if adding {
-                        Text("授权完成后单独保存这个账号，现在的默认登录不变。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 2)
-                    }
-                }
-                .padding(.top, 14)
+                NameField(text: $accountLabel, placeholder: "例如：个人 / 工作").padding(.top, 14)
             }
             if let error = service.loginError ?? (importing ? service.accountError : nil) { Banner(text: error).padding(.top, 12) }
             HStack(spacing: 9) {
@@ -112,7 +133,9 @@ struct LoginView: View {
                     Button(service.accountBusy ? "正在导入…" : "导入") {
                         Task {
                             // A blank name lets the service name the account after its login email.
-                            await service.accountOperation("accounts.import", params: LoginParams(provider: provider))
+                            let label = importName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            await service.accountOperation("accounts.import", params: LoginParams(
+                                provider: provider, label: label.isEmpty || label == signInEmail ? nil : label))
                             if service.accountError == nil { dismiss() }
                         }
                     }
@@ -120,14 +143,25 @@ struct LoginView: View {
                     .disabled(service.accountBusy)
                 } else {
                     Button(cloudAccountID == nil ? "开始官方登录" : "登录并更新云端") {
-                        Task { await service.startLogin(provider: provider, label: accountLabel, accountID: account?.id, cloudAccountID: cloudAccountID) }
+                        Task { await service.startLogin(provider: provider, label: adding ? "" : accountLabel, accountID: account?.id, cloudAccountID: cloudAccountID) }
                     }
                     .buttonStyle(.pill(.primary, height: 27)).keyboardShortcut(.defaultAction)
-                    .disabled(accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || service.loginBusy)
+                    .disabled((!adding && accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || service.loginBusy)
                 }
             }
             .padding(.top, 19)
         }
+    }
+
+    // 完成: a new account keeps the email as its name unless the person typed another.
+    private func finish() async {
+        let name = savedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let id = newAccountID, !name.isEmpty, name != newAccountLabel {
+            await service.accountOperation("accounts.update", params: LoginParams(id: id, label: name))
+            guard service.accountError == nil else { return }
+        }
+        service.clearLogin()
+        dismiss()
     }
 
     // MARK: 登录中
@@ -239,7 +273,11 @@ struct LoginView: View {
             if provider == "claude" && attempt.isActive {
                 claudeLinks(attempt)
             }
-            if let error = service.loginError { Banner(text: error).padding(.top, 12) }
+            if newAccountID != nil {
+                NameField(text: typed($savedName, $savedNameTyped), note: "默认用登录邮箱；改了名字，邮箱照样显示在名字下面。")
+                    .padding(.top, 16)
+            }
+            if let error = service.loginError ?? (newAccountID != nil ? service.accountError : nil) { Banner(text: error).padding(.top, 12) }
             HStack(spacing: 9) {
                 if attempt.isActive {
                     Button(attempt.phase == "cancelling" ? "正在停止…" : "停止这次登录", role: .destructive) {
@@ -255,8 +293,9 @@ struct LoginView: View {
                 } else {
                     Button("重试") { service.clearLogin() }.buttonStyle(.pill(.secondary, height: 27))
                     Spacer()
-                    Button("完成") { service.clearLogin(); dismiss() }
+                    Button("完成") { Task { await finish() } }
                         .buttonStyle(.pill(.primary, height: 27)).keyboardShortcut(.defaultAction)
+                        .disabled(service.accountBusy)
                 }
             }
             .padding(.top, 12)
@@ -266,11 +305,28 @@ struct LoginView: View {
     }
 }
 
+// The account's name, as typed or as the service will name it.
+private struct NameField: View {
+    let text: Binding<String>
+    var placeholder = "登录邮箱"
+    var note: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("账号名称").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
+            LoopField(placeholder: placeholder, text: text)
+            if let note { Text(note).font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 2) }
+        }
+    }
+}
+
 // One way to add an account, as a radio card.
 private struct MethodOption: View {
     let title: String
     let detail: String
     let selected: Bool
+    // 导入: whose sign-in it would bring in, once the service has read it.
+    var signIn: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -284,6 +340,17 @@ private struct MethodOption: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
                     Text(detail).font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                    if let signIn {
+                        HStack(spacing: 7) {
+                            Seal(signIn, size: 18)
+                            Text(accountName: signIn).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                        }
+                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                        .background(Palette.panel, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .padding(.top, 6)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("当前登录 \(signIn)")
+                    }
                 }
                 Spacer(minLength: 0)
             }

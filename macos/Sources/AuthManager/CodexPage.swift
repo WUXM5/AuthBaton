@@ -283,7 +283,7 @@ private struct CodexCard: View {
                     Seal(account.displayName, style: account.native ? .inUse : rule?.participate == false ? .out : .standby, size: 31)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
-                            Text(account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                            Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                             if account.native { Pill("在用", style: .brand, small: true) }
                             if !account.native, directory.desktop?.selected == account.id { Pill("桌面在用", style: .brand, small: true) }
                         }

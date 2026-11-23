@@ -65,6 +65,7 @@ import Vision
     func clearLogin() {}
     func cancelLogin() async {}
     func startLogin(provider: String, label: String, accountID: String? = nil, cloudAccountID: String? = nil) async {}
+    func readClientSignIns() async {}
     func submitLoginCode(_ code: String) async {}
 }
 
@@ -1234,13 +1235,16 @@ extension NSWindow {
         Driver.press("切换", .exact)
         check.expect(check.lastCall("accounts.cloud")?.contains("\"mode\":\"cloud\"") == true, "确认后才发送 configure mode=cloud")
     }
-    section(9, "添加账号：导入不带名称，由服务按登录邮箱命名") {
+    section(9, "添加账号：名称默认用登录邮箱，登录新账号前不填名称，导入没改名时不带名称") {
         select(.accounts)
         state.calls.removeAll()
         Driver.press("添加账号", .suffix)
         check.expect(Driver.visible("登录新账号") && Driver.visible("导入这台 Mac"), "添加账号框给出登录新账号和导入两种方式")
+        // OCR drops the 箱 of 邮箱 now and then.
+        check.visible("完成后可以改", "登录新账号：说明名称默认用登录邮箱，完成后可以改")
+        check.expect(!Driver.visible("账号名称", wait: 0.3), "登录新账号：登录前不要名称")
         Driver.press("导入这台 Mac")
-        check.expect(!Driver.visible("账号名称", wait: 0.3), "选导入后不再要名称")
+        check.visible("账号名称", "选导入后给名称框，留空就用登录邮箱")
         Driver.press("导入", .exact)
         let imported = check.lastCall("accounts.import") ?? ""
         check.expect(imported.contains("codex") && !imported.contains("label"), "导入请求不带名称")
@@ -1261,6 +1265,18 @@ extension NSWindow {
         check.visible("CLI还没有登录", "本机 CLI 没登录时框里说清楚，并指向「登录新账号」")
         check.expect(main.attachedSheet != nil, "导入失败时框不关")
         Driver.press("取消", .exact)
+        print("  → 登录完成：名称已填好，没改就不发改名")
+        state.login = LoginAttempt(attemptId: "synthetic-new", provider: "codex", phase: "succeeded",
+                                   message: "合成：账号已独立保存", verificationUrl: nil, userCode: nil, accountId: "synthetic-team")
+        state.loginTarget = LoginTarget(accountID: nil)
+        state.calls.removeAll()
+        Driver.press("添加账号", .suffix)
+        check.expect(Driver.visible("账号名称") && Driver.visible("lab team"), "登录完成后名称框里是服务起的名字")
+        Driver.press("完成", .exact)
+        check.expect(check.lastCall("accounts.update") == nil, "名称没改：「完成」不发改名")
+        state.login = nil
+        state.loginTarget = nil
+        if main.attachedSheet != nil { Driver.press("取消", .exact) }
     }
     section(10, "菜单栏面板：点账号先展开说明，没连上时给重启并换上") {
         main.orderOut(nil)
@@ -1999,22 +2015,22 @@ extension NSWindow {
         Fixture.load("default", into: state)
     }
 
-    section(37, "Claude 页改版（11-22）：在用两个位置、按现行规则标下一棒、接力队列和不参与抽屉、周额度用完只写回满") {
+    section(37, "Claude 页改版（11-22，11-23 换成指位标）：在用两个位置、按现行规则在「第 N 位」上标指位、接力队列和不参与抽屉、周额度用完只写回满") {
         main.setContentSize(NSSize(width: 1020, height: 1300))
         defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("inuse", into: state)
         select(.claude)
         // OCR turns the middle dot and slash into other glyphs; match the words.
         check.expect(Driver.visible("对话") && Driver.visible("工作") && Driver.visible("桌面与CLI"), "两个在用位置：桌面对话 · 工作和 Code · 桌面与 CLI")
-        check.visible("Code见底后接第1位", "按现行规则：Code 见底后接第 1 位（桌面在用的那个号）")
-        check.expect(Driver.hits("下一棒").count >= 2, "下一棒标在桌面卡和队列的第 1 位上")
+        check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不再写「Code 见底后接…」和「下一棒」")
+        check.expect(Driver.hits("第1位").count >= 2, "按现行规则：指位标在桌面卡底栏和队列的第 1 位上（桌面在用的那个号）")
         // 方 reads as 万 now and then.
         check.expect(Driver.hits("在上").count == 2, "在用的两个号在队列里留顺位锚点")
         check.expect(Driver.visible("7天剩0%") && Driver.visible("自动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
         check.expect(Driver.visible("不参与自动接力") && Driver.visible("desk-only") && Driver.visible("补登Code"), "只在桌面登录过的号放进不参与抽屉，给「补登 Code」")
         state.calls.removeAll()
-        Driver.press("换下一棒", .exact)
-        check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-a\""), "「换下一棒」把 Code 换到第 1 位 a***")
+        Driver.press("提前换", .suffix)
+        check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-a\""), "「提前换」把 Code 换到第 1 位 a***")
         check.expect(main.attachedSheet == nil, "换 Code 不弹框")
         state.calls.removeAll()
         if !Driver.press("+加入接力", .exact) { check.expect(false, "找到 lab 那行的「+ 加入接力」") }
@@ -2049,12 +2065,12 @@ extension NSWindow {
         print("  → 同号")
         Fixture.load("inusesame", into: state)
         select(.claude)
-        check.expect(Driver.visible("当前同号") && Driver.visible("Code见底后接第3位"), "桌面和 Code 同号时合成一张卡，下一棒是第 3 位")
+        check.expect(Driver.visible("当前同号") && Driver.visible("第3位"), "桌面和 Code 同号时合成一张卡，指位标在第 3 位")
         print("  → 只用桌面")
         Fixture.load("inusedesk", into: state)
         select(.claude)
         check.expect(Driver.visible("轮换") && Driver.visible("不参与「下一个」"), "只用桌面：队列换成按 #N 的轮换")
-        check.expect(!Driver.visible("下一棒", wait: 0.3), "只用桌面：不写 Code 的下一棒")
+        check.expect(!Driver.visible("提前换", wait: 0.3), "只用桌面：没有 Code 的「提前换」")
         state.calls.removeAll()
         if !Driver.press("+参与", .prefix) { check.expect(false, "找到 lab 那行的「+ 参与「下一个」」") }
         let enable = check.lastCall("accounts.claude_desktop") ?? ""
