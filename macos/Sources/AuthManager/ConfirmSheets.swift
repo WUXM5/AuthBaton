@@ -282,7 +282,7 @@ private struct Handoff: View {
         HStack(spacing: 9) {
             Seal(account?.displayName ?? "?", style: account == nil ? .out : style, size: 29)
             VStack(alignment: .leading, spacing: 0) {
-                Text(account?.displayName ?? "没有在用的账号").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(accountName: account?.displayName ?? "没有在用的账号").font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(caption + (account?.lowestPrimary.map { " · 剩余 \($0)%" } ?? "")).font(.system(size: 11)).foregroundStyle(Palette.ink3)
                     .monospacedDigit().lineLimit(1)
             }

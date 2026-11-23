@@ -134,17 +134,12 @@ struct ClaudeStage: View {
                        present: present, switchTo: switchTo)
     }
 
-    // "正在使用", where Code goes next, and, while the desktop's Code tab follows Code, that the two are apart.
+    // "在用" and, while the desktop's Code tab follows Code, that the two are apart. Where Code goes next is the
+    // pointer on 「第 N 位」, not a sentence here.
     private func bridge(_ sides: (desk: Bool, code: Bool)) -> some View {
-        let next = directory.strategy?.config.enabled == true ? directory.strategy?.nextClaude : nil
-        let target = next.flatMap { id in entries.first { $0.cli?.id == id } }
-        let rank = next.flatMap { id in directory.claudeRules.firstIndex { $0.id == id } }.map { $0 + 1 }
         let apart = sides.desk && sides.code && directory.claudeDesktop?.codeRelay?.enabled == true
         return HStack(spacing: 8) {
             Text("在用").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
-            if let target, let rank, sides.code {
-                Text("Code 见底后接第 \(rank) 位 \(target.name)").font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-            }
             Spacer(minLength: 8)
             if apart {
                 HStack(spacing: 5) {
@@ -212,7 +207,7 @@ struct ClaudeSlotCard: View {
         VStack(alignment: .leading, spacing: 0) {
             head
             if let entry {
-                // 下一棒 is about Code: on a page without it, the desktop's account is nobody's next.
+                // The relay's pointer is about Code: on a page without it, the desktop's account is nobody's next.
                 ClaudeEntryCard(entry: entry, use: use, directory: directory, open: present, switchTo: { switchTo(entry, $0) },
                                 chrome: false, next: ClaudeUse.sides(use, directory).code && entry.cli != nil
                                     && directory.strategy?.config.enabled == true && directory.strategy?.nextClaude == entry.cli?.id)
@@ -241,7 +236,7 @@ struct ClaudeSlotCard: View {
             ForEach(sides, id: \.self) { side in ClaudeChannel(side: side, relayOn: relayOn) }
             if sides.count > 1 { Pill("当前同号", style: .brand, small: true) }
             Spacer(minLength: 6)
-            if sides.contains(.code) { nextBaton }
+            if sides.contains(.code) { skipAhead }
             if sides.contains(.desk), let status { ClaudeDeskNext(status: status, entries: entries, locked: deskLocked || !status.switchSupported, present: present) }
         }
         .padding(.horizontal, 14).frame(height: 42)
@@ -249,17 +244,23 @@ struct ClaudeSlotCard: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.divider).frame(height: 1) }
     }
 
-    // 换下一棒: move Code to where the rules would take it now, without waiting for the line.
-    @ViewBuilder private var nextBaton: some View {
+    // 提前换: move Code to where the rules would take it now, without waiting for the line.
+    @ViewBuilder private var skipAhead: some View {
         if directory.strategy?.config.enabled == true, let id = directory.strategy?.nextClaude,
            let next = entries.first(where: { $0.cli?.id == id }), let cli = next.cli,
            directory.primaryAction(for: cli) == .switchTo {
-            Button("换下一棒") {
+            Button {
                 Task { await service.accountOperation("accounts.activate", params: LoginParams(id: cli.id, confirm: true)) }
+            } label: {
+                HStack(spacing: 5) {
+                    SkipAheadMark()
+                    Text("提前换")
+                }
             }
             .buttonStyle(.pill(.soft))
             .disabled(service.accountBusy || directory.switchDisabled(for: cli))
-            .help("现在就把 Code 换到 \(next.name)")
+            .help("现在就把 Code 换到" + (directory.rank(of: cli).map { "第 \($0) 位 " } ?? " ") + "\(next.name)，不等见底")
+            .accessibilityLabel("提前把 Code 换到 \(next.name)")
         }
     }
 
@@ -481,7 +482,7 @@ struct ClaudeRelayDeck: View {
                                 next: id == next, collapse: { withAnimation(.easeOut(duration: 0.18)) { openRow = nil } })
             } else {
                 ClaudeRelayRow(entry: entry, kind: .queue(rank: rank, movable: movable), use: use, directory: directory,
-                               tag: id == next ? "下一棒" : nil, present: present, switchTo: { switchTo(entry, $0) },
+                               next: id == next, present: present, switchTo: { switchTo(entry, $0) },
                                expand: { withAnimation(.easeOut(duration: 0.18)) { openRow = id } })
             }
         }
@@ -556,6 +557,19 @@ struct DragGrip: View {
     }
 }
 
+// 第 N 位 in the queue's first column; where the relay's pointer stops it carries the pointer.
+struct RankMark: View {
+    let place: String
+    let next: Bool
+
+    var body: some View {
+        Group {
+            if next { PointerRank(text: place) } else { Pill(place, small: true) }
+        }
+        .frame(width: 56, alignment: .leading)
+    }
+}
+
 // An account shown in a slot above keeps its place in the queue as a thin line, so the order reads 1 to N.
 struct ClaudeAnchorRow: View {
     let entry: ClaudeEntry
@@ -568,11 +582,10 @@ struct ClaudeAnchorRow: View {
     var body: some View {
         HStack(spacing: 9) {
             DragGrip(active: movable)
-            Pill(place, style: next ? .brand : .neutral, small: true).frame(width: 50, alignment: .leading)
+            RankMark(place: place, next: next)
             Seal(entry.name, style: .inUse, size: 18)
-            Text(entry.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+            Text(accountName: entry.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
             Pill(slot, style: .brand, small: true)
-            if next { Pill("下一棒", style: .brand, small: true) }
             Spacer(minLength: 8)
             HStack(spacing: 3) {
                 Text("↑")
@@ -604,6 +617,8 @@ struct ClaudeRelayRow: View {
     let use: ClaudeUse
     let directory: AccountDirectory
     var tag: String? = nil
+    // The relay's pointer stops here: Code moves to this account once its own reaches the line.
+    var next = false
     let present: (ClaudeSheet) -> Void
     let switchTo: (SwitchScope?) -> Void
     var expand: (() -> Void)? = nil
@@ -623,7 +638,7 @@ struct ClaudeRelayRow: View {
         .padding(.leading, 9).padding(.trailing, 9).padding(.vertical, 8)
         .background(spent ? Palette.attentionWash.opacity(0.6) : Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(spent ? Palette.attentionDash.opacity(0.55) : tag != nil ? Palette.brand.opacity(0.35) : Palette.ring, lineWidth: 1))
+            .strokeBorder(spent ? Palette.attentionDash.opacity(0.55) : tag != nil || next ? Palette.brand.opacity(0.35) : Palette.ring, lineWidth: 1))
     }
 
     private func line(wide: Bool) -> some View {
@@ -631,7 +646,7 @@ struct ClaudeRelayRow: View {
             switch kind {
             case .queue(let rank, let movable):
                 DragGrip(active: movable)
-                Pill(rank.map { "第 \($0) 位" } ?? "–", style: tag != nil ? .brand : .neutral, small: true).frame(width: 50, alignment: .leading)
+                RankMark(place: rank.map { "第 \($0) 位" } ?? "–", next: next)
             case .rotation(let movable):
                 DragGrip(active: movable)
                 if let desk = entry.desk { DeskNumber(desk: desk).frame(width: 30, alignment: .leading) }
@@ -667,12 +682,12 @@ struct ClaudeRelayRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("点开看账号详情")
+        .help("\(entry.name) · 点开看账号详情")
     }
 
     private func title(relayPill: Bool) -> some View {
         HStack(spacing: 5) {
-            Text(entry.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+            Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 .layoutPriority(1)
             if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk) }
             if let tag { Pill(tag, style: .brand, small: true) }

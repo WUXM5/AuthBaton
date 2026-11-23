@@ -95,6 +95,8 @@ struct LoginAttempt: Decodable, Equatable, Sendable {
     let userCode: String?
     // Claude: the sign-in link that returns to this Mac; the service keeps the CLI from opening it.
     var browserUrl: String? = nil
+    // A new account's login once it is saved, so the sheet can rename it there and then.
+    var accountId: String? = nil
     var isActive: Bool { ["starting", "waiting", "cancelling"].contains(phase) }
     var phaseLabel: String {
         switch phase {
@@ -155,6 +157,14 @@ struct AccountDirectory: Decodable, Equatable, Sendable {
     var strategy: CodexStrategyStatus? = nil
     var claudeDesktop: ClaudeDesktopStatus? = nil
     var network: NetworkStatus? = nil
+    // Who each client's default sign-in belongs to, as the service last read it (「导入」 names the account after it).
+    var clients: [ClientSource]? = nil
+}
+
+struct ClientSource: Decodable, Equatable, Sendable {
+    let id: String
+    var identity: String? = nil
+    var evidence: String? = nil
 }
 
 struct CodexStrategyInput: Encodable, Sendable {

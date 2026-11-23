@@ -262,7 +262,7 @@ impl Accounts {
             return Err("桌面与默认文件身份不一致，切换未开始");
         }
         self.desktop.observed(&observed)?;
-        self.adopt_native(old.clone(), "原生账号")?;
+        self.adopt_native(old.clone(), "")?;
         let previous = self
             .db
             .accounts

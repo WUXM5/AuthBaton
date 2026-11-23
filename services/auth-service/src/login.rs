@@ -19,6 +19,9 @@ pub struct LoginState {
     /// Claude only: the sign-in link that returns to this Mac. AuthBaton keeps the official CLI
     /// from opening it, so the person chooses the browser and browser profile.
     pub browser_url: Option<String>,
+    /// Once a new login is saved: the account it made, so the sheet can rename it there and then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 impl LoginState {
@@ -161,6 +164,7 @@ impl LoginManager {
             verification_url: None,
             user_code: None,
             browser_url: None,
+            account_id: None,
         });
         let mut attempt = Attempt {
             child,

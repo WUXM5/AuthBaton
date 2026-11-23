@@ -301,7 +301,36 @@ impl Accounts {
                 manager.notice = Some(message.into());
             }
         }
+        let mut renamed = false;
+        for index in 0..manager.db.accounts.len() {
+            renamed |= manager.unmask(index);
+        }
+        if renamed {
+            // A failed save shows as the storage notice; the names are worked out again next start.
+            let _ = manager.save();
+        }
         Ok(manager)
+    }
+    /// Builds before 0.32 kept only a masked email: read the full one from the saved login again, and
+    /// name an account nobody named after it.
+    fn unmask(&mut self, index: usize) -> bool {
+        let id = self.db.accounts[index].id.clone();
+        let masked = self.db.accounts[index]
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.display.contains("***@"));
+        let mut changed = false;
+        if masked
+            && let Ok(Some(value)) = self.platform.vault_read_optional(&id)
+            && let Ok(bundle) = Bundle::decode(value)
+            && let Ok(saved) = bundle.metadata()
+            && let Some(metadata) = self.db.accounts[index].metadata.as_mut()
+            && metadata.owner == saved.owner
+        {
+            metadata.display = saved.display;
+            changed = true;
+        }
+        name_after_email(&mut self.db.accounts[index]) || changed
     }
     fn save(&self) -> Result<()> {
         let result = self.platform.save_db(
@@ -679,7 +708,12 @@ impl Accounts {
             self.db.accounts.push(Account {
                 id: random_id()?,
                 provider: provider.into(),
-                label: valid_label(label)?,
+                // No name yet: the login's email replaces the placeholder once it is saved.
+                label: valid_label(if label.trim().is_empty() {
+                    placeholder_label(provider)
+                } else {
+                    label
+                })?,
                 metadata: None,
                 native: false,
                 automatic: true,
@@ -759,6 +793,7 @@ impl Accounts {
             }
         } else if let Some(state) = &mut login.state {
             state.phase = "succeeded".into();
+            state.account_id = Some(id.clone());
             state.message = if self.cloud.config.reauthorizations.contains_key(&id) {
                 "官方登录已完成；后台将核对身份并更新同一云端账号，请在「个人云端」查看交接结果。"
             } else if self.db.accounts.iter().any(|a| a.id == id && a.native) {
@@ -858,6 +893,7 @@ impl Accounts {
         }
         let a = &mut self.db.accounts[index];
         a.metadata = Some(metadata);
+        name_after_email(a);
         a.last_local = Some(now());
         a.state = "saved".into();
         a.message = "账号已保存，等待在线检查".into();
@@ -1167,7 +1203,7 @@ impl Accounts {
                 }
             };
             // Keeps the source's latest material, including a refresh an official client just saved.
-            self.adopt_native(placed, "原生账号")?;
+            self.adopt_native(placed, "")?;
         }
         let previous = self
             .db
@@ -1358,7 +1394,7 @@ impl Accounts {
     fn finish_recover(&mut self, found: Result<Option<Bundle>>) -> Result<()> {
         let operation = self.db.switch.clone().ok_or("没有待恢复的切换")?;
         match found? {
-            Some(bundle) => self.adopt_native(bundle, "恢复的原生账号")?,
+            Some(bundle) => self.adopt_native(bundle, "")?,
             // The store holds no login, so no account is the default one.
             None => {
                 for a in &mut self.db.accounts {
@@ -2103,6 +2139,44 @@ fn parse_claude_owner(owner: &str) -> Option<(&str, &str)> {
     Some((account_uuid, org_uuid))
 }
 
+/// What a new login is called until its email is known.
+fn placeholder_label(provider: &str) -> &'static str {
+    if provider == "codex" {
+        "Codex 账号"
+    } else {
+        "Claude Code 账号"
+    }
+}
+/// A name nobody chose (what the add sheet or the service filled in, or the masked email earlier builds
+/// stored) gives way to the full login email.
+fn email_name(label: &str, email: &str) -> Option<String> {
+    const FILLED_IN: [&str; 5] = [
+        "Codex 账号",
+        "Claude Code 账号",
+        "Claude 账号",
+        "原生账号",
+        "恢复的原生账号",
+    ];
+    let chosen = !FILLED_IN.contains(&label) && label != crate::credentials::masked(email);
+    (email.contains('@')
+        && !email.contains("***@")
+        && !chosen
+        && label != email
+        && valid_label(email).is_ok())
+    .then(|| email.to_string())
+}
+fn name_after_email(account: &mut Account) -> bool {
+    let name = account
+        .metadata
+        .as_ref()
+        .and_then(|m| email_name(&account.label, &m.display));
+    if let Some(name) = name {
+        account.label = name;
+        true
+    } else {
+        false
+    }
+}
 fn valid_label(value: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 60 || value.chars().any(char::is_control) {

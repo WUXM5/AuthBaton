@@ -122,7 +122,7 @@ struct MenuBarPanel: View {
                 Ring(values: windows.map(\.remaining), size: 65).padding(.top, 7)
                 HStack(spacing: 5) {
                     if let current { Seal(current.displayName, style: .inUse, size: 15) }
-                    Text(current?.displayName ?? "没有在用的账号").font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(accountName: current?.displayName ?? "没有在用的账号").font(.system(size: 11, weight: .semibold)).lineLimit(1)
                 }
                 .padding(.top, 7)
                 Text(caption(current, windows)).font(.system(size: 10)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
@@ -459,8 +459,8 @@ private struct SwitchRow: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Seal(account.displayName, style: .standby, size: 19)
-                Text(account.displayName).font(.system(size: 12)).lineLimit(1)
-                if next { Pill("下一棒", style: .brand, small: true) }
+                Text(accountName: account.displayName).font(.system(size: 12)).lineLimit(1)
+                if next { PointerMark().fill(Palette.brand).frame(width: 6, height: 7.5).help(PointerRank.meaning) }
                 if account.needsAction { Circle().fill(Palette.attentionDot).frame(width: 5, height: 5) }
                 Spacer(minLength: 3.5)
                 if let lowest = account.lowestPrimary {
@@ -478,7 +478,7 @@ private struct SwitchRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityLabel("换上 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? ""))
+        .accessibilityLabel("换上 \(account.displayName)" + (account.lowestPrimary.map { "，剩余 \($0)%" } ?? "") + (next ? "，\(PointerRank.meaning)" : ""))
     }
 }
 

@@ -232,7 +232,7 @@ private struct AccountSwitcher: View {
         } label: {
             HStack(spacing: 7) {
                 if let current { Seal(current.displayName, style: .inUse, size: 22) }
-                Text(current?.displayName ?? "选一个账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                Text(accountName: current?.displayName ?? "选一个账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 Icon(.chevronDown, size: 9, color: Palette.ink3, weight: 2.4)
             }
             .padding(.leading, current == nil ? 10 : 3.5).padding(.trailing, 9)
@@ -313,7 +313,7 @@ private struct BenchRow: View {
                 .frame(width: 12, alignment: .leading)
             Seal(account.displayName, style: rule?.participate == false ? .out : .standby, size: 26)
             VStack(alignment: .leading, spacing: 0) {
-                Text(account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(accountName: account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 detail
             }
             .frame(minWidth: 102, maxWidth: .infinity, alignment: .leading)

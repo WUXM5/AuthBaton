@@ -125,7 +125,7 @@ private struct ClaudeMain: View {
                     ClaudeSeal(entry: entry, size: 34, rule: rule)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
-                            Text(account.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                            Text(accountName: account.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                             InUsePill(entry: entry, use: use, codeRelayOn: directory.claudeDesktop?.codeRelay?.enabled == true)
                         }
                         Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -537,7 +537,7 @@ private struct DeskOnlyMain: View {
                 ClaudeSeal(entry: entry, size: 34)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 7) {
-                        Text(entry.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                        Text(accountName: entry.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                         InUsePill(entry: entry, use: use)
                     }
                     Text([desk.email, desk.number.map { "桌面登录已保存（#\($0)）" } ?? "桌面登录已保存"].compactMap { $0 }.joined(separator: " · "))
