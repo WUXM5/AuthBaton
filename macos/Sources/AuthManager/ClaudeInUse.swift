@@ -689,8 +689,8 @@ struct ClaudeRelayRow: View {
         HStack(spacing: 5) {
             Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 .layoutPriority(1)
-            if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk) }
-            if let tag { Pill(tag, style: .brand, small: true) }
+            if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk).fixedSize() }
+            if let tag { Pill(tag, style: .brand, small: true).fixedSize() }
             // Signed in to AuthBaton only, while 无感换号 lends Code logins: the desktop's Code tab can use it.
             if relayPill, use.desk, entry.desk == nil, cli != nil, directory.claudeDesktop?.codeRelay?.state == "active" {
                 Pill("Code 无感可用", style: .brand, small: true)
@@ -699,12 +699,12 @@ struct ClaudeRelayRow: View {
             }
             if let cli {
                 if directory.primaryAction(for: cli) == .relogin {
-                    Pill(cli.health.title, style: .attention, small: true)
+                    Pill(cli.health.title, style: .attention, small: true).fixedSize()
                 } else {
                     LowPill(account: cli, notch: notch)
                 }
             } else {
-                Pill("仅桌面", small: true)
+                Pill("仅桌面", small: true).fixedSize()
             }
         }
     }

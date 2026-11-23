@@ -920,6 +920,7 @@ struct LowPill: View {
         if let notch, let last = windows.indexRefillingLast(below: notch) {
             Text("已见底")
                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                .lineLimit(1).fixedSize()
                 .padding(.horizontal, 7).frame(height: 17)
                 .background(Palette.attentionFill, in: Capsule())
                 .help(help(windows.filter { $0.remaining <= notch }, waited: windows[last], notch: notch))
