@@ -94,7 +94,13 @@ impl LoginManager {
             return Err("已有登录正在进行，请先完成或取消");
         }
         let mut command = Command::new(binary);
-        crate::network::configure(&mut command)?;
+        // Where the official sign-in exchanges its code.
+        let target = if provider == "codex" {
+            "https://auth.openai.com/oauth/token"
+        } else {
+            "https://platform.claude.com/v1/oauth/token"
+        };
+        crate::network::configure(&mut command, target)?;
         let mut browser = None;
         match provider {
             "codex" => {

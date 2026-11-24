@@ -1281,6 +1281,7 @@ impl Sys for RealSys {
     fn reachable(&self) -> bool {
         matches!(
             crate::network::curl_status(
+                "https://api.anthropic.com/v1/messages",
                 &[
                     "-s",
                     "-o",

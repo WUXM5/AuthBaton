@@ -328,7 +328,8 @@ pub fn run(binary: &Path, dir: &Path, token: &str) -> Sent {
     let source = read.as_raw_fd();
     let mut command = Command::new(binary);
     command.env_clear();
-    crate::network::configure(&mut command).map_err(Failure::NotSent)?;
+    crate::network::configure(&mut command, "https://api.anthropic.com/v1/messages")
+        .map_err(Failure::NotSent)?;
     // An npm install of an older CLI is a `#!/usr/bin/env node` script with node beside it.
     let path = match binary.parent().and_then(Path::to_str) {
         Some(bin) if !bin.is_empty() && !bin.contains(':') => format!("{bin}:{SYSTEM_PATH}"),
