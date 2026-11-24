@@ -1,5 +1,6 @@
 mod accounts;
 mod automation;
+mod chrome_sync;
 mod claude;
 mod claude_desktop;
 mod claude_desktop_relay;
@@ -501,6 +502,9 @@ fn run() -> Result<(), &'static str> {
                 .map_err(|_| "无法输出状态")?;
             println!();
             Ok(())
+        }
+        [command, flag, socket, ..] if command == "chrome-native-host" && flag == "--socket" => {
+            chrome_sync::run_native_host(Path::new(socket))
         }
         [command, flag, socket, rest @ ..]
             if command == "serve"

@@ -422,6 +422,32 @@ impl Runtime {
         Ok(())
     }
 
+    pub fn chrome_sync_enabled(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|shared| shared.ctx.config().chrome_sync)
+    }
+
+    pub fn set_chrome_sync_config(&self, on: bool) -> Result<()> {
+        let shared = self
+            .shared
+            .as_ref()
+            .ok_or("Claude 桌面的会话同步没有启动")?;
+        api::set_chrome_sync(&shared.ctx, on).map_err(|failure| failure_text(&failure))?;
+        Ok(())
+    }
+
+    pub fn resolve_account_handle(&self, handle: &str) -> Option<String> {
+        let shared = self.shared.as_ref()?;
+        let overview = shared.overview.lock().unwrap();
+        overview
+            .as_ref()?
+            .accounts
+            .iter()
+            .find(|a| handle_of(&a.account_id) == handle)
+            .map(|a| a.account_id.clone())
+    }
+
     pub fn desktop_identity(&self) -> Option<DesktopIdentity> {
         let shared = self.shared.as_ref()?;
         let overview = shared.overview.lock().unwrap();

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AuthBaton Chrome Sync</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --border: #dfe3e8;
+        --text: #182026;
+        --muted: #5c7080;
+        --brand: #0897b8;
+        --brand-hover: #067d99;
+        --ok: #0d8050;
+        --warn: #b45309;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        width: 340px;
+        background: var(--bg);
+        color: var(--text);
+        font: 12px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .title {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 500;
+        background: #eef2f5;
+        color: var(--muted);
+      }
+      .badge.ok {
+        background: #e6f6ee;
+        color: var(--ok);
+      }
+      .badge.warn {
+        background: #fef3c7;
+        color: var(--warn);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
+      }
+      .line {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 5px;
+      }
+      .line:last-child {
+        margin-bottom: 0;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .notice {
+        padding: 8px 9px;
+        border-radius: 7px;
+        background: #eef9fc;
+        border: 1px solid #bfe6f0;
+        margin-bottom: 8px;
+        font-size: 11.5px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        flex: 1;
+        border: 1px solid var(--border);
+        background: #fff;
+        color: var(--text);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #f0f3f6;
+      }
+      button.primary {
+        background: var(--brand);
+        border-color: var(--brand);
+        color: #fff;
+      }
+      button.primary:hover {
+        background: var(--brand-hover);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .foot {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <span class="title">AuthBaton Chrome Sync</span>
+      <span id="connBadge" class="badge">检查中…</span>
+    </div>
+
+    <div id="armNotice" class="notice" style="display: none"></div>
+
+    <div class="card">
+      <div class="line">
+        <span class="muted">claude.ai 网页</span>
+        <span id="webVal">检查中…</span>
+      </div>
+      <div class="line">
+        <span class="muted">Claude 官方插件</span>
+        <span id="extVal">检查中…</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="captureBtn" class="primary">保存到 AuthBaton</button>
+      <button id="clearBtn">本地切空登新号</button>
+    </div>
+
+    <div id="hint" class="foot">网页会话保存在 AuthBaton 本机钥匙串 Vault，不在扩展本地落盘。</div>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -104,6 +104,8 @@ pub struct Accounts {
     claude_mod: crate::claude_mod::Runtime,
     claude_desktop: crate::claude_desktop::Runtime,
     claude_desktop_relay: crate::claude_desktop_relay::Runtime,
+    chrome_sync: crate::chrome_sync::Runtime,
+    chrome_last_desktop_account: Option<String>,
     relay_last_sync: u64,
     relay_last_fingerprint: String,
     relay_pending_switch: Option<String>,
@@ -139,6 +141,8 @@ impl Accounts {
         // with_platform and keep it off.
         manager.claude_desktop = crate::claude_desktop::Runtime::start(root);
         manager.claude_desktop_relay = crate::claude_desktop_relay::Runtime::start(root, home);
+        manager.chrome_sync =
+            crate::chrome_sync::Runtime::start(root, home, manager.platform.clone());
         // Only the real service switches networks; the hotspot helper ships beside it.
         let hotspot = bundled.with_file_name("hotspot-helper");
         manager.network = crate::network_switch::Runtime::start(
@@ -243,6 +247,8 @@ impl Accounts {
             claude_mod: crate::claude_mod::Runtime::default(),
             claude_desktop: crate::claude_desktop::Runtime::off(),
             claude_desktop_relay: crate::claude_desktop_relay::Runtime::off(),
+            chrome_sync: crate::chrome_sync::Runtime::off(),
+            chrome_last_desktop_account: None,
             relay_last_sync: 0,
             relay_last_fingerprint: String::new(),
             relay_pending_switch: None,
@@ -500,6 +506,12 @@ impl Accounts {
                 self.claude_desktop_relay
                     .snapshot(self.claude_desktop.code_relay_enabled()),
             );
+            let desktop_id = self.claude_desktop.desktop_identity();
+            obj.insert(
+                "chrome_sync".into(),
+                self.chrome_sync
+                    .snapshot(self.claude_desktop.chrome_sync_enabled(), desktop_id.as_ref()),
+            );
         }
         json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot})
     }
@@ -546,6 +558,61 @@ impl Accounts {
                 let _ = self.claude_desktop.set_code_relay_config(false);
                 self.relay_pending_switch = None;
                 self.claude_desktop_relay.start_uninstall()
+            }
+            "chrome_sync" => {
+                let on = command.enabled.ok_or("缺少 Chrome 同步开关")?;
+                if !on {
+                    self.claude_desktop.set_chrome_sync_config(false)?;
+                    return Ok(());
+                }
+                if !command.confirm {
+                    return Err("需要确认后才能开启 Chrome 登录同步");
+                }
+                self.chrome_sync.install()?;
+                self.claude_desktop.set_chrome_sync_config(true)?;
+                Ok(())
+            }
+            "chrome_sync_install" => {
+                if !command.confirm {
+                    return Err("需要确认后才能安装 Chrome 同步扩展");
+                }
+                self.chrome_sync.install()
+            }
+            "chrome_sync_uninstall" => {
+                if !command.confirm {
+                    return Err("需要确认后才能卸载 Chrome 同步扩展");
+                }
+                let _ = self.claude_desktop.set_chrome_sync_config(false);
+                self.chrome_sync.uninstall()
+            }
+            "chrome_sync_capture" => self.chrome_sync.capture_current(),
+            "chrome_sync_clear_login" => self.chrome_sync.clear_for_login(),
+            "chrome_sync_now" => {
+                let desktop_id = self.claude_desktop.desktop_identity();
+                let (target_uuid, target_org) = if let Some(handle) = command.account {
+                    let uuid = self
+                        .claude_desktop
+                        .resolve_account_handle(handle)
+                        .or_else(|| self.chrome_sync.resolve_saved_handle(handle))
+                        .ok_or("找不到目标账号")?;
+                    let org = desktop_id
+                        .as_ref()
+                        .filter(|d| d.account_uuid == uuid)
+                        .and_then(|d| d.org_uuid.clone());
+                    (uuid, org)
+                } else {
+                    let desk = desktop_id.ok_or("当前没有检测到 Claude 桌面登录账号")?;
+                    (desk.account_uuid, desk.org_uuid)
+                };
+                self.chrome_sync
+                    .sync_to_account(&target_uuid, target_org.as_deref())
+            }
+            "chrome_sync_forget" => {
+                if !command.confirm {
+                    return Err("需要确认后才能移除已保存的 Chrome 网页会话");
+                }
+                let handle = command.account.ok_or("缺少目标账号")?;
+                self.chrome_sync.forget_account_by_handle(handle)
             }
             _ => self.claude_desktop.command(command),
         }
@@ -1428,6 +1495,7 @@ impl Accounts {
             owners.iter().any(|owner| owner.starts_with(&prefix))
         });
         self.tick_claude_desktop_relay();
+        self.tick_chrome_sync();
         self.network.tick();
         self.cloud_tick();
         if self
@@ -1634,10 +1702,36 @@ impl Accounts {
         self.desktop_stop();
         self.finish_reset();
         self.warmup_stop();
+        self.chrome_sync.stop();
         self.claude_desktop_relay.stop();
         self.claude_desktop.stop();
         self.network.stop();
         self.quota.stop(now());
+    }
+
+    fn tick_chrome_sync(&mut self) {
+        if !self.chrome_sync.is_active() {
+            return;
+        }
+        self.chrome_sync.tick();
+        let desktop_id = self.claude_desktop.desktop_identity();
+        let current = desktop_id.as_ref().map(|d| d.account_uuid.clone());
+        match (&self.chrome_last_desktop_account, &current) {
+            (None, Some(now_acct)) => {
+                // First observation after service start: record without surprise-switching Chrome.
+                self.chrome_last_desktop_account = Some(now_acct.clone());
+            }
+            (Some(prev), Some(now_acct)) if prev != now_acct => {
+                let target_uuid = now_acct.clone();
+                let target_org = desktop_id.as_ref().and_then(|d| d.org_uuid.clone());
+                self.chrome_last_desktop_account = Some(target_uuid.clone());
+                if self.claude_desktop.chrome_sync_enabled() {
+                    self.chrome_sync
+                        .auto_sync_on_desktop_switch(&target_uuid, target_org.as_deref());
+                }
+            }
+            _ => {}
+        }
     }
 
     fn tick_claude_desktop_relay(&mut self) {

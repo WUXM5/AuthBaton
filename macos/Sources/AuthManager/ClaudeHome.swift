@@ -131,6 +131,8 @@ enum ClaudeSheet: Identifiable {
     case tokenQuota
     case codeRelay
     case codeRelayUninstall
+    case chromeSync
+    case chromeSyncUninstall
     case relayEdit(RelayEdit)
 
     var id: String {
@@ -141,6 +143,8 @@ enum ClaudeSheet: Identifiable {
         case .tokenQuota: "token-quota"
         case .codeRelay: "code-relay"
         case .codeRelayUninstall: "code-relay-uninstall"
+        case .chromeSync: "chrome-sync"
+        case .chromeSyncUninstall: "chrome-sync-uninstall"
         case .relayEdit(let edit): "relay-\(edit.id)"
         }
     }
@@ -185,6 +189,8 @@ struct ClaudeHomePage: View {
                 case .tokenQuota: TokenQuotaSheet(close: { self.sheet = nil })
                 case .codeRelay: CodeRelaySheet(close: { self.sheet = nil })
                 case .codeRelayUninstall: CodeRelayUninstallSheet(close: { self.sheet = nil })
+                case .chromeSync: ChromeSyncSheet(close: { self.sheet = nil }, openUninstall: { self.sheet = .chromeSyncUninstall })
+                case .chromeSyncUninstall: ChromeSyncUninstallSheet(close: { self.sheet = nil })
                 case .relayEdit(let edit): RelayEditSheet(edit: edit, close: { self.sheet = nil })
                 }
             }
@@ -447,6 +453,15 @@ struct ClaudeHomePage: View {
                     Text("Claude 桌面 Code 无感换号已安装系统插件。")
                     Button("卸载插件…") { sheet = .codeRelayUninstall }.buttonStyle(.pill(.link))
                         .disabled(relay.busy || service.accountBusy)
+                }
+            }
+            if use.desk, let chrome = status?.chromeSync, chrome.isInstalled {
+                HStack(spacing: 5) {
+                    Text("Chrome 登录同步扩展已配置。")
+                    Button("管理…") { sheet = .chromeSync }.buttonStyle(.pill(.link))
+                        .disabled(chrome.busy || service.accountBusy)
+                    Button("卸载扩展…") { sheet = .chromeSyncUninstall }.buttonStyle(.pill(.link))
+                        .disabled(chrome.busy || service.accountBusy)
                 }
             }
             if use.desk {
