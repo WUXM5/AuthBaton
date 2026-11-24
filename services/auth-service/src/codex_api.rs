@@ -82,6 +82,7 @@ fn request_config(access: &Access, request: &Request) -> String {
 #[cfg(not(test))]
 pub fn http(access: &Access, request: &Request) -> Result<Response> {
     let bytes = crate::network::curl(
+        "https://chatgpt.com/backend-api/wham/usage",
         &[
             "-q",
             "--silent",

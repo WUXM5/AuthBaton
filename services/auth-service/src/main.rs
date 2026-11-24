@@ -16,6 +16,7 @@ mod login;
 mod maintenance;
 mod network;
 mod network_switch;
+mod pac;
 mod pi_broker;
 mod platform;
 mod quota;

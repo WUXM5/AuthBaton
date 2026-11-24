@@ -640,7 +640,9 @@ fn query_file(
 fn send_usage(token: &str) -> Result<(u16, Value), &'static str> {
     // Body stays absent, so this is a GET. The guard above is the regression check.
     crate::maintenance::http(USAGE_GET.url, Some(token), None, true).map_err(|message| {
-        if crate::network::not_sent(message) {
+        if message == crate::network::PROXY_NOT_SENT {
+            "系统代理用不了，请求没发出，稍后再试"
+        } else if crate::network::not_sent(message) {
             "网络没有连上，稍后再试"
         } else {
             "额度暂时读不到"

@@ -277,6 +277,7 @@ pub fn http(endpoint: &str, action: &str, token: Option<&str>, body: Value) -> R
         ));
     }
     let output = crate::network::curl(
+        &format!("{endpoint}/v1/{action}"),
         &[
             "-q",
             "--silent",

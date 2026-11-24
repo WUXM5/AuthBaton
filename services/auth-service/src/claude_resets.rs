@@ -372,7 +372,9 @@ fn request_config(access: &Access, request: &Request) -> String {
 }
 #[cfg(not(test))]
 pub fn http(access: &Access, request: &Request) -> Result<(u16, Value)> {
+    // Both requests go to this host.
     let bytes = crate::network::curl(
+        STATUS_URL,
         &[
             "-q",
             "--silent",

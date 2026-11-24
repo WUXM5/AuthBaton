@@ -535,6 +535,7 @@ pub fn http(
         config.push_str(&format!("data = {}\n", config_quote(&body.to_string())));
     }
     let (exit, bytes) = crate::network::curl_status(
+        url,
         &[
             "-q",
             "--silent",
@@ -582,7 +583,8 @@ struct CodexRpc {
 impl CodexRpc {
     fn start(binary: &Path, home: &Path, force_file: bool) -> Result<Self> {
         let mut command = Command::new(binary);
-        crate::network::configure(&mut command)?;
+        // Checks refresh the sign-in there.
+        crate::network::configure(&mut command, "https://auth.openai.com/oauth/token")?;
         if force_file {
             command.args(["-c", "cli_auth_credentials_store=\"file\""]);
         }
