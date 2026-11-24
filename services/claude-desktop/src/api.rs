@@ -889,6 +889,7 @@ pub struct ConfigChange {
     pub background: Option<bool>,
     pub token_quota: Option<bool>,
     pub code_relay: Option<bool>,
+    pub chrome_sync: Option<bool>,
     pub notify: Option<bool>,
     pub auto_join_new: Option<bool>,
     /// Keep these `<account>` or `<account>/<org>` out of the sync.
@@ -914,6 +915,9 @@ pub fn set_config(ctx: &Ctx, change: &ConfigChange) -> Result<ConfigView, Failur
     }
     if let Some(on) = change.code_relay {
         cfg.code_relay = on;
+    }
+    if let Some(on) = change.chrome_sync {
+        cfg.chrome_sync = on;
     }
     if let Some(on) = change.notify {
         cfg.notify = on;
@@ -947,6 +951,11 @@ pub fn set_token_quota(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
 /// Remember whether Claude Desktop Code tab seamless same-Team switching is on.
 pub fn set_code_relay(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
     set_config(ctx, &ConfigChange { code_relay: Some(on), ..ConfigChange::default() })
+}
+
+/// Remember whether optional Chrome claude.ai login sync is on.
+pub fn set_chrome_sync(ctx: &Ctx, on: bool) -> Result<ConfigView, Failure> {
+    set_config(ctx, &ConfigChange { chrome_sync: Some(on), ..ConfigChange::default() })
 }
 
 // ------------------------------------------------------------------------ snapshots

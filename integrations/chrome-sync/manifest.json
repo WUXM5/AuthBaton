@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "AuthBaton Chrome Sync",
+  "version": "0.1.0",
+  "description": "Optional AuthBaton companion extension: sync claude.ai web login in Chrome, reset Claude in Chrome session, and auto-approve OAuth during an AuthBaton switch.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtkK8PI/7SAlTJxAnfxZHUjIaqUvJa6wPdk7SVVKeClM5VyfNbuT+2YjZv0eD6veXq8Gg0aOTMX5oyGW0a0MTlCGUjRBW7D1hZr7lpqSnaD86njESrkVF42GVtoZefa6JU50Pc78KlDrByPyiRccGkRunu1FWt5BHLO+at7dlHujkeoJmmWa8/3o+oN4WRcL8m/fHOQrP217Sut2rmuSsfXfFKjmr0VQq0aC9Io2mOPbsN+4iqpZ28U2bgLLGhbD8uT1i6485O8bxDNM7OQn1wkVhIK/rKSu4XkBPMiSNf6K1/KcOTsmvL5XHW5hMbQu8wqsfS+sdmcndC/kzdqQ7+QIDAQAB",
+  "permissions": [
+    "cookies",
+    "browsingData",
+    "management",
+    "nativeMessaging",
+    "tabs",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://*.claude.ai/*"
+  ],
+  "action": {
+    "default_title": "AuthBaton Chrome Sync",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/oauth/authorize*"
+      ],
+      "js": [
+        "oauth-auto-approve.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

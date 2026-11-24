@@ -27,6 +27,52 @@ struct ClaudeDesktopStatus: Decodable, Equatable, Sendable {
     var tokenQuota: TokenQuotaStatus? = nil
     // Seamless same-Team account switching for Claude 桌面's Code tab via vouched Mod in-place swap. Off by default.
     var codeRelay: CodeRelayStatus? = nil
+    // Optional Chrome companion extension: swaps claude.ai cookies, resets Claude in Chrome, arms OAuth auto-approve.
+    var chromeSync: ChromeSyncStatus? = nil
+
+    struct ChromeSyncStatus: Decodable, Equatable, Sendable {
+        let enabled: Bool
+        // not_installed, installed, needs_update
+        let installState: String
+        let extensionId: String
+        var extensionDir: String? = nil
+        let connected: Bool
+        let claudeExtInstalled: Bool
+        var claudeExtEnabled: Bool = false
+        var claudeExtVersion: String? = nil
+        var claudeExtMayDisable: Bool = false
+        // off, not_installed, waiting_extension, syncing, awaiting_login, synced, mismatch, missing_session, error
+        let state: String
+        let message: String
+        var busy: Bool = false
+        var chromeEmail: String? = nil
+        var chromeHandle: String? = nil
+        var desktopMatches: Bool = false
+        var desktopSaved: Bool = false
+        var oauthArmedUntil: Double? = nil
+        var savedAccounts: [SavedAccount] = []
+        var lastSyncAt: Double? = nil
+        var lastError: String? = nil
+
+        var isInstalled: Bool { installState == "installed" || installState == "needs_update" }
+
+        struct SavedAccount: Decodable, Equatable, Sendable, Identifiable {
+            let handle: String
+            let email: String
+            var orgs: [Org] = []
+            var cookieCount: Int = 0
+            let savedAt: Double
+            let updatedAt: Double
+            let inChrome: Bool
+            let inDesktop: Bool
+
+            var id: String { handle }
+
+            struct Org: Decodable, Equatable, Sendable {
+                let name: String
+            }
+        }
+    }
 
     struct CodeRelayStatus: Decodable, Equatable, Sendable {
         let enabled: Bool

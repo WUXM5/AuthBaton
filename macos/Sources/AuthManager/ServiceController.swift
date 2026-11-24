@@ -364,6 +364,9 @@ final class ServiceController: ObservableObject {
                 // A network switch too; while its page or the menu bar shows it, once a second.
                 let interval: Duration = directory?.claudeDesktop?.busy == true
                     || directory?.claudeDesktop?.codeRelay?.busy == true
+                    || directory?.claudeDesktop?.chromeSync?.busy == true
+                    || directory?.claudeDesktop?.chromeSync?.state == "awaiting_login"
+                    || (directory?.claudeDesktop?.chromeSync?.enabled == true && directory?.claudeDesktop?.chromeSync?.connected == false)
                     || directory?.network?.switching == true ? .milliseconds(500)
                     : directory?.network?.watching == true ? .seconds(1) : .seconds(2)
                 do { try await Task.sleep(for: interval) } catch { return }

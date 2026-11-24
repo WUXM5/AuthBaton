@@ -26,6 +26,9 @@ pub struct Config {
     /// AuthManager: enable Claude Desktop Code tab seamless same-Team account switching.
     /// Off unless the person confirms and enables it.
     pub code_relay: bool,
+    /// AuthManager: optional Chrome companion extension that syncs Chrome's claude.ai web
+    /// session and resets Claude in Chrome when switching desktop accounts.
+    pub chrome_sync: bool,
     /// `<account>` or `<account>/<org>` entries that stay separate.
     pub exclude: Vec<String>,
     /// Accounts and orgs that appear later join automatically.
@@ -51,6 +54,7 @@ impl Default for Config {
             background: false,
             token_quota: false,
             code_relay: false,
+            chrome_sync: false,
             exclude: Vec::new(),
             auto_join_new: true,
             keep_snapshots: 20,

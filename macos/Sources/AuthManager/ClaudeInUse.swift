@@ -222,6 +222,9 @@ struct ClaudeSlotCard: View {
                 DesktopNotices(status: status, locked: deskLocked, compact: true) { present(.desktop($0)) }
                 // Without Claude 桌面 there is nothing to sync; the notice above says so.
                 if status.installed { SyncStrip(status: status, locked: deskLocked, embedded: true) { present(.desktop($0)) } }
+                if status.installed, let chrome = status.chromeSync {
+                    ChromeSyncStrip(chrome: chrome, locked: deskLocked || chrome.busy, embedded: true) { present($0) }
+                }
             }
             if sides.contains(.code), let status, status.installed, let relay = status.codeRelay {
                 CodeRelayStrip(relay: relay, locked: deskLocked || relay.busy, embedded: true) { present($0) }
