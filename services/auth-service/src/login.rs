@@ -468,16 +468,27 @@ fn claude_url(line: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Codex 桌面 (now named ChatGPT.app) ships the official CLI. A standalone CLI comes first; this is
+/// the last resort, so people with only the desktop app can still sign in new accounts.
+pub const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
+
 pub fn find_codex(home: &Path) -> Option<PathBuf> {
+    codex_candidates(home, std::env::var_os("PATH"))
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+fn codex_candidates(home: &Path, path: Option<std::ffi::OsString>) -> Vec<PathBuf> {
     let mut paths = vec![
         PathBuf::from("/opt/homebrew/bin/codex"),
         PathBuf::from("/usr/local/bin/codex"),
         home.join(".local/bin/codex"),
     ];
-    if let Some(path) = std::env::var_os("PATH") {
+    if let Some(path) = path {
         paths.extend(std::env::split_paths(&path).map(|p| p.join("codex")));
     }
-    paths.into_iter().find(|p| p.is_file())
+    paths.push(PathBuf::from(DESKTOP_CODEX));
+    paths
 }
 
 #[cfg(test)]
@@ -705,6 +716,61 @@ sleep 10
             claude_browser_url(&format!("{BROWSER_LINK}\n")).as_deref(),
             Some(BROWSER_LINK)
         );
+    }
+
+    #[test]
+    fn codex_desktop_cli_is_the_last_resort() {
+        let paths = codex_candidates(Path::new("/h"), Some("/x:/y".into()));
+        assert_eq!(paths.last(), Some(&PathBuf::from(DESKTOP_CODEX)));
+        assert_eq!(
+            paths[..paths.len() - 1],
+            [
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+                "/h/.local/bin/codex",
+                "/x/codex",
+                "/y/codex"
+            ]
+            .map(PathBuf::from)
+        );
+        assert_eq!(
+            codex_candidates(Path::new("/h"), None).last(),
+            Some(&PathBuf::from(DESKTOP_CODEX))
+        );
+    }
+
+    /// Live, read-only for accounts: starts a real device-code sign-in with the CLI inside Codex 桌面
+    /// in a throwaway CODEX_HOME, waits for the code, then cancels. Needs ChatGPT.app and network.
+    #[test]
+    #[ignore]
+    fn live_desktop_codex_cli_signs_in() {
+        let home = std::env::temp_dir().join(format!("auth-login-live-{}", std::process::id()));
+        fs::create_dir(&home).unwrap();
+        let mut manager = LoginManager::new();
+        manager
+            .start("codex", Path::new(DESKTOP_CODEX), &home)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while manager.state.as_ref().unwrap().user_code.is_none() {
+            assert!(Instant::now() < deadline, "no device code");
+            assert!(
+                manager.state.as_ref().unwrap().active(),
+                "login ended early"
+            );
+            manager.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let state = manager.state.clone().unwrap();
+        assert_eq!(state.phase, "waiting");
+        assert_eq!(
+            state.verification_url.as_deref(),
+            Some("https://auth.openai.com/codex/device")
+        );
+        manager.cancel(&state.attempt_id).unwrap();
+        wait_until(&mut manager, |s| !s.active());
+        let phase = &manager.state.as_ref().unwrap().phase;
+        assert!(matches!(phase.as_str(), "cancelled" | "stopped"), "{phase}");
+        fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

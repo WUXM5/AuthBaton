@@ -681,7 +681,7 @@ impl Accounts {
         let binary = if provider == "codex" {
             self.codex
                 .clone()
-                .ok_or("未安装对应的官方 CLI")?
+                .ok_or("未找到 Codex CLI：请安装 Codex CLI 或 Codex 桌面")?
         } else {
             self.sources
                 .claude_bin
