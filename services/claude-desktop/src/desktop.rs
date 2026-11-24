@@ -13,7 +13,9 @@
 //!
 //! AuthManager: macOS only; Claude is started with an empty environment (`env_clear`), so
 //! nothing of the service's environment reaches it; [`Watch`] also hears the steps of a switch
-//! after Claude has quit ([`Step`]).
+//! after Claude has quit ([`Step`]). A quit waits only for Claude's own processes (not what
+//! another app starts from its bundle), and opens Claude again when Claude itself quit but the
+//! quit did not go through.
 
 use crate::ctx::{Ctx, LogScan};
 use crate::fsx;
@@ -119,6 +121,8 @@ pub enum NotReady {
     Updating,
     /// Whoever asked stopped waiting for Claude to quit.
     Stopped,
+    /// AuthManager: Claude quit, but some of its own processes kept running; it was opened again.
+    HelpersLeft,
 }
 
 impl std::fmt::Display for NotReady {
@@ -127,6 +131,9 @@ impl std::fmt::Display for NotReady {
             NotReady::StillOpen => "Claude did not quit, so nothing was changed",
             NotReady::Updating => "Claude is updating; try again in a minute",
             NotReady::Stopped => "stopped waiting for Claude to quit, so nothing was changed",
+            NotReady::HelpersLeft => {
+                "Claude quit, but some of its processes kept running, so nothing was changed; Claude was opened again"
+            }
         })
     }
 }
@@ -196,7 +203,27 @@ pub fn quit(ctx: &Ctx, timeout: Duration, watch: &Watch) -> anyhow::Result<()> {
     }
     let mut log = QuitLog::start(&ctx.paths.desktop_logs.join("main.log"));
     process::ask_to_quit();
-    wait_for_quit(process::any_running, &mut log, (timeout, CONFIRM_TIMEOUT), watch)
+    let waited = wait_for_quit(process::any_running, &mut log, (timeout, CONFIRM_TIMEOUT), watch);
+    left_as_found(waited, || process::desktop_running() == Some(false) && !process::updating(), || launch(ctx))
+}
+
+/// AuthManager: a quit that did not go through changes nothing, so when Claude itself is `gone`
+/// all the same (one of its own processes hung, or whoever asked stopped waiting), `reopen` it.
+fn left_as_found(
+    waited: anyhow::Result<()>,
+    gone: impl FnOnce() -> bool,
+    reopen: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let Err(e) = waited else { return Ok(()) };
+    if !gone() {
+        return Err(e);
+    }
+    reopen().context("opening Claude again")?;
+    Err(match e.downcast_ref::<NotReady>() {
+        Some(NotReady::StillOpen) => NotReady::HelpersLeft.into(),
+        _ => e,
+    })
 }
 
 /// Wait while `running`, following the quit in `log`: `limits` is how long Claude may say nothing,
@@ -439,7 +466,7 @@ mod process {
     const UPDATER: &[u8] = b"Claude.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt";
 
     /// Process ids whose executable path `matches`; `None` when the table cannot be read.
-    fn pids(matches: impl Fn(&[u8]) -> bool) -> Option<Vec<i32>> {
+    fn pids(matches: impl Fn(i32, &[u8]) -> bool) -> Option<Vec<i32>> {
         let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
         if count <= 0 {
             return None;
@@ -457,7 +484,7 @@ mod process {
                 continue;
             }
             let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
-            if n > 0 && matches(&path[..n as usize]) {
+            if n > 0 && matches(pid, &path[..n as usize]) {
                 found.push(pid);
             }
         }
@@ -468,23 +495,61 @@ mod process {
         hay.windows(needle.len()).any(|w| w == needle)
     }
 
-    pub fn desktop_running() -> Option<bool> {
-        pids(|p| p.ends_with(MAIN)).map(|found| !found.is_empty())
+    /// AuthManager: the executable of `pid`.
+    fn path_of(pid: i32) -> Option<Vec<u8>> {
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        (n > 0).then(|| {
+            path.truncate(n as usize);
+            path
+        })
     }
 
-    /// Claude or any of its helpers, but not its updater.
+    /// AuthManager: the parent of `pid`.
+    fn parent_of(pid: i32) -> Option<i32> {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let n = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+        };
+        (n == size).then_some(info.pbi_ppid as i32)
+    }
+
+    /// AuthManager: whether `pid`, running `path`, is Claude Desktop's own: its main program, or
+    /// what runs from its bundle (but its updater) unless another app started it. Chrome runs
+    /// `Contents/Helpers/chrome-native-host` for Claude's browser extension for as long as Chrome
+    /// is open. Claude's helpers have Claude as parent, or launchd once Claude has gone (its crash
+    /// reporter always); a parent that cannot be read counts as Claude's: the safe side.
+    fn claudes(pid: i32, path: &[u8]) -> bool {
+        if path.ends_with(MAIN) {
+            return true;
+        }
+        if !contains(path, BUNDLE) || path.ends_with(UPDATER) {
+            return false;
+        }
+        match parent_of(pid) {
+            Some(parent) if parent > 1 => path_of(parent).is_none_or(|p| contains(&p, BUNDLE)),
+            _ => true,
+        }
+    }
+
+    pub fn desktop_running() -> Option<bool> {
+        pids(|_, p| p.ends_with(MAIN)).map(|found| !found.is_empty())
+    }
+
+    /// Claude or any of its helpers, but not its updater, nor what another app started.
     pub fn any_running() -> bool {
-        pids(|p| contains(p, BUNDLE) && !p.ends_with(UPDATER)).is_none_or(|found| !found.is_empty())
+        pids(claudes).is_none_or(|found| !found.is_empty())
     }
 
     pub fn updating() -> bool {
-        pids(|p| p.ends_with(UPDATER)).is_some_and(|found| !found.is_empty())
+        pids(|_, p| p.ends_with(UPDATER)).is_some_and(|found| !found.is_empty())
     }
 
     /// SIGTERM: Electron quits the way it does from the Dock or the menu, without the
     /// "control Claude" permission prompt an Apple Event would bring.
     pub fn ask_to_quit() {
-        for pid in pids(|p| p.ends_with(MAIN)).unwrap_or_default() {
+        for pid in pids(|_, p| p.ends_with(MAIN)).unwrap_or_default() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
     }
@@ -501,6 +566,134 @@ mod process {
             .context("starting Claude")?;
         anyhow::ensure!(status.success(), "could not start Claude ({status})");
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::path::Path;
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        /// Kills what a test started, however it ends.
+        #[derive(Default)]
+        struct Started {
+            children: Vec<std::process::Child>,
+            others: Vec<i32>,
+        }
+
+        impl Drop for Started {
+            fn drop(&mut self) {
+                for &pid in &self.others {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+                for child in &mut self.children {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        /// The one process running `exe`, once it has started.
+        fn running(exe: &Path) -> i32 {
+            let exe = std::fs::canonicalize(exe).unwrap();
+            let exe = exe.as_os_str().as_encoded_bytes();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let [pid] = pids(|_, p| p == exe).unwrap()[..] {
+                    return pid;
+                }
+                assert!(Instant::now() < deadline, "{} did not start", String::from_utf8_lossy(exe));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        /// How a copy of this test binary runs as one of Claude's processes ([`stand_in`]).
+        const STAND_IN: [&str; 5] =
+            ["--exact", "desktop::process::tests::stand_in", "--ignored", "--test-threads=1", "-q"];
+
+        /// A stand-in for one of Claude's processes, in a copy of this test binary started with
+        /// `STAND_IN` set (Apple's own programs are killed when copied elsewhere): starts the copy
+        /// `STAND_IN_CHILD` names, if any, then waits a minute.
+        #[test]
+        #[ignore]
+        fn stand_in() {
+            if std::env::var_os("STAND_IN").is_none() {
+                return;
+            }
+            let child = std::env::var_os("STAND_IN_CHILD")
+                .map(|child| Command::new(child).args(STAND_IN).env_remove("STAND_IN_CHILD").spawn().unwrap());
+            std::thread::sleep(Duration::from_secs(60));
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
+        }
+
+        /// Real processes from a stand-in Claude.app.
+        #[test]
+        fn a_quit_waits_for_claudes_own_processes_only() {
+            let dir = crate::testing::tempdir().unwrap();
+            let contents = dir.path().join("Claude.app/Contents");
+            let place = |at: &str| {
+                let exe = contents.join(at);
+                std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+                std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+                exe
+            };
+            let main = place("MacOS/Claude");
+            let helper = place("Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper");
+            let left = place("Frameworks/Claude Helper (GPU).app/Contents/MacOS/Claude Helper (GPU)");
+            let host = place("Helpers/chrome-native-host");
+            let mut started = Started::default();
+            let stand_in = |exe: &Path| {
+                let mut command = Command::new(exe);
+                command.args(STAND_IN).env("STAND_IN", "1").stdout(std::process::Stdio::null());
+                command
+            };
+
+            // Claude, started here, and a helper it starts.
+            let claude = stand_in(&main).env("STAND_IN_CHILD", &helper).spawn().unwrap();
+            let claude_pid = claude.id() as i32;
+            started.children.push(claude);
+            let helper = running(&helper);
+            started.others.push(helper);
+            // A helper whose parent has gone: launchd's now.
+            let status = Command::new("/bin/sh")
+                .args(["-c", "\"$@\" >/dev/null &", "sh"])
+                .arg(&left)
+                .args(STAND_IN)
+                .env("STAND_IN", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let left = running(&left);
+            started.others.push(left);
+            // Another app (this test, as Chrome does) starts the host of Claude's browser extension.
+            let host = stand_in(&host).spawn().unwrap();
+            let host_pid = host.id() as i32;
+            started.children.push(host);
+
+            let claudes_own = |pid: i32| claudes(pid, &path_of(pid).unwrap());
+            assert!(claudes_own(claude_pid), "Claude's main program, whoever started it");
+            assert_eq!(parent_of(helper), Some(claude_pid));
+            assert!(claudes_own(helper), "a helper Claude started");
+            assert_eq!(parent_of(left), Some(1));
+            assert!(claudes_own(left), "a helper left behind");
+            assert!(!claudes_own(host_pid), "what another app started from Claude's bundle");
+        }
+
+        /// What a quit would wait for on this Mac right now:
+        /// `cargo test -p claude-desktop live_claude_processes -- --ignored --nocapture`.
+        #[test]
+        #[ignore]
+        fn live_claude_processes() {
+            for pid in pids(|_, p| contains(p, BUNDLE)).unwrap() {
+                let path = path_of(pid).unwrap_or_default();
+                let waits = claudes(pid, &path);
+                println!("{pid} parent {:?} waited for {waits}: {}", parent_of(pid), String::from_utf8_lossy(&path));
+            }
+            println!("main program running: {:?}; a quit waits: {}", desktop_running(), any_running());
+        }
     }
 }
 
@@ -644,5 +837,28 @@ mod tests {
         // Claude started a new log.
         fs::write(&path, "x\n").unwrap();
         assert_eq!(log.read(), None);
+    }
+
+    #[test]
+    fn a_quit_that_did_not_go_through_leaves_claude_open() {
+        let opened = std::cell::Cell::new(0);
+        let reopen = || {
+            opened.set(opened.get() + 1);
+            Ok(())
+        };
+        let reason = |r: anyhow::Result<()>| *r.unwrap_err().downcast_ref::<NotReady>().unwrap();
+        // Claude itself quit, but one of its processes did not.
+        assert_eq!(reason(left_as_found(Err(NotReady::StillOpen.into()), || true, reopen)), NotReady::HelpersLeft);
+        // The wait was stopped after Claude had gone.
+        assert_eq!(reason(left_as_found(Err(NotReady::Stopped.into()), || true, reopen)), NotReady::Stopped);
+        assert_eq!(opened.get(), 2);
+        // Claude is still open (asking, or finishing its work), or quit fully: left as it is.
+        assert_eq!(reason(left_as_found(Err(NotReady::StillOpen.into()), || false, reopen)), NotReady::StillOpen);
+        assert_eq!(reason(left_as_found(Err(NotReady::Stopped.into()), || false, reopen)), NotReady::Stopped);
+        assert!(left_as_found(Ok(()), || true, reopen).is_ok());
+        assert_eq!(opened.get(), 2);
+        // Opening it again fails: that is what is reported.
+        let failed = left_as_found(Err(NotReady::StillOpen.into()), || true, || anyhow::bail!("no"));
+        assert!(format!("{:#}", failed.unwrap_err()).starts_with("opening Claude again"));
     }
 }
