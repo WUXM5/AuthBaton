@@ -749,6 +749,7 @@ fn failure_text(failure: &Failure) -> &'static str {
         FailureReason::StillOpen => "Claude 没有退出，什么都没改",
         FailureReason::Updating => "Claude 正在更新，稍后再试",
         FailureReason::Stopped => "已停止等待，什么都没改",
+        FailureReason::HelpersLeft => "Claude 退出后有后台进程一直没结束，什么都没改，已重新打开 Claude",
         FailureReason::SignedIn => "Claude 正在用这个账号，不能移除",
         FailureReason::BadAlias => "名字只能用小写字母、数字和 - _ .，最多 24 个字符，不能全是数字",
         FailureReason::AliasTaken => "别的账号已经叫这个名字了",

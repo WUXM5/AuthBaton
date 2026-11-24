@@ -78,6 +78,9 @@ pub enum FailureReason {
     Updating,
     /// The wait for Claude to quit was stopped; nothing was changed.
     Stopped,
+    /// AuthManager: Claude quit, but some of its own processes kept running, so nothing was
+    /// changed; Claude was opened again.
+    HelpersLeft,
     /// Claude is signed in to that account, so it cannot be taken off the list.
     SignedIn,
     /// Not an alias: up to 24 letters, digits, `-`, `_` or `.`, not only digits, not starting
@@ -140,6 +143,7 @@ impl From<anyhow::Error> for Failure {
                 NotReady::StillOpen => R::StillOpen,
                 NotReady::Updating => R::Updating,
                 NotReady::Stopped => R::Stopped,
+                NotReady::HelpersLeft => R::HelpersLeft,
             }
         } else if let Some(not_found) = e.downcast_ref::<NotFound>() {
             match not_found {
