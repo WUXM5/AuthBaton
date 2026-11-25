@@ -39,7 +39,6 @@ function bundle(provider: 'claude' | 'codex' = 'claude', generation = 1, user = 
 class SyntheticIssuer implements Issuer {
   refreshes = 0;
   verifies = 0;
-  usageCalls = 0;
   refreshInputs: Bundle[] = [];
   beforeVerify: (() => Promise<void>) | undefined;
   beforeRefresh: (() => Promise<void>) | undefined;
@@ -49,7 +48,6 @@ class SyntheticIssuer implements Issuer {
     this.refreshes++; this.refreshInputs.push(structuredClone(value)); await this.beforeRefresh?.();
     return bundle(value.provider, this.refreshes + 1, this.refreshedUser ?? (value.provider === 'claude' ? value.identity.accountUuid : 'synthetic-user'));
   }
-  async usage(_bundle: Bundle): Promise<any> { this.usageCalls++; return { windows: [] }; }
 }
 async function pair(authority: Authority, suffix = 'a') {
   const proof = suffix.repeat(64);
@@ -265,47 +263,15 @@ test('reauthorization at the account limit does not require an additional accoun
   assert.equal(replaced.id, f.id); assert.equal(f.store.value!.accounts.length, 100);
 });
 
-test('usage near expiry ignores rejected_version and disabled maintenance, without changing authentication state', async () => {
-  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
-  await f.authority.run('update', { id: f.id, automatic: false }, f.device.bearer);
-  f.advance(3300);
-  const before = structuredClone(f.store.value!.accounts); const saves = f.store.saves;
-  assert.deepEqual(await f.authority.run('usage', { id: f.id, rejected_version: 1 }, f.device.bearer), { windows: [] });
-  assert.equal(issuer.usageCalls, 1); assert.equal(issuer.refreshes, 0); assert.equal(issuer.verifies, 1);
-  assert.deepEqual(f.store.value!.accounts, before);
-  assert.equal(f.store.saves, saves);
-});
-
-test('usage with expired access rejects without refreshing, verifying, or altering the account', async () => {
-  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); f.advance(3601);
-  const before = structuredClone(f.store.value!.accounts); const saves = f.store.saves;
-  await assert.rejects(f.authority.run('usage', { id: f.id }, f.device.bearer), code('usage_credential_unavailable'));
-  assert.equal(issuer.usageCalls, 0); assert.equal(issuer.refreshes, 0); assert.equal(issuer.verifies, 1);
-  assert.deepEqual(f.store.value!.accounts, before);
-  assert.equal(f.store.saves, saves);
-});
-
-test('usage cannot recover verification_pending or mutate a pending rotation', async () => {
-  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
-  issuer.beforeVerify = async () => { throw new Fault('issuer_network_error', 503); };
-  await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer), code('verification_pending'));
-  issuer.beforeVerify = undefined;
-  const before = structuredClone(f.store.value!.accounts); const verifies = issuer.verifies; const saves = f.store.saves;
-  await assert.rejects(f.authority.run('usage', { id: f.id }, f.device.bearer), code('usage_credential_unavailable'));
-  assert.equal(issuer.verifies, verifies); assert.equal(issuer.refreshes, 1);
-  assert.deepEqual(f.store.value!.accounts, before);
-  assert.equal(issuer.usageCalls, 0); assert.equal(f.store.saves, saves);
-});
-
-test('usage cannot turn a saved refreshing intent into uncertain or start its recovery', async () => {
-  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
-  f.store.fault = value => value.accounts[0].state === 'verification_pending' ? 'before' : undefined;
-  await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer)); f.store.fault = undefined;
-  const before = structuredClone(f.store.value!.accounts); const verifies = issuer.verifies; const saves = f.store.saves;
-  await assert.rejects(new Authority(f.store, issuer, f.clock).run('usage', { id: f.id }, f.device.bearer), code('usage_credential_unavailable'));
-  assert.equal(issuer.verifies, verifies); assert.equal(issuer.refreshes, 1);
-  assert.deepEqual(f.store.value!.accounts, before);
-  assert.equal(issuer.usageCalls, 0); assert.equal(f.store.saves, saves);
+test('usage is read on the device: the Worker answers usage_unavailable without calling the issuer or touching the account', async () => {
+  for (const provider of ['codex', 'claude'] as const) {
+    const issuer = new SyntheticIssuer(); const f = await setup(provider, issuer); await f.commit();
+    const before = structuredClone(f.store.value!.accounts); const saves = f.store.saves; const verifies = issuer.verifies;
+    await assert.rejects(f.authority.run('usage', { id: f.id, rejected_version: 1 }, f.device.bearer), code('usage_unavailable'));
+    assert.equal(issuer.refreshes, 0); assert.equal(issuer.verifies, verifies);
+    assert.deepEqual(f.store.value!.accounts, before);
+    assert.equal(f.store.saves, saves);
+  }
 });
 
 test('20 concurrent rejections of one version exchange once and never deliver refresh tokens', async () => {
@@ -529,7 +495,8 @@ for (const [provider, status, error, expected] of [
     finally { globalThis.fetch = originalFetch; }
   });
 }
-for (const provider of ['claude', 'codex'] as const) {
+// Codex rotations are checked from the token claims alone (see the next test), so only Claude has a remote verification.
+for (const provider of ['claude'] as const) {
   test(`${provider}: a verification 429 AFTER a successful grant must never make the OLD grant retryable`, async t => {
     const originalFetch = globalThis.fetch;
     let exchanging = false; const posted: string[] = [];
@@ -565,6 +532,27 @@ for (const provider of ['claude', 'codex'] as const) {
     } finally { globalThis.fetch = originalFetch; }
   });
 }
+
+test('codex: import and a rotation are checked from the token claims; the Worker never calls chatgpt.com', async () => {
+  // Workers egress gets a 403 page from chatgpt.com (2026-11-25). Any request other than the token exchange is answered that way.
+  const originalFetch = globalThis.fetch; const urls: string[] = [];
+  globalThis.fetch = (async (url: any, options: any = {}) => {
+    urls.push(String(url));
+    if (String(url) === 'https://auth.openai.com/oauth/token' && options.method === 'POST') {
+      const c = bundle('codex', 2).credential;
+      return Response.json({ access_token: c.tokens.access_token, refresh_token: c.tokens.refresh_token, id_token: c.tokens.id_token });
+    }
+    return new Response('<html>Sorry, you have been blocked</html>', { status: 403, headers: { 'content-type': 'text/html' } });
+  }) as typeof fetch;
+  try {
+    const f = await setup('codex', new OfficialIssuer()); await f.commit();
+    assert.deepEqual(urls, [], 'Importing a Codex account reaches no issuer');
+    const lease = await f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer);
+    assert.equal(lease.version, 2);
+    assert.equal(f.store.value!.accounts[0].state, 'ready');
+    assert.deepEqual(urls, ['https://auth.openai.com/oauth/token']);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test('explicit 429 at the token endpoint can retry after backoff; no credential exchange occurred', async () => {
   const issuer = new SyntheticIssuer(); let calls = 0;
@@ -636,19 +624,4 @@ test('alarm reconciles a persisted interrupted refresh by re-granting the creden
   assert.equal(f.store.value!.accounts[0].state, 'ready'); assert.equal(f.store.value!.accounts[0].version, 2);
   assert.equal((await restarted.run('lease', { id: f.id }, f.device.bearer)).version, 2);
   assert.equal(issuer.refreshes, 2);
-});
-test('usage adapter never receives a refresh credential or native identity bundle', async () => {
-  for (const provider of ['codex', 'claude'] as const) {
-    const issuer = new SyntheticIssuer();
-    let received: Bundle | undefined;
-    issuer.usage = async value => { received = value; return { windows: [] }; };
-    const h = await setup(provider, issuer); await h.commit();
-    const saves = h.store.saves;
-    await h.authority.run('usage', { id: h.id }, h.device.bearer);
-    assert.ok(received);
-    assert.equal(JSON.stringify(received).includes('SYNTHETIC-refresh'), false);
-    assert.equal(received.identity, null);
-    assert.equal(h.store.saves, saves);
-    assert.equal(issuer.refreshes, 0);
-  }
 });

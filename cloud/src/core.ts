@@ -7,7 +7,7 @@ type Device = { id: string; label: string; secret_hash: string; revoked: boolean
 type Pair = { id: string; code: string; label: string; proof: string; expires: number; approved: boolean; source: string; device?: Device; token?: string };
 export type State = { schema: 1; accounts: Entry[]; devices: Device[]; pairs: Pair[] };
 export interface Store { load(): Promise<State | null>; save(state: State): Promise<void>; }
-export interface Issuer { verify(bundle: Bundle): Promise<void>; refresh(bundle: Bundle): Promise<Bundle>; usage(bundle: Bundle): Promise<any>; }
+export interface Issuer { verify(bundle: Bundle): Promise<void>; refresh(bundle: Bundle): Promise<Bundle>; }
 export class Fault extends Error { status: number; constructor(code: string, status = 409) { super(code); this.status = status; } }
 export const epoch = () => Math.floor(Date.now() / 1000);
 export const random = () => crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
@@ -39,11 +39,6 @@ export function identity(bundle: Bundle): Identity {
   if (!Array.isArray(c.scopes) || !c.scopes.includes('user:inference')) throw new Fault('inference_scope_required', 400);
   const i = bundle.identity;
   return { owner: `claude:${text(i.accountUuid)}:${text(i.organizationUuid)}`, display: mask(text(i.emailAddress)), plan: c.subscriptionType || '未知', expires_at: Math.floor(finite(c.expiresAt) / 1000), refresh_expires_at: c.refreshTokenExpiresAt ? Math.floor(finite(c.refreshTokenExpiresAt) / 1000) : null };
-}
-function usageCredential(bundle: Bundle): Bundle {
-  return bundle.provider === 'codex'
-    ? { provider: 'codex', credential: { tokens: { access_token: bundle.credential.tokens.access_token, account_id: bundle.credential.tokens.account_id } }, identity: null }
-    : { provider: 'claude', credential: { accessToken: bundle.credential.accessToken }, identity: null };
 }
 function safe(a: Entry): any { return { id: a.id, provider: a.bundle.provider, label: a.label, identity: a.identity.display, plan: a.identity.plan, expires_at: a.identity.expires_at, refresh_expires_at: a.identity.refresh_expires_at, version: a.version, state: a.state, automatic: a.automatic, last_refresh: a.last_refresh, error: a.error, retry_at: a.retry_at }; }
 export class Authority {
@@ -121,10 +116,9 @@ export class Authority {
     if (action === 'remove') { if (a.state === 'refreshing' || a.state === 'uncertain') throw new Fault('recovery_required'); s.accounts = s.accounts.filter(x => x !== a); await this.store.save(s); return { removed: true }; }
     if (!['lease', 'check', 'usage'].includes(action)) throw new Fault('unknown_action', 400);
     if (a.state === 'awaiting_handoff') throw new Fault('handoff_required');
-    if (action === 'usage') {
-      if (a.state !== 'ready' || a.identity.expires_at <= now + 60) throw new Fault('usage_credential_unavailable');
-      return await this.issuer.usage(usageCredential(a.bundle));
-    }
+    // Quota is read on the device with a leased access. From Workers egress chatgpt.com answers 403 and Anthropic's
+    // usage endpoint 429 (2026-11-25), so the Worker no longer queries it.
+    if (action === 'usage') throw new Fault('usage_unavailable', 503);
     if (a.state === 'refreshing') { a.state = 'uncertain'; a.error = 'refresh_outcome_unknown'; await this.store.save(s); }
     if (a.state === 'verification_pending') await this.verifyRotated(s, a);
     if (a.state === 'uncertain' && a.automatic) await this.renew(s, a);
