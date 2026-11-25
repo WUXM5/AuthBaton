@@ -10,6 +10,7 @@ impl Accounts {
             return Err("账号数据库保存失败，已暂停变更；修复存储后重新连接服务");
         }
         let index = self.index(id)?;
+        self.transfer_guard(id, false)?;
         let account = &mut self.db.accounts[index];
         if account.provider != "claude" {
             return Err("只有 Claude 账号有 5 小时窗口");
@@ -44,6 +45,7 @@ impl Accounts {
             );
         }
         let index = self.index(id)?;
+        self.transfer_guard(id, false)?;
         let account = &mut self.db.accounts[index];
         if account.provider != "claude" {
             return Err("只有 Claude 账号有 5 小时窗口");

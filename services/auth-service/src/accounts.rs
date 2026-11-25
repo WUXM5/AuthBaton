@@ -348,10 +348,8 @@ impl Accounts {
         }
         result
     }
+    /// Any row, the cloud's included; work that may renew uses `local_index`.
     fn index(&self, id: &str) -> Result<usize> {
-        if self.cloud.config.bindings.contains_key(id) {
-            return Err("此账号正在交接或已由云端维护，请改用云端模式");
-        }
         self.db
             .accounts
             .iter()
@@ -418,7 +416,12 @@ impl Accounts {
             NativeStore::claude(&self.home, Some(&path), None)
         }
     }
+    /// The login work on this account sends. A cloud row has only its leased access, without a
+    /// refresh token.
     fn bundle(&self, account: &Account) -> Result<Bundle> {
+        if let Some(cloud_id) = self.cloud_lease_id(&account.id) {
+            return self.cloud.lease_bundle(cloud_id);
+        }
         let native = account
             .native
             .then(|| self.native(&account.provider))
@@ -486,7 +489,7 @@ impl Accounts {
     pub fn snapshot(&self) -> Value {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
-        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"staged":a.pending_profile.is_some()&&a.state=="attention","check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a)})).collect();
+        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"staged":a.pending_profile.is_some()&&a.state=="attention","check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a),"cloud":self.cloud_view(a)})).collect();
         let mut desktop_snapshot = self.claude_desktop.snapshot(|uuid| {
             let prefix = format!("claude:{uuid}:");
             self.db
@@ -649,11 +652,13 @@ impl Accounts {
         let native = std::fs::canonicalize(self.sources.codex_home.join("auth.json"))
             .is_ok_and(|current| current == path)
             && self.native("codex")?.mode == "file";
+        let cloud = &self.cloud.config.bindings;
         if !native
             && let Some(account) = self.db.accounts.iter_mut().find(|a| {
                 a.metadata
                     .as_ref()
                     .is_some_and(|m| m.owner == metadata.owner)
+                    && !cloud.get(&a.id).is_some_and(|b| b.cloud())
             })
         {
             // A backup file must not replace a previously managed credential generation.
@@ -674,10 +679,12 @@ impl Accounts {
         automatic: Option<bool>,
     ) -> Result<()> {
         let metadata = bundle.metadata()?;
+        // A cloud row has no login of its own here: a full login of that account is another one.
         let found = self.db.accounts.iter().position(|a| {
             a.metadata
                 .as_ref()
                 .is_some_and(|m| m.owner == metadata.owner)
+                && self.cloud_binding(&a.id).is_none()
         });
         let mut account = if let Some(index) = found {
             self.db.accounts[index].clone()
@@ -744,6 +751,14 @@ impl Accounts {
         self.ensure_idle()?;
         if !matches!(provider, "codex" | "claude") {
             return Err("不支持的账号类型");
+        }
+        if let Some(id) = existing {
+            // 重新登录 of a cloud row is 更新云端登录: the new login replaces the cloud's.
+            if let Some(cloud_id) = self.cloud_lease_id(id) {
+                let cloud_id = cloud_id.to_string();
+                return self.begin_cloud_login(&cloud_id, login);
+            }
+            self.transfer_guard(id, false)?;
         }
         let binary = if provider == "codex" {
             self.codex
@@ -981,6 +996,7 @@ impl Accounts {
         Ok(())
     }
     pub fn local_check(&mut self, id: &str) -> Result<()> {
+        self.no_local_check(id)?;
         if self.db.accounts[self.index(id)?].pending_profile.is_some() {
             self.ensure_idle()?;
             self.capture_login(id)?;
@@ -990,6 +1006,10 @@ impl Accounts {
     }
     pub fn request_check(&mut self, id: &str, online: bool) -> Result<()> {
         self.ensure_check_admission()?;
+        if online && self.cloud_binding(id).is_some() {
+            return self.check_cloud(id);
+        }
+        self.no_local_check(id)?;
         self.validate_check(id, online)?;
         // The official client renews the login it is using, and a check could renew it too. Started
         // anyway, the check would only observe and leave the account looking untouched.
@@ -1020,7 +1040,7 @@ impl Accounts {
         Ok(())
     }
     fn validate_check(&self, id: &str, online: bool) -> Result<()> {
-        let account = &self.db.accounts[self.index(id)?];
+        let account = &self.db.accounts[self.local_index(id)?];
         // A newer credential held in memory must be written back, never superseded by a new grant.
         if online
             && (self.unsaved.contains_key(id)
@@ -1059,6 +1079,11 @@ impl Accounts {
     ) -> Result<()> {
         self.ensure_idle()?;
         let index = self.index(id)?;
+        self.transfer_guard(id, false)?;
+        let cloud_id = self.cloud_lease_id(id).map(str::to_string);
+        if automatic.is_some() && cloud_id.is_some() {
+            return Err("云端续期的账号由云端维护，本机不能开关自动维护");
+        }
         if let Some(label) = label {
             self.db.accounts[index].label = valid_label(label)?;
         }
@@ -1069,11 +1094,24 @@ impl Accounts {
                 a.next_check = now() + 1;
             }
         }
-        self.save()
+        self.save()?;
+        // The cloud's name follows, so other Macs see it too.
+        if let (Some(cloud_id), Some(_)) = (cloud_id, label) {
+            let label = self.db.accounts[index].label.clone();
+            self.cloud
+                .start(self.platform.clone(), move |cfg, p, path| {
+                    crate::cloud::rename(cfg, p, path, cloud_id, label)
+                })?;
+        }
+        Ok(())
     }
     pub fn remove(&mut self, id: &str, confirmed: bool) -> Result<()> {
         if !confirmed {
             return Err("请先确认从 AuthBaton 移除账号及其保存的凭据");
+        }
+        // A cloud row goes from the cloud first; this Mac drops it after.
+        if self.cloud.config.bindings.contains_key(id) {
+            return self.cloud_command("remove", None, None, Some(id), true);
         }
         self.ensure_idle()?;
         let Some(index) = self.db.accounts.iter().position(|account| account.id == id) else {
@@ -1138,7 +1176,7 @@ impl Accounts {
     }
     fn start_check(&mut self, id: &str, online: bool, manual: bool) -> Result<()> {
         self.validate_check(id, online)?;
-        let index = self.index(id)?;
+        let index = self.local_index(id)?;
         let account = self.db.accounts[index].clone();
         let native = account
             .native
@@ -1207,6 +1245,7 @@ impl Accounts {
             return Err("请确认已结束相关任务后再切换");
         }
         let index = self.index(id)?;
+        self.transfer_guard(id, true)?;
         if self.db.accounts[index].provider == "codex" && self.db.desktop.enabled {
             return self.request_desktop_switch(id);
         }
@@ -1219,6 +1258,9 @@ impl Accounts {
         let target = self.db.accounts[self.index(id)?].clone();
         if target.native {
             return Ok(());
+        }
+        if self.cloud_binding(id).is_some() {
+            return self.activate_cloud(id);
         }
         switch_target_ready(&target)?;
         if target.provider != "claude" && (self.client_running)(&target.provider) {
@@ -1249,9 +1291,11 @@ impl Accounts {
             .then(|| crate::claude::SwitchLocks::acquire(&native))
             .transpose()?;
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
-        let old = native.login(&self.platform)?;
+        let old = native.login_or_projection(&self.platform)?;
         let next = Bundle::decode(self.platform.vault_read(&target.id)?)?;
-        if let Some(old) = &old {
+        // A cloud account's access-only login is replaced, never kept: the cloud renews it.
+        let from_cloud = old.as_ref().is_some_and(|b| b.metadata().is_err());
+        if let Some(old) = old.as_ref().filter(|_| !from_cloud) {
             let placed = if old.provider == "claude" {
                 self.place_claude_login(old.clone(), None)
             } else {
@@ -1276,7 +1320,9 @@ impl Accounts {
             .db
             .accounts
             .iter()
-            .find(|a| a.provider == target.provider && a.native)
+            .find(|a| {
+                a.provider == target.provider && a.native && self.cloud_binding(&a.id).is_none()
+            })
             .map(|a| a.id.clone());
         self.db.switch = Some(Switch {
             desktop: false,
@@ -1293,6 +1339,7 @@ impl Accounts {
         }
         guard()?;
         drop(locks);
+        self.release_cloud_use(&target.provider);
         for a in &mut self.db.accounts {
             if a.provider == target.provider {
                 a.native = a.id == id;
@@ -1325,7 +1372,7 @@ impl Accounts {
     }
     pub fn retry_save(&mut self, id: &str) -> Result<()> {
         self.ensure_idle()?;
-        let index = self.index(id)?;
+        let index = self.local_index(id)?;
         let account = &self.db.accounts[index];
         if account.provider == "claude" && account.native {
             let owner = account
@@ -1406,6 +1453,21 @@ impl Accounts {
         if operation.provider != "claude" && (self.client_running)(&operation.provider) {
             return Err("请先退出相关官方客户端再恢复切换");
         }
+        // A switch away from a cloud row that stopped before its write: the store still holds the
+        // cloud account's access-only login, which stays in use.
+        if self.cloud.config.selected.contains_key(&operation.provider)
+            && let Some(projection) = self
+                .platform
+                .vault_read_optional(&format!("cloud-native-{}", operation.provider))?
+            && self
+                .native(&operation.provider)?
+                .login_or_projection(&self.platform)?
+                .is_some_and(|b| b.credential == projection["credential"])
+        {
+            self.db.switch = None;
+            self.notice = None;
+            return self.save();
+        }
         let mut candidates = vec![Bundle::decode(
             self.platform.vault_read(&operation.target)?,
         )?];
@@ -1460,7 +1522,10 @@ impl Accounts {
     }
     fn finish_recover(&mut self, found: Result<Option<Bundle>>) -> Result<()> {
         let operation = self.db.switch.clone().ok_or("没有待恢复的切换")?;
-        match found? {
+        // Whatever the store holds now is a local login, or none: no cloud row is in use.
+        let found = found?;
+        self.release_cloud_use(&operation.provider);
+        match found {
             Some(bundle) => self.adopt_native(bundle, "")?,
             // The store holds no login, so no account is the default one.
             None => {
@@ -1536,7 +1601,7 @@ impl Accounts {
             .db
             .accounts
             .iter()
-            .filter(|a| due(a, now()))
+            .filter(|a| due(a, now()) && !self.cloud.config.bindings.contains_key(&a.id))
             .min_by_key(|a| a.next_check)
             .map(|a| a.id.clone());
         let Some(id) = id else {
@@ -2026,6 +2091,7 @@ impl Accounts {
             return Ok(());
         };
         let index = self.index(id)?;
+        self.transfer_guard(id, false)?;
         if !matches!(
             self.db.accounts[index].provider.as_str(),
             "codex" | "claude"
@@ -2048,7 +2114,7 @@ impl Accounts {
     /// it nears the line; other accounts keep the plain interval.
     fn quota_line(&self, id: &str) -> Option<f64> {
         let config = &self.db.automation.config;
-        if !config.enabled || self.cloud.config.mode != "local" {
+        if !config.enabled {
             return None;
         }
         config
@@ -2094,12 +2160,9 @@ impl Accounts {
         if warmup {
             self.warmup_start();
         }
-        if let Some(account) = self
-            .db
-            .accounts
-            .iter()
-            .find(|a| quota_eligible(a) && self.quota.due(&a.id, now()))
-        {
+        if let Some(account) = self.db.accounts.iter().find(|a| {
+            quota_eligible(a) && self.quota_access_ready(a) && self.quota.due(&a.id, now())
+        }) {
             let bundle = self.bundle(account);
             let id = account.id.clone();
             let line = self.quota_line(&id);

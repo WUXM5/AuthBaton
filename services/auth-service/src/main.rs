@@ -68,7 +68,9 @@ struct AccountParams {
     reset_kind: Option<String>,
     reset_id: Option<String>,
     cloud_action: Option<String>,
-    mode: Option<String>,
+    // Sent by views from before each account had its own renewer; ignored.
+    #[serde(rename = "mode")]
+    _mode: Option<String>,
     endpoint: Option<String>,
     cloud_account_id: Option<String>,
     strategy: Option<automation::Config>,
@@ -243,14 +245,14 @@ fn response(
                     serde_json::from_value(request.params).map_err(|_| "账号操作参数无效")?
                 };
                 match method {
+                    // `mode` is still accepted from older views and ignored: each account has its
+                    // own renewer now.
                     "accounts.cloud" => manager.cloud_command(
                         params.cloud_action.as_deref().unwrap_or("refresh"),
-                        params.mode.as_deref(),
                         params.endpoint.as_deref(),
                         params.label.as_deref(),
                         params.id.as_deref(),
                         params.confirm == Some(true),
-                        params.automatic,
                     )?,
                     "accounts.list" => {}
                     "accounts.reset_history" => {

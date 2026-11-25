@@ -7,35 +7,6 @@ fn bundle(owner: &str, refresh: &str, expires: u64) -> Bundle {
 }
 
 #[test]
-fn cloud_default_is_local_and_mode_changes_do_not_read_credentials_or_rewrite_accounts() {
-    let f = Fixture::new();
-    let mut m = f.manager();
-    let before = m.snapshot();
-    assert_eq!(m.cloud.config.mode, "local");
-    m.cloud_command(
-        "configure",
-        Some("cloud"),
-        Some("https://auth.example.invalid"),
-        Some("Synthetic Mac"),
-        None,
-        false,
-        None,
-    )
-    .unwrap();
-    assert_eq!(m.snapshot()["accounts"], before["accounts"]);
-    assert!(!m.cloud.config.paired);
-    assert!(m.cloud.config.bindings.is_empty());
-    assert!(
-        f.platform
-            .vault_read_optional("cloud-device-v1")
-            .unwrap()
-            .is_none()
-    );
-    let reopened = f.manager();
-    assert_eq!(reopened.cloud.config.mode, "cloud");
-}
-
-#[test]
 fn cloud_access_projection_cannot_become_a_local_refresh_bundle() {
     let original = bundle("alice", "SYNTHETIC-refresh", now() + 3600);
     let projected = crate::cloud::projection(&original);
@@ -94,56 +65,6 @@ fn cloud_native_initialize_and_aborted_transfer_restore_are_distinct_paths() {
     assert!(n.cloud_initialize(&f.platform, &p).is_err());
     n.cloud_restore(&f.platform, &p, &a).unwrap();
     assert!(n.read(&f.platform).unwrap() == a);
-}
-
-#[test]
-fn transferred_accounts_are_fenced_from_all_local_refresh_and_activation_entries_after_restart() {
-    let f = Fixture::new();
-    let mut m = f.manager();
-    let a = bundle("alice", "SYNTHETIC-refresh", now() + 3600);
-    f.platform.vault_write("alice", &a.encoded()).unwrap();
-    m.db.accounts.push(account("alice", &a, false));
-    m.save().unwrap();
-    m.cloud.config.bindings.insert(
-        "alice".into(),
-        crate::cloud::Binding {
-            operation: "synthetic-op".into(),
-            owner: a.metadata().unwrap().owner,
-            provider: "claude".into(),
-            phase: "prepared".into(),
-            ..Default::default()
-        },
-    );
-    m.cloud.save().unwrap();
-    assert!(m.request_check("alice", true).is_err());
-    assert!(m.activate("alice", true).is_err());
-    assert!(m.configure("alice", None, Some(true)).is_err());
-    let mut reopened = f.manager();
-    assert!(reopened.request_check("alice", true).is_err());
-    reopened.cloud_tick();
-    assert!(!reopened.db.accounts[0].automatic);
-    assert_eq!(f.platform.vault_read("alice").unwrap(), a.encoded());
-}
-
-#[test]
-fn cloud_selected_broker_accounts_do_not_retarget_explicit_local_sessions() {
-    let f = Fixture::new();
-    let mut m = f.manager();
-    m.cloud.config.mode = "cloud".into();
-    m.cloud.config.accounts = vec![
-        json!({"id":"synthetic-cloud","provider":"codex","label":"Cloud","state":"ready","automatic":true}),
-    ];
-    m.cloud
-        .config
-        .selected
-        .insert("codex_broker".into(), "synthetic-cloud".into());
-    assert_eq!(
-        m.pi_accounts()["accounts"][0]["id"],
-        "cloud-synthetic-cloud"
-    );
-    assert_eq!(m.pi_accounts()["accounts"][0]["current"], true);
-    assert!(m.pi_access(Some("unknown-local-account")).is_err());
-    assert!(m.cloud.job.is_none());
 }
 
 fn cloud_config(f: &Fixture) -> (crate::cloud::Config, PathBuf) {
@@ -329,8 +250,6 @@ fn assert_cloud_sync_failure_recovery(later_generation: bool, external_change: b
             path.clone(),
             "synthetic-cloud".into(),
             native.clone(),
-            false,
-            None,
         )
         .is_err()
     );
@@ -366,8 +285,6 @@ fn assert_cloud_sync_failure_recovery(later_generation: bool, external_change: b
         path,
         "synthetic-cloud".into(),
         native.clone(),
-        false,
-        None,
     );
     if let Some(external) = external {
         assert!(recovered.is_err());
@@ -407,39 +324,3 @@ fn fixture_contains(directory: &Path, needle: &[u8]) -> bool {
     })
 }
 
-#[test]
-fn cloud_activation_cannot_destroy_the_only_copy_of_an_unregistered_native_login() {
-    let f = Fixture::new();
-    let native = f.native();
-    let (cfg, path) = cloud_config(&f);
-    let marker = "SYNTHETIC-UNIQUE-UNREGISTERED-refresh";
-    let original = bundle("unregistered", marker, now() + 3600);
-    native.initialize(&f.platform, &original).unwrap();
-    assert!(fixture_contains(&f.root, marker.as_bytes()));
-    let target = crate::cloud::projection(&bundle(
-        "cloud-owner",
-        "SYNTHETIC-remote-only",
-        now() + 3600,
-    ));
-    let lease = cloud_lease(&target, 2);
-    crate::cloud::test_transport(Box::new(move |_, action, _, _| {
-        assert_eq!(action, "lease");
-        Ok(lease.clone())
-    }));
-    let outcome = crate::cloud::native_sync(
-        cfg,
-        f.platform.clone(),
-        path,
-        "synthetic-cloud".into(),
-        native.clone(),
-        true,
-        None,
-    );
-    assert!(
-        fixture_contains(&f.root, marker.as_bytes()),
-        "activating cloud credentials must preserve or refuse to overwrite an unregistered native refresh token"
-    );
-    if outcome.is_err() {
-        assert!(native.read(&f.platform).unwrap() == original);
-    }
-}

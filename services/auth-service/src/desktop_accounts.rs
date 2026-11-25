@@ -142,7 +142,7 @@ impl Accounts {
         if self.desktop.switching().is_some() {
             return Err("正在切换账号，请等这次切换结束");
         }
-        switch_target_ready(&self.db.accounts[self.index(id)?])?;
+        self.switch_ready(&self.db.accounts[self.index(id)?])?;
         if self.switch_waits() {
             self.desktop.pending_switch = Some((id.into(), now() + 30));
             self.desktop.message = "等当前的检查或桌面轮询结束后开始切换".into();
@@ -233,9 +233,9 @@ impl Accounts {
             );
         }
         let index = self.index(id)?;
-        switch_target_ready(&self.db.accounts[index])?;
+        self.switch_ready(&self.db.accounts[index])?;
         let target = self.bundle(&self.db.accounts[index])?;
-        let metadata = target.metadata()?;
+        let metadata = target.access_metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {
             return Err("目标账号的 Access 已到期或即将到期，请先做一次认证检查或重新登录");
         }
@@ -243,12 +243,15 @@ impl Accounts {
     }
     // No journal: a switch that stops part way leaves the desktop either on its old login or on
     // the target's external one, which only AuthManager makes; the poll finishes the latter.
+    // A cloud row's access-only login reaches the default file on completion, under the cloud's
+    // own journal; the access-only login of a cloud row switched away from is never saved.
     pub(super) fn commit_desktop(&mut self, id: &str, observed: Value) -> Result<()> {
         if (self.desktop.other_clients)() {
             return Err("检测到 VS Code 的 Codex 插件或独立 Codex CLI，切换未开始");
         }
+        let to_cloud = self.cloud_lease_id(id).is_some();
         let target = self.bundle(&self.db.accounts[self.index(id)?])?;
-        let metadata = target.metadata()?;
+        let metadata = target.access_metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {
             return Err("目标账号的 Access 已到期或即将到期，切换未开始");
         }
@@ -257,24 +260,32 @@ impl Accounts {
         if native.mode != "file" {
             return Err("热切换暂只支持 Codex file 认证后端");
         }
-        let old = native.read(&self.platform)?;
-        if observed["owner"] != old.metadata()?.owner && observed["owner"] != metadata.owner {
+        let old = native
+            .login_or_projection(&self.platform)?
+            .ok_or("原生凭据不存在")?;
+        let old_owner = old.access_metadata()?.owner;
+        if observed["owner"] != old_owner && observed["owner"] != metadata.owner {
             return Err("桌面与默认文件身份不一致，切换未开始");
         }
         self.desktop.observed(&observed)?;
-        self.adopt_native(old.clone(), "")?;
-        let previous = self
-            .db
-            .accounts
-            .iter()
-            .find(|a| a.provider == "codex" && a.native)
-            .map(|a| a.id.clone())
-            .ok_or("请先纳管当前原生登录")?;
-        let previous_bundle = Bundle::decode(self.platform.vault_read(&previous)?)?;
-        let old_owner = previous_bundle.metadata()?.owner;
-        if !old.same_owner(&previous_bundle)? && !old.same_owner(&target)? {
-            return Err("原生账号已被其他操作改变，未覆盖登录");
-        }
+        let from_cloud = old.metadata().is_err();
+        let previous = if from_cloud {
+            None
+        } else {
+            self.adopt_native(old.clone(), "")?;
+            let previous = self
+                .db
+                .accounts
+                .iter()
+                .find(|a| a.provider == "codex" && a.native && self.cloud_binding(&a.id).is_none())
+                .map(|a| a.id.clone())
+                .ok_or("请先纳管当前原生登录")?;
+            let previous_bundle = Bundle::decode(self.platform.vault_read(&previous)?)?;
+            if !old.same_owner(&previous_bundle)? && old_owner != metadata.owner {
+                return Err("原生账号已被其他操作改变，未覆盖登录");
+            }
+            Some((previous, previous_bundle))
+        };
         self.save()?;
         let logged_in =
             observed["owner"] == metadata.owner && observed["mode"] == "chatgptAuthTokens";
@@ -300,28 +311,41 @@ impl Accounts {
                 };
                 validate_applied(&value, &metadata.owner)?;
                 // Re-read after the desktop relinquishes managed auth, preserving its latest generation.
-                let latest = native.read(&platform)?;
+                let latest = native
+                    .login_or_projection(&platform)?
+                    .ok_or("默认文件在切换中被其他程序改动；桌面已是新账号，稍后重新核对")?;
                 let mut committed = target.clone();
-                if latest.same_owner(&previous_bundle)? {
-                    platform.vault_write(&previous, &latest.encoded())?;
-                    if previous_bundle.same_owner(&target)? {
-                        // A→A adoption must never roll back a generation refreshed by the desktop
-                        // during its preflight reads. External mode has now relinquished that writer.
-                        if latest != target {
-                            value=client.call("update",json!({"owner":metadata.owner,"previousOwner":metadata.owner,"auth":desktop::external_auth(&latest)?}))?;
-                            validate_applied(&value, &metadata.owner)?;
+                match &previous {
+                    Some((previous, previous_bundle))
+                        if latest.metadata().is_ok() && latest.same_owner(previous_bundle)? =>
+                    {
+                        platform.vault_write(previous, &latest.encoded())?;
+                        if to_cloud {
+                            // The default file follows on completion.
+                        } else if previous_bundle.same_owner(&target)? {
+                            // A→A adoption must never roll back a generation refreshed by the desktop
+                            // during its preflight reads. External mode has now relinquished that writer.
+                            if latest != target {
+                                value=client.call("update",json!({"owner":metadata.owner,"previousOwner":metadata.owner,"auth":desktop::external_auth(&latest)?}))?;
+                                validate_applied(&value, &metadata.owner)?;
+                            }
+                            committed = latest;
+                        } else {
+                            native.apply(&platform, &latest, &target)?;
                         }
-                        committed = latest;
-                    } else {
+                    }
+                    None if !to_cloud && latest.credential == old.credential => {
                         native.apply(&platform, &latest, &target)?;
                     }
-                } else if latest != target {
-                    return Err("默认文件在切换中被其他程序改动；桌面已是新账号，稍后重新核对");
+                    _ if to_cloud || latest == target => {}
+                    _ => {
+                        return Err("默认文件在切换中被其他程序改动；桌面已是新账号，稍后重新核对");
+                    }
                 }
-                if native.read(&platform)? != committed {
+                if !to_cloud && native.read(&platform)? != committed {
                     return Err("默认文件写入后读回核对未通过；稍后重新核对");
                 }
-                value["metadata"] = serde_json::to_value(committed.metadata()?).unwrap();
+                value["metadata"] = serde_json::to_value(committed.access_metadata()?).unwrap();
                 Ok(value)
             })();
             Completion::Activate { id, result }
@@ -385,6 +409,15 @@ impl Accounts {
                 Ok(Completion::Activate { id, result }) => match result {
                     Ok(value) => {
                         if self.desktop.observed(&value).is_ok() {
+                            // The desktop is on the target now; the default file follows it.
+                            if let Err(message) = self.default_file_follows(&id) {
+                                self.desktop_log("apply_failed", Some(&id), message);
+                                self.desktop.connected = false;
+                                self.desktop.message =
+                                    format!("{message}；桌面已是新账号，默认文件稍后再同步");
+                                self.desktop.action_feedback(&id, "failed");
+                                return;
+                            }
                             for a in &mut self.db.accounts {
                                 if a.provider == "codex" {
                                     a.native = a.id == id;
@@ -393,14 +426,18 @@ impl Accounts {
                             self.db.desktop.selected = Some(id.clone());
                             self.db.switch = None;
                             self.desktop_log("apply_done", Some(&id), "已切换");
+                            let cloud = self.cloud_binding(&id).is_some();
                             if let Ok(i) = self.index(&id) {
                                 let a = &mut self.db.accounts[i];
                                 a.metadata = serde_json::from_value(value["metadata"].clone()).ok();
-                                a.automatic = true;
-                                a.next_check = now() + 60;
-                                a.message =
-                                    "桌面与全局默认已切换；桌面凭据由 AuthBaton 维护".into();
-                                a.state = "saved".into();
+                                // A cloud row stays the cloud's to renew.
+                                if !cloud {
+                                    a.automatic = true;
+                                    a.next_check = now() + 60;
+                                    a.message =
+                                        "桌面与全局默认已切换；桌面凭据由 AuthBaton 维护".into();
+                                    a.state = "saved".into();
+                                }
                             }
                             self.desktop.message = "桌面与全局默认一致，已由 AuthBaton 接管".into();
                             if let Err(e) = self.save() {
@@ -728,6 +765,10 @@ impl Accounts {
     }
     fn start_desktop_refresh(&mut self, id: &str) {
         let result = (|| -> Result<()> {
+            // The cloud renews a cloud row; the desktop gets its next leased access when it asks.
+            if self.cloud_binding(id).is_some() {
+                return Err("这个账号由云端续期；新的 Access 到了再给桌面");
+            }
             if !self.desktop_owns(id) {
                 return Err("当前登录被其他 Codex 客户端占用，桌面续期已延后");
             }
@@ -791,6 +832,21 @@ impl Accounts {
                 json!({"id":r.id,"epoch":r.epoch,"instance":r.instance,"auth":auth}),
             ))
         }));
+    }
+    /// After the desktop logged in to `id`: a cloud row's access-only login goes into the default
+    /// file and becomes the cloud row in use; a local row's login is already there.
+    fn default_file_follows(&mut self, id: &str) -> Result<()> {
+        let Some(cloud_id) = self.cloud_lease_id(id).map(str::to_string) else {
+            self.release_cloud_use("codex");
+            return Ok(());
+        };
+        let target = self.cloud.lease_bundle(&cloud_id)?;
+        let native = self.native("codex")?;
+        if let Some(b) = self.cloud.config.bindings.get_mut(id) {
+            b.used = true;
+        }
+        self.cloud
+            .activate(&self.platform, &native, &cloud_id, &target)
     }
     pub(super) fn desktop_stop(&mut self) {
         if let Some(job) = self.desktop.job.take() {
