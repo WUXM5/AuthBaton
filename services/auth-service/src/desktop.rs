@@ -317,7 +317,7 @@ impl Runtime {
     }
 }
 pub fn external_auth(bundle: &Bundle) -> Result<Value> {
-    let metadata = bundle.metadata()?;
+    let metadata = bundle.access_metadata()?;
     if bundle.provider != "codex" {
         return Err("热切换只支持 Codex");
     }

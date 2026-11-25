@@ -308,7 +308,7 @@ impl Access {
         if bundle.provider != "claude" {
             return Err("此入口仅支持 Claude");
         }
-        let metadata = bundle.metadata()?;
+        let metadata = bundle.access_metadata()?;
         let token = bundle.credential["accessToken"].as_str().unwrap();
         let organization = bundle.identity["organizationUuid"].as_str().unwrap();
         if token.chars().any(char::is_control)

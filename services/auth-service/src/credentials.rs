@@ -55,6 +55,12 @@ impl Bundle {
     pub fn metadata(&self) -> Result<Metadata> {
         self.metadata_kind(true)
     }
+    /// Whose login this is and when its access expires, for work that only sends the access
+    /// (quota, resets, warm-up, pi, the desktop's login): a full login or a cloud account's
+    /// access-only one.
+    pub fn access_metadata(&self) -> Result<Metadata> {
+        self.metadata_kind(false)
+    }
     pub fn cloud_metadata(&self) -> Result<Metadata> {
         if self.credential.pointer("/tokens/refresh_token").is_some()
             || self.credential.get("refreshToken").is_some()
@@ -321,6 +327,24 @@ impl NativeStore {
             Err(message) => Err(message),
         }
     }
+    /// The login this store holds: a full login, the access-only login a cloud account leaves
+    /// here, or None when it holds none.
+    pub fn login_or_projection(&self, platform: &Platform) -> Result<Option<Bundle>> {
+        match self.payload(platform) {
+            Err("原生凭据不存在" | "原生钥匙串凭据不存在") => Ok(None),
+            Ok((payload, _)) if self.provider == "claude" && claude_signed_out(&payload) => {
+                Ok(None)
+            }
+            Ok(_) => {
+                let bundle = self.read_bundle(platform)?;
+                match bundle.metadata() {
+                    Err(message) if bundle.cloud_metadata().is_err() => Err(message),
+                    _ => Ok(Some(bundle)),
+                }
+            }
+            Err(message) => Err(message),
+        }
+    }
     fn read_bundle(&self, platform: &Platform) -> Result<Bundle> {
         let (payload, _) = self.payload(platform)?;
         let bundle = if self.provider == "codex" {
@@ -368,25 +392,11 @@ impl NativeStore {
             return Err("云端凭据类型或有效期无效");
         }
         crate::platform::private_dir(&self.directory)?;
-        let locks = if self.provider == "claude" {
-            Some(crate::claude_locks::RefreshLocks::acquire(&self.directory)?)
-        } else {
-            None
-        };
-        let storage = if self.provider == "claude" {
-            Some(crate::claude_locks::Lease::storage(&self.directory)?)
-        } else {
-            None
-        };
-        let guard = || -> Result<()> {
-            if let Some(l) = &locks {
-                l.check()?;
-            }
-            if let Some(l) = &storage {
-                l.check()?;
-            }
-            Ok(())
-        };
+        // The same official locks a Claude switch takes: refresh, storage and config.
+        let locks = (self.provider == "claude")
+            .then(|| crate::claude::SwitchLocks::acquire(self))
+            .transpose()?;
+        let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
         guard()?;
         if self.cloud_existing(platform)?.is_some() {
             return Err("原生登录已存在，未覆盖");
@@ -456,32 +466,26 @@ impl NativeStore {
         {
             return Err("云端凭据类型或有效期无效");
         }
-        let locks = if self.provider == "claude" {
-            Some(crate::claude_locks::RefreshLocks::acquire(&self.directory)?)
-        } else {
-            None
-        };
-        let storage = if self.provider == "claude" {
-            Some(crate::claude_locks::Lease::storage(&self.directory)?)
-        } else {
-            None
-        };
-        let guard = || -> Result<()> {
-            if let Some(l) = &locks {
-                l.check()?;
-            }
-            if let Some(l) = &storage {
-                l.check()?;
-            }
-            Ok(())
-        };
+        // The same official locks a Claude switch takes: refresh, storage and config.
+        let locks = (self.provider == "claude")
+            .then(|| crate::claude::SwitchLocks::acquire(self))
+            .transpose()?;
+        let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
         guard()?;
-        if self.read_bundle(platform)? != *expected {
+        // The credential says whose login this is; Claude's identity file is a shared cache that
+        // other clients rewrite, so it is not part of the comparison.
+        if self.read_bundle(platform)?.credential != expected.credential {
             return Err("原生登录已变化，未覆盖本机凭据");
         }
+        let same = expected.access_metadata().ok().map(|m| m.owner) == Some(metadata.owner);
         let (mut payload, keyring) = self.payload(platform)?;
         if self.provider == "claude" {
-            payload["claudeAiOauth"] = target.credential.clone();
+            if same {
+                payload["claudeAiOauth"] = target.credential.clone();
+            } else {
+                // Another account: the previous one's sign-ins must not stay behind.
+                payload = merge_claude_credentials(payload, &target.credential)?;
+            }
         } else {
             payload = target.credential.clone();
         }
@@ -506,13 +510,21 @@ impl NativeStore {
         if self.provider == "claude" {
             let config =
                 crate::platform::read_json(&self.config)?.ok_or("Claude 身份配置不存在")?;
-            crate::platform::write_json(
-                &self.config,
-                &merge_claude_config(config, &target.identity)?,
-            )?;
+            let account = &config["oauthAccount"];
+            // Renewing the same login leaves the client's account caches alone.
+            if !same
+                || account["accountUuid"] != target.identity["accountUuid"]
+                || account["organizationUuid"] != target.identity["organizationUuid"]
+            {
+                guard()?;
+                crate::platform::write_json(
+                    &self.config,
+                    &merge_claude_config(config, &target.identity)?,
+                )?;
+            }
         }
         guard()?;
-        if self.read_bundle(platform)? != *target {
+        if self.read_bundle(platform)?.credential != target.credential {
             return Err("云端凭据写回待确认，请恢复同步");
         }
         Ok(())
@@ -595,7 +607,8 @@ impl NativeStore {
         if target.provider != self.provider {
             return Err("账号类型不一致");
         }
-        if self.read(platform)? != *expected {
+        // Raw: the login switched away from may be a cloud account's access-only one.
+        if self.read_bundle(platform)? != *expected {
             return Err("原生认证已变化，请重新检查后再切换");
         }
         let (payload, keyring) = self.payload(platform)?;
