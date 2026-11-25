@@ -6,6 +6,10 @@ enum AccountSheet: Identifiable {
     case switchTo(String)
     case reset(accountID: String, creditID: String?, requestID: String, expiresAt: String?, retry: Bool)
     case remove(String)
+    // Moving the renewal: to the user's authentication centre (or pairing first), back to this Mac, or out of the centre.
+    case toCloud(String)
+    case toLocal(String)
+    case cloudRemove(String)
     case recover(String)
     case rename(String)
     case history(String?)
@@ -18,6 +22,9 @@ enum AccountSheet: Identifiable {
         case .switchTo(let id): "switch-\(id)"
         case .reset(let id, let credit, let request, _, let retry): "reset-\(id)-\(credit ?? request)-\(retry)"
         case .remove(let id): "remove-\(id)"
+        case .toCloud(let id): "to-cloud-\(id)"
+        case .toLocal(let id): "to-local-\(id)"
+        case .cloudRemove(let id): "cloud-remove-\(id)"
         case .recover(let id): "recover-\(id)"
         case .rename(let id): "rename-\(id)"
         case .history(let id): "history-\(id ?? "all")"
@@ -313,7 +320,10 @@ private struct BenchRow: View {
                 .frame(width: 12, alignment: .leading)
             Seal(account.displayName, style: rule?.participate == false ? .out : .standby, size: 26)
             VStack(alignment: .leading, spacing: 0) {
-                Text(accountName: account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(accountName: account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    CloudBadge(account: account, size: 11)
+                }
                 detail
             }
             .frame(minWidth: 102, maxWidth: .infinity, alignment: .leading)

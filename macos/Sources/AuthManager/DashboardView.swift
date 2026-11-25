@@ -44,8 +44,6 @@ struct DashboardView: View {
         if let initialPage { AppNavigation.shared.page = initialPage }
     }
 
-    private var cloudMode: Bool { service.directory?.cloud?.mode == "cloud" }
-
     var body: some View {
         WindowColumns(sidebar: 182) {
             Sidebar()
@@ -76,16 +74,9 @@ struct DashboardView: View {
 
     @ViewBuilder private var page: some View {
         switch nav.page {
-        case .accounts:
-            if cloudMode {
-                PageScaffold(title: "云端账号", subtitle: Text("账号保存在你的个人认证中心，设备按需取得可用凭据。"), spacing: 14) {
-                    CloudAccountsView(openSettings: { nav.show(.cloud) })
-                }
-            } else {
-                AccountsView()
-            }
-        case .codex: cloudMode ? AnyView(AccountsView()) : AnyView(CodexPage())
-        case .claude: cloudMode ? AnyView(AccountsView()) : AnyView(ClaudeHomePage())
+        case .accounts: AccountsView()
+        case .codex: CodexPage()
+        case .claude: ClaudeHomePage()
         case .automation: AutomationPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
@@ -122,7 +113,6 @@ private struct Sidebar: View {
 
     var body: some View {
         let directory = service.directory
-        let cloudMode = directory?.cloud?.mode == "cloud"
         let issues = directory?.issues(dismissed: reminders.dismissed).count ?? 0
         // Codex 桌面 lives on the Codex page now; its trouble shows as a dot on the Codex row.
         let wiring = directory?.desktop.map { DesktopWiring($0, current: directory?.current("codex")) }
@@ -144,25 +134,23 @@ private struct Sidebar: View {
                     }
                 }
                 .accessibilityLabel(issues > 0 ? "账号，\(issues) 件事要处理" : "账号")
-                if !cloudMode {
-                    item(.codex, GlyphTile.name("codex"), glyph: .provider("codex")) {
-                        HStack(spacing: 6) {
-                            if desktopTrouble { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
-                            if let lowest = directory?.current("codex")?.lowestPrimary { trailingText("\(lowest)%") }
-                        }
+                item(.codex, GlyphTile.name("codex"), glyph: .provider("codex")) {
+                    HStack(spacing: 6) {
+                        if desktopTrouble { Circle().fill(Palette.attentionDot).frame(width: 6, height: 6) }
+                        if let lowest = directory?.current("codex")?.lowestPrimary { trailingText("\(lowest)%") }
                     }
-                    .accessibilityLabel(desktopTrouble ? "Codex，Codex 桌面\(wiring?.lost == true ? "没连上" : "还没接管")" : "Codex")
-                    // Claude Code and Claude 桌面 share one page; the dot is the desktop's own trouble.
-                    let claudeDesktop = directory?.claudeDesktop
-                    item(.claude, "Claude", glyph: .provider("claude")) {
-                        if claudeDesktop?.attention != nil {
-                            Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
-                        } else if let lowest = claudeLowest(directory) {
-                            trailingText("\(lowest)%")
-                        }
-                    }
-                    .accessibilityLabel(claudeDesktop?.attention.map { "Claude，\($0)" } ?? "Claude")
                 }
+                .accessibilityLabel(desktopTrouble ? "Codex，Codex 桌面\(wiring?.lost == true ? "没连上" : "还没接管")" : "Codex")
+                // Claude Code and Claude 桌面 share one page; the dot is the desktop's own trouble.
+                let claudeDesktop = directory?.claudeDesktop
+                item(.claude, "Claude", glyph: .provider("claude")) {
+                    if claudeDesktop?.attention != nil {
+                        Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
+                    } else if let lowest = claudeLowest(directory) {
+                        trailingText("\(lowest)%")
+                    }
+                }
+                .accessibilityLabel(claudeDesktop?.attention.map { "Claude，\($0)" } ?? "Claude")
                 Color.clear.frame(height: 12)
                 item(.automation, "换号与重置", glyph: .relay) {
                     if directory?.strategy?.config.enabled == true { trailingText("开") }
@@ -173,7 +161,7 @@ private struct Sidebar: View {
                     }
                 }
                 item(.cloud, "个人云端", glyph: .cloud) {
-                    if cloudMode { trailingText("云端") } else if directory?.cloud?.paired == true { trailingText("已配对") }
+                    if directory?.cloud?.paired == true { trailingText("已配对") }
                 }
                 if let network = directory?.network, network.available {
                     Color.clear.frame(height: 12)
@@ -340,8 +328,7 @@ struct ClientsPage: View {
                     .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("后台服务").font(.system(size: 13, weight: .semibold))
-                    Text(service.isConnected ? "正常 · \(service.directory?.cloud?.mode == "cloud" ? "云端模式" : "本地模式")"
-                         : service.isConnecting ? "正在连接" : "没连上")
+                    Text(service.isConnected ? "正常" : service.isConnecting ? "正在连接" : "没连上")
                         .font(.system(size: 11)).foregroundStyle(service.isConnected ? Palette.ink3 : Palette.attentionText)
                 }
                 Spacer()

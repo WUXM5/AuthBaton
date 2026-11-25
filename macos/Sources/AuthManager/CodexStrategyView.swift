@@ -33,10 +33,9 @@ struct AutomationPage: View {
     // automation.rs validate(): the service refuses a strategy with more rules than this.
     static let ruleLimit = 32
     private var status: CodexStrategyStatus? { service.directory?.strategy }
-    // Accounts a rule may name. One rule for an account handed to the cloud makes the service refuse them all.
+    // Accounts a rule may name: this Mac's own and those the authentication centre renews alike.
     private var accounts: [ManagedAccount] {
-        guard let directory = service.directory else { return [] }
-        return directory.accounts.filter { ["codex", "claude"].contains($0.provider) && !directory.cloudBound($0.id) }
+        (service.directory?.accounts ?? []).filter { ["codex", "claude"].contains($0.provider) }
     }
     private func account(_ id: String) -> ManagedAccount? { accounts.first { $0.id == id } }
     private func tool(of id: String) -> String? { account(id)?.provider }
@@ -193,9 +192,10 @@ struct AutomationPage: View {
         let fresh = ["codex", "claude"].flatMap { provider in
             accounts.filter { account in account.provider == provider && !kept.contains { $0.id == account.id } }
         }
-        // New accounts never spend credits until the user opts in; past the limit they stay out.
+        // New accounts never spend credits until the user opts in; past the limit they stay out. One another Mac
+        // handed to the centre stays out too until someone adds it here (its card says 未加入接力).
         let added = fresh.prefix(max(0, Self.ruleLimit - kept.count)).map { account in
-            account.provider == "codex" ? CodexStrategyConfig.Rule(id: account.id, participate: true)
+            account.provider == "codex" ? CodexStrategyConfig.Rule(id: account.id, participate: account.cloud?.fresh != true)
                                         : CodexStrategyConfig.Rule(id: account.id, order: .resetOnly, participate: false)
         }
         var next = config
@@ -844,6 +844,7 @@ private struct Brick: View {
             HStack(spacing: 6) {
                 Seal(name, style: !rule.participate ? .out : account?.native == true ? .inUse : .standby, size: 22)
                 Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+                if let account { CloudBadge(account: account, size: 11) }
                 Spacer(minLength: 4)
                 if movable { Grip(color: lifted ? Palette.brand : picked ? Palette.deep : hovering ? Palette.ink3 : Palette.dashStrong) }
             }

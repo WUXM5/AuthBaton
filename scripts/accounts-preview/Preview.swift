@@ -40,8 +40,8 @@ import Vision
             accountErrorID = nil
         }
     }
-    func cloudAction(_ action: String, id: String? = nil, mode: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil, automatic: Bool? = nil) async {
-        await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, automatic: automatic, cloud_action: action, mode: mode, endpoint: endpoint))
+    func cloudAction(_ action: String, id: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil) async {
+        await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, cloud_action: action, endpoint: endpoint))
     }
     func claudeDesktop(_ action: String, account: String? = nil, label: String? = nil, enabled: Bool? = nil, number: Int? = nil,
                        snapshot: String? = nil, confirm: Bool? = nil) async {
