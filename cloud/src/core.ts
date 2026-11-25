@@ -93,6 +93,16 @@ export class Authority {
       }
       return { ok: true };
     }
+    if (action === 'leave') {
+      // A device revokes itself, and a repeat after a lost reply succeeds. Its own exports end first: once it can no
+      // longer commit one, the export is abandoned after an hour and the Worker renews an account the device renews too.
+      const d = s.devices.find(d => d.secret_hash === bearer); if (!d) throw new Fault('device_unauthorized', 401);
+      if (!d.revoked) {
+        if (s.accounts.some(a => a.state === 'exporting' && a.export!.device === d.id)) throw new Fault('export_in_progress');
+        d.revoked = true; s.pairs = s.pairs.filter(p => p.device?.id !== d.id); await this.store.save(s);
+      }
+      return { revoked: true };
+    }
     const device = s.devices.find(d => !d.revoked && d.secret_hash === bearer);
     if (!device) throw new Fault('device_unauthorized', 401);
     if (action === 'accounts') return { accounts: s.accounts.map(a => ({ ...safe(a), used_by: usedBy(s, a, now) })), devices: s.devices.filter(d => !d.revoked).map(d => ({ id: d.id, label: d.label, last_seen: d.last_seen })) };

@@ -774,3 +774,29 @@ test('a new sign-in keeps the record of the devices using the account', async ()
   assert.equal(before.length, 1);
   assert.deepEqual((await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by, before);
 });
+
+test('a device can leave by itself, a repeated leave succeeds, and its pairing cannot hand its credential out again', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  await f.authority.run('lease', { id: f.id }, f.device.bearer);
+  assert.deepEqual(await f.authority.run('leave', {}, f.device.bearer), { revoked: true });
+  await assert.rejects(f.authority.run('accounts', {}, f.device.bearer), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('lease', { id: f.id }, f.device.bearer), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('pair.poll', { id: f.device.pending.id }, f.device.proofHash), code('pair_expired'));
+  assert.deepEqual(await f.authority.run('leave', {}, f.device.bearer), { revoked: true });
+  const listed = await f.authority.run('accounts', {}, other.bearer);
+  assert.deepEqual(listed.devices.map((d: any) => d.id), [other.id]); assert.deepEqual(listed.accounts[0].used_by, []);
+  await assert.rejects(f.authority.run('leave', {}, await hash('unknown')), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('leave', {}, null), code('device_unauthorized'));
+});
+
+test('a device cannot leave while it is taking an account back; another device taking one back does not stop it', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  await assert.rejects(f.authority.run('leave', {}, f.device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.devices[0].revoked, false);
+  await f.authority.run('export.abort', request, f.device.bearer);
+  await f.authority.run('export.begin', request, other.bearer);
+  await f.authority.run('leave', {}, f.device.bearer);
+  assert.equal(f.store.value!.devices[0].revoked, true);
+});
