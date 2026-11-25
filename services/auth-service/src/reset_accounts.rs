@@ -55,6 +55,7 @@ impl Accounts {
         }
         self.ensure_idle()?;
         let account = self.db.accounts[self.index(id)?].clone();
+        self.transfer_guard(id, false)?;
         let claude = account.provider == "claude";
         // The official claim accepts request IDs of at most 64 characters.
         if request_id.is_empty()
@@ -96,8 +97,9 @@ impl Accounts {
         }) {
             return Err("上次重置结果待确认，请重试上次操作，不能改用新的重置卡");
         }
+        // A cloud row's leased access spends the card from this Mac.
         let bundle = self.bundle(&account)?;
-        let owner = bundle.metadata()?.owner;
+        let owner = bundle.access_metadata()?.owner;
         let access = if claude {
             ResetAccess::Claude(crate::claude_resets::Access::from_bundle(&bundle)?)
         } else {

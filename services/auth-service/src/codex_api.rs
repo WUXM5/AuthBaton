@@ -13,7 +13,7 @@ impl Access {
         if bundle.provider != "codex" {
             return Err("此入口仅支持 Codex");
         }
-        let metadata = bundle.metadata()?;
+        let metadata = bundle.access_metadata()?;
         let token = bundle.credential["tokens"]["access_token"]
             .as_str()
             .unwrap();
