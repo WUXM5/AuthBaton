@@ -60,7 +60,11 @@ try {
   const restarted=await call('/v1/accounts',{},paired.device_token);
   assert.equal(restarted.status,200,await restarted.clone().text());
   assert.equal((await restarted.json()).accounts[0].id,imported.id);
+  const exported=await (await call('/v1/export.begin',{id:imported.id,operation:'synthetic-runtime-export'},paired.device_token)).json();
+  assert.equal(exported.bundle.credential.refreshToken,credential.credential.refreshToken);
+  for(let n=0;n<2;n++) assert.deepEqual(await (await call('/v1/export.commit',{id:imported.id,operation:'synthetic-runtime-export'},paired.device_token)).json(),{removed:true});
+  assert.deepEqual((await (await call('/v1/accounts',{},paired.device_token)).json()).accounts,[]);
   assert.equal((await call('/admin/api/admin.revoke',{id:paired.device_id},undefined,true)).status,200);
   assert.equal((await call('/v1/lease',{id:imported.id},paired.device_token)).status,401);
-  console.log(JSON.stringify({runtime:'workerd',pairing:true,sourceHandoff:true,encryptedStorage:true,restart:true,revocation:true,realNetworkRequests:0,syntheticUpstreamCalls:upstreamCalls}));
+  console.log(JSON.stringify({runtime:'workerd',pairing:true,sourceHandoff:true,encryptedStorage:true,restart:true,export:true,revocation:true,realNetworkRequests:0,syntheticUpstreamCalls:upstreamCalls}));
 } finally { await mf.dispose(); await rm(directory,{recursive:true,force:true}); }

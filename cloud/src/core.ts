@@ -2,7 +2,9 @@
 export type Provider = 'codex' | 'claude';
 export type Bundle = { provider: Provider; credential: any; identity: any };
 export type Identity = { owner: string; display: string; plan: string; expires_at: number; refresh_expires_at: number | null };
-type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry };
+type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry; export?: Export };
+// A device taking an account back to renew it itself.
+type Export = { device: string; operation: string; at: number };
 type Device = { id: string; label: string; secret_hash: string; revoked: boolean; last_seen: number };
 type Pair = { id: string; code: string; label: string; proof: string; expires: number; approved: boolean; source: string; device?: Device; token?: string };
 export type State = { schema: 1; accounts: Entry[]; devices: Device[]; pairs: Pair[] };
@@ -78,7 +80,10 @@ export class Authority {
     if (action === 'admin.devices' && admin) return { devices: s.devices.map(d => ({ id: d.id, label: d.label, revoked: d.revoked, last_seen: d.last_seen })) };
     if (action === 'admin.revoke' && admin) { const d = s.devices.find(d => d.id === body.id); if (!d) throw new Fault('device_missing'); d.revoked = true; s.pairs = s.pairs.filter(p => p.device?.id !== d.id); await this.store.save(s); return { revoked: true }; }
     if (action === 'maintenance' && admin) {
-      for (const a of s.accounts) if (a.automatic) {
+      for (const a of s.accounts) {
+        // An export not committed within an hour is abandoned, and the Worker renews the account again.
+        if (a.state === 'exporting' && a.export!.at + 3600 <= now) { a.state = 'ready'; delete a.export; await this.store.save(s); }
+        if (!a.automatic) continue;
         try { if (a.state === 'refreshing') { a.state = 'uncertain'; a.error = 'refresh_outcome_unknown'; await this.store.save(s); } else if (a.state === 'verification_pending') await this.verifyRotated(s, a); else if (a.state === 'uncertain' || (a.state === 'ready' && a.identity.expires_at < now + 900)) await this.renew(s, a); }
         catch { /* State is persisted; one account cannot starve maintenance for the others. */ }
       }
@@ -94,7 +99,7 @@ export class Authority {
       if (old) { if (old.digest !== digest) throw new Fault('import_changed'); return safe(old); }
       const replacement = body.replace_id ? s.accounts.find(a => a.id === body.replace_id) : undefined;
       if (body.replace_id && (!replacement || replacement.identity.owner !== id.owner)) throw new Fault('identity_mismatch');
-      if (replacement && ['awaiting_handoff', 'refreshing'].includes(replacement.state)) throw new Fault('handoff_in_progress');
+      if (replacement && ['awaiting_handoff', 'refreshing', 'exporting'].includes(replacement.state)) throw new Fault('handoff_in_progress');
       if (s.accounts.some(a => a.identity.owner === id.owner && a !== replacement)) throw new Fault('account_already_registered');
       if (!replacement && s.accounts.length >= 100) throw new Fault('account_limit');
       // No refresh on import. Verify the current access through a read-only issuer endpoint.
@@ -106,7 +111,26 @@ export class Authority {
     }
     if (action === 'import.status') { const a = s.accounts.find(a => a.operation === body.operation && a.source === device.id); return { account: a ? safe(a) : null }; }
     if (action === 'import.abort') { const a = s.accounts.find(a => a.operation === body.operation && a.source === device.id); if (a && a.state !== 'awaiting_handoff') throw new Fault('handoff_already_committed'); s.accounts = s.accounts.filter(x => x !== a); if (a?.replacement) s.accounts.push(a.replacement); await this.store.save(s); return { aborted: true }; }
+    if (action === 'export.commit') {
+      // Only the device taking the account back deletes it; a repeated commit finds it gone.
+      const operation = text(body.operation, 80); const a = s.accounts.find(a => a.id === text(body.id, 80));
+      if (!a) return { removed: true };
+      if (a.state !== 'exporting') throw new Fault('export_not_active');
+      if (a.export!.device !== device.id || a.export!.operation !== operation) throw new Fault('export_in_progress');
+      s.accounts = s.accounts.filter(x => x !== a); await this.store.save(s); return { removed: true };
+    }
     const a = s.accounts.find(a => a.id === body.id); if (!a) throw new Fault('account_missing', 404);
+    if (action === 'export.begin' || action === 'export.abort') {
+      const operation = text(body.operation, 80);
+      if (a.state === 'exporting' && (a.export!.device !== device.id || a.export!.operation !== operation)) throw new Fault('export_in_progress');
+      if (action === 'export.abort') { if (a.state === 'exporting') { a.state = 'ready'; delete a.export; await this.store.save(s); } return { aborted: true }; }
+      if (a.state !== 'exporting') {
+        if (a.state !== 'ready') throw new Fault('account_not_ready');
+        // The device is given the refresh token: from here on nothing renews the account.
+        a.state = 'exporting'; a.export = { device: device.id, operation, at: now }; await this.store.save(s);
+      }
+      return { id: a.id, owner: a.identity.owner, version: a.version, bundle: a.bundle };
+    }
     if (action === 'import.commit') {
       if (a.source !== device.id || a.operation !== body.operation) throw new Fault('source_device_required', 403);
       if (a.state === 'awaiting_handoff') { a.state = 'ready'; a.automatic = true; delete a.replacement; await this.store.save(s); }
@@ -119,15 +143,20 @@ export class Authority {
     // Quota is read on the device with a leased access. From Workers egress chatgpt.com answers 403 and Anthropic's
     // usage endpoint 429 (2026-11-25), so the Worker no longer queries it.
     if (action === 'usage') throw new Fault('usage_unavailable', 503);
-    if (a.state === 'refreshing') { a.state = 'uncertain'; a.error = 'refresh_outcome_unknown'; await this.store.save(s); }
-    if (a.state === 'verification_pending') await this.verifyRotated(s, a);
-    if (a.state === 'uncertain' && a.automatic) await this.renew(s, a);
-    if (a.state !== 'ready') throw new Fault(a.error || 'reauthorization_required');
-    if (action !== 'usage' && (a.identity.expires_at < now + 600 || (body.rejected_version !== undefined && body.rejected_version === a.version))) {
-      if (!a.automatic) throw new Fault('maintenance_disabled');
-      await this.renew(s, a);
+    if (a.state === 'exporting') {
+      // Nothing renews an account being taken back; only the device taking it is still given its current access.
+      if (a.export!.device !== device.id || a.identity.expires_at <= now + 60) throw new Fault('account_exporting');
+    } else {
+      if (a.state === 'refreshing') { a.state = 'uncertain'; a.error = 'refresh_outcome_unknown'; await this.store.save(s); }
+      if (a.state === 'verification_pending') await this.verifyRotated(s, a);
+      if (a.state === 'uncertain' && a.automatic) await this.renew(s, a);
+      if (a.state !== 'ready') throw new Fault(a.error || 'reauthorization_required');
+      if (action !== 'usage' && (a.identity.expires_at < now + 600 || (body.rejected_version !== undefined && body.rejected_version === a.version))) {
+        if (!a.automatic) throw new Fault('maintenance_disabled');
+        await this.renew(s, a);
+      }
+      if (a.state !== 'ready' || a.identity.expires_at <= now + 60) throw new Fault(a.error || 'credential_expired');
     }
-    if (a.state !== 'ready' || a.identity.expires_at <= now + 60) throw new Fault(a.error || 'credential_expired');
     device.last_seen = now; await this.store.save(s);
     if (action === 'check') { await this.issuer.verify(a.bundle); return safe(a); }
     const c = a.bundle.credential;
