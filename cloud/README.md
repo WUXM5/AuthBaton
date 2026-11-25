@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 An optional component: a Worker with a SQLite Durable Object in your own Cloudflare account. It stores and renews refresh tokens in one place, so several devices can share the same accounts. It does not proxy model requests and does not record request bodies or credentials. In the macOS app, open the 个人云端 (Personal cloud) page, enter the Worker address and pair the device.
 
+An account can also move back to one device: `/v1/export.begin` gives that device the full credential and stops cloud renewal, `/v1/export.commit` then deletes the account from the Worker, and `/v1/export.abort` (or an hour without a commit) returns it to cloud renewal. `/v1/accounts` lists the devices that used each account in the last 30 days, and `/v1/leave` lets a device unpair itself.
+
 ## Worker configuration
 
 | Name | Type | Description |
