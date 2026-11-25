@@ -201,8 +201,13 @@ impl Accounts {
         match action {
             "configure" => self.cloud.configure(endpoint, label),
             "pair" => self.cloud.start(self.platform.clone(), cloud::pair),
-            "pair_poll" => self.cloud.start(self.platform.clone(), cloud::pair_poll),
-            "refresh" => self.cloud.start(self.platform.clone(), cloud::directory),
+            "pair_poll" => self
+                .cloud
+                .start_light("pairing", self.platform.clone(), cloud::pair_poll),
+            "refresh" => {
+                self.cloud
+                    .start_light("directory", self.platform.clone(), cloud::sync_directory)
+            }
             "import" | "resume_import" => {
                 if !confirm {
                     return Err("请确认将所选账号交给个人云端维护");
@@ -416,9 +421,10 @@ impl Accounts {
             .cloud_lease_id(id)
             .ok_or("这个账号不由云端续期")?
             .to_string();
+        let tag = format!("check:{cloud_id}");
         self.cloud
-            .start(self.platform.clone(), move |cfg, p, path| {
-                cloud::check(cfg, p, path, cloud_id)
+            .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                cloud::check(cfg, p, cloud_id)
             })?;
         self.quota.request(id, now());
         Ok(())
@@ -564,19 +570,19 @@ impl Accounts {
         if state != Some("ready") {
             return Err("云端账号需要处理，请在 AuthBaton 查看");
         }
-        if self.cloud.job.is_none()
-            && self
-                .cloud
-                .lease_tried
-                .get(cloud_id)
-                .is_none_or(|t| *t + 5 <= now())
+        if self
+            .cloud
+            .lease_tried
+            .get(cloud_id)
+            .is_none_or(|t| *t + 5 <= now())
         {
             self.cloud.lease_tried.insert(cloud_id.into(), now());
             let value = cloud_id.to_string();
-            self.cloud
-                .start(self.platform.clone(), move |cfg, p, path| {
-                    cloud::lease(cfg, p, path, value)
-                })?;
+            self.cloud.start_light(
+                &format!("lease:{cloud_id}"),
+                self.platform.clone(),
+                move |cfg, p| cloud::lease(cfg, p, value, None),
+            )?;
         }
         Ok(json!({"state":"waiting","account_id":reply_id,"retry_after_ms":750}))
     }
@@ -598,7 +604,10 @@ impl Accounts {
             return;
         }
         if self.cloud.config.pair.is_some() && self.cloud.next_poll <= now() {
-            let _ = self.cloud.start(self.platform.clone(), cloud::pair_poll);
+            self.cloud.next_poll = now() + 30;
+            let _ = self
+                .cloud
+                .start_light("pairing", self.platform.clone(), cloud::pair_poll);
             return;
         }
         if !self.cloud.config.paired {
@@ -638,20 +647,27 @@ impl Accounts {
             }
             return;
         }
+        // Routine reads run one at a time, beside anything a person starts.
+        if !self.cloud.light.is_empty() {
+            return;
+        }
         if let Some(id) = self.cloud.config.export_commits.keys().next().cloned()
             && self.cloud.next_commit <= now()
         {
             self.cloud.next_commit = now() + 60;
+            let tag = format!("commit:{id}");
             let _ = self
                 .cloud
-                .start(self.platform.clone(), move |cfg, p, path| {
-                    cloud::commit_export(cfg, p, path, id)
+                .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                    cloud::commit_export(cfg, p, id)
                 });
             return;
         }
         if self.cloud.next_directory <= now() {
             self.cloud.next_directory = now() + 30;
-            let _ = self.cloud.start(self.platform.clone(), cloud::directory);
+            let _ = self
+                .cloud
+                .start_light("directory", self.platform.clone(), cloud::sync_directory);
             return;
         }
         // Every cloud row keeps a lease that is good for at least 15 more minutes; one at a time.
@@ -679,10 +695,11 @@ impl Accounts {
             .map(|(id, _)| id)
         {
             self.cloud.lease_tried.insert(id.clone(), now());
+            let tag = format!("lease:{id}");
             let _ = self
                 .cloud
-                .start(self.platform.clone(), move |cfg, p, path| {
-                    cloud::lease(cfg, p, path, id)
+                .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                    cloud::lease(cfg, p, id, None)
                 });
             return;
         }
@@ -699,10 +716,11 @@ impl Accounts {
                 let (provider, id) = selected[(now() / 30) as usize % selected.len()].clone();
                 if let Ok(native) = self.native(&provider) {
                     self.cloud_native_next = now() + 30;
+                    let tag = format!("sync:{provider}");
                     let _ = self
                         .cloud
-                        .start(self.platform.clone(), move |cfg, p, path| {
-                            cloud::native_sync(cfg, p, path, id, native)
+                        .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                            cloud::native_sync(cfg, p, id, native)
                         });
                 }
             }

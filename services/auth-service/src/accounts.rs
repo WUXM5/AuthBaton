@@ -367,8 +367,9 @@ impl Accounts {
         if self.automation.job.is_some() || self.db.automation.run.is_some() {
             return Err("自动额度流程正在处理或待核对；请先停止并核对");
         }
+        // Only a transfer, removal, pairing or leaving holds work back; routine cloud reads do not.
         if self.cloud.job.is_some() {
-            return Err("云端操作正在进行，请稍后重试");
+            return Err("云端正在转换、移除账号或断开配对，请稍后重试");
         }
         if self.storage_fault.get() {
             return Err("账号数据库保存失败，已暂停变更；修复存储后重新连接服务");
@@ -1098,9 +1099,10 @@ impl Accounts {
         // The cloud's name follows, so other Macs see it too.
         if let (Some(cloud_id), Some(_)) = (cloud_id, label) {
             let label = self.db.accounts[index].label.clone();
+            let tag = format!("rename:{cloud_id}");
             self.cloud
-                .start(self.platform.clone(), move |cfg, p, path| {
-                    crate::cloud::rename(cfg, p, path, cloud_id, label)
+                .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                    crate::cloud::rename(cfg, p, cloud_id, label)
                 })?;
         }
         Ok(())

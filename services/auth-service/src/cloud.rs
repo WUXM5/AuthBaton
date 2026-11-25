@@ -111,10 +111,65 @@ impl Default for Config {
         }
     }
 }
+/// What a background read found. The service merges it into the configuration it holds by then,
+/// so a read never undoes a change made meanwhile and nothing a person asks for waits on one.
+#[derive(Default)]
+pub struct Patch {
+    directory: Option<Directory>,
+    paired: Option<Option<String>>,
+    lease: Option<(String, String, Value)>,
+    committed: Option<(String, bool)>,
+}
+struct Directory {
+    accounts: Vec<Value>,
+    devices: Vec<Value>,
+    device_id: Option<String>,
+    read_at: u64,
+}
+/// A background read: directory, lease, native sync, a commit retry, a check or a rename.
+pub struct Light {
+    pub tag: String,
+    generation: u64,
+    pub handle: JoinHandle<Result<Patch>>,
+}
+impl Config {
+    fn take(&mut self, directory: Directory) {
+        self.accounts = directory.accounts;
+        self.devices = directory.devices;
+        if self.device_id.is_none() {
+            self.device_id = directory.device_id;
+        }
+        self.checked_at = Some(directory.read_at);
+    }
+    /// The cloud dropped its copy of a move back to this Mac. `spent`: it had renewed the login
+    /// after giving up on the move, so the copy saved here no longer works.
+    fn committed(&mut self, id: &str, spent: bool) {
+        let Some(pending) = self.export_commits.remove(id) else {
+            return;
+        };
+        if spent {
+            self.bindings.insert(
+                pending.local_id,
+                Binding {
+                    cloud_id: Some(id.into()),
+                    phase: "export_lost".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        // Gone from the cloud: a directory read before this must not bring it back as a new row.
+        self.accounts.retain(|a| a["id"] != id);
+    }
+}
 pub struct Runtime {
     pub config: Config,
     path: PathBuf,
+    /// A transfer, removal, pairing or leaving: the one cloud job that holds other work back.
     pub job: Option<JoinHandle<Result<Update>>>,
+    pub light: Vec<Light>,
+    /// Counts finished jobs above; a directory read from before one of them is stale.
+    generation: u64,
+    light_error: Option<String>,
     /// The row a running transfer works on.
     pub job_row: Option<String>,
     pub error: Option<String>,
@@ -141,6 +196,9 @@ impl Runtime {
             config,
             path,
             job: None,
+            light: vec![],
+            generation: 0,
+            light_error: None,
             job_row: None,
             error: None,
             next_poll: 0,
@@ -161,7 +219,7 @@ impl Runtime {
         // Devices cannot revoke each other; revoking stays on the Access-protected admin page.
         let admin =
             (!self.config.endpoint.is_empty()).then(|| format!("{}/admin", self.config.endpoint));
-        json!({"endpoint":self.config.endpoint,"label":self.config.label,"paired":self.config.paired,"pair":self.config.pair,"busy":self.job.is_some(),"error":self.error,"checked_at":self.config.checked_at,"devices":devices,"admin_url":admin})
+        json!({"endpoint":self.config.endpoint,"label":self.config.label,"paired":self.config.paired,"pair":self.config.pair,"busy":self.job.is_some(),"error":self.error.as_ref().or(self.light_error.as_ref()),"checked_at":self.config.checked_at,"devices":devices,"admin_url":admin})
     }
     pub fn save(&self) -> Result<()> {
         write_json(&self.path, &serde_json::to_value(&self.config).unwrap())
@@ -217,30 +275,146 @@ impl Runtime {
         self.job = Some(job);
         Ok(())
     }
+    /// Starts a background read unless one with the same tag is running. It never holds other
+    /// work back: its result is merged in when it ends.
+    pub fn start_light<F>(&mut self, tag: &str, platform: Platform, work: F) -> Result<()>
+    where
+        F: FnOnce(Config, Platform) -> Result<Patch> + Send + 'static,
+    {
+        if self.config.endpoint.is_empty() {
+            return Err("请先配置个人认证中心地址");
+        }
+        if self.light_running(tag) {
+            return Ok(());
+        }
+        let cfg = self.config.clone();
+        // Tests run the job on the calling thread, where their synthetic transport lives.
+        #[cfg(test)]
+        let result = work(cfg, platform);
+        #[cfg(test)]
+        let handle = std::thread::spawn(move || result);
+        #[cfg(not(test))]
+        let handle = std::thread::spawn(move || work(cfg, platform));
+        self.light.push(Light {
+            tag: tag.into(),
+            generation: self.generation,
+            handle,
+        });
+        Ok(())
+    }
+    /// A background read that ends only when the test says so.
+    #[cfg(test)]
+    pub fn start_light_held<F>(
+        &mut self,
+        tag: &str,
+        platform: Platform,
+        work: F,
+    ) -> std::sync::mpsc::Sender<()>
+    where
+        F: FnOnce(Config, Platform) -> Result<Patch>,
+    {
+        let result = work(self.config.clone(), platform);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let _ = wait.recv();
+            result
+        });
+        self.light.push(Light {
+            tag: tag.into(),
+            generation: self.generation,
+            handle,
+        });
+        release
+    }
+    pub fn light_running(&self, tag: &str) -> bool {
+        self.light.iter().any(|l| l.tag == tag)
+    }
     pub fn poll(&mut self) {
-        if !self.job.as_ref().is_some_and(|j| j.is_finished()) {
-            return;
-        }
-        self.job_row = None;
-        match self.job.take().unwrap().join() {
-            Ok(Ok(update)) => {
-                self.config = update.config;
-                self.leases.extend(update.leases);
-                self.error = None;
-            }
-            Ok(Err(e)) => {
-                self.error = Some(e.into());
-                if let Ok(Some(value)) = read_json(&self.path)
-                    && let Ok(c) = serde_json::from_value(value)
-                {
-                    self.config = c;
+        // The job first: a read that finished beside it is from before what it changed.
+        if self.job.as_ref().is_some_and(|j| j.is_finished()) {
+            self.job_row = None;
+            self.generation += 1;
+            match self.job.take().unwrap().join() {
+                Ok(Ok(update)) => {
+                    self.config = update.config;
+                    self.leases.extend(update.leases);
+                    self.error = None;
                 }
+                Ok(Err(e)) => {
+                    self.error = Some(e.into());
+                    if let Ok(Some(value)) = read_json(&self.path)
+                        && let Ok(c) = serde_json::from_value(value)
+                    {
+                        self.config = c;
+                    }
+                }
+                Err(_) => self.error = Some("云端操作中断，请重试同步；交接记录已保留".into()),
             }
-            Err(_) => self.error = Some("云端操作中断，请重试同步；交接记录已保留".into()),
+            self.next_poll = now() + 30;
         }
-        self.next_poll = now() + 30;
+        self.poll_light();
+    }
+    fn poll_light(&mut self) {
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.light.len() {
+            if !self.light[index].handle.is_finished() {
+                index += 1;
+                continue;
+            }
+            let job = self.light.remove(index);
+            match job.handle.join() {
+                Ok(Ok(patch)) => {
+                    changed |= self.apply(patch, job.generation);
+                    self.light_error = None;
+                }
+                Ok(Err(e)) => self.light_error = Some(e.into()),
+                Err(_) => self.light_error = Some("云端同步中断，稍后重试".into()),
+            }
+        }
+        if changed && let Err(e) = self.save() {
+            self.light_error = Some(e.into());
+        }
+    }
+    fn apply(&mut self, patch: Patch, generation: u64) -> bool {
+        let mut changed = false;
+        if let Some(device_id) = patch.paired
+            && !self.config.paired
+        {
+            self.config.paired = true;
+            self.config.pair = None;
+            self.config.device_id = device_id;
+            self.next_directory = 0;
+            changed = true;
+        }
+        // A read from before a transfer, removal or leaving finished describes what no longer holds.
+        if let Some(directory) = patch.directory
+            && generation == self.generation
+            && self.config.paired
+        {
+            self.config.take(directory);
+            changed = true;
+        }
+        if let Some((id, owner, lease)) = patch.lease
+            && self.config.paired
+        {
+            if self.config.owners.get(&id).is_some_and(|o| *o != owner) {
+                self.light_error = Some("云端账号身份已变化，已停止领取".into());
+            } else {
+                self.config.owners.insert(id.clone(), owner);
+                self.leases.insert(id, lease);
+                changed = true;
+            }
+        }
+        if let Some((id, spent)) = patch.committed {
+            self.config.committed(&id, spent);
+            changed = true;
+        }
+        changed
     }
     pub fn finish(&mut self) {
+        // Background reads are dropped: each is read again after a restart.
+        self.light.clear();
         self.job_row = None;
         if let Some(job) = self.job.take() {
             match job.join() {
@@ -295,7 +469,7 @@ impl Runtime {
         target: &Bundle,
     ) -> Result<()> {
         let mut cfg = self.config.clone();
-        publish(&mut cfg, platform, &self.path, native, id, target, true)?;
+        publish(&mut cfg, platform, Some(&self.path), native, id, target)?;
         self.config = cfg;
         Ok(())
     }
@@ -500,17 +674,18 @@ fn device_id(value: &Value) -> Option<String> {
         })
         .map(str::to_owned)
 }
-pub fn pair_poll(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<Update> {
+/// Polls a pairing the admin page may have approved.
+pub fn pair_poll(cfg: Config, platform: Platform) -> Result<Patch> {
     let s = secret(&platform, &cfg)?;
     // Vault commit precedes the public configuration commit. Recover a completed
     // approval without depending on the short-lived pairing record still existing.
     if s["token"].as_str().is_some() {
-        api(&platform, &cfg, "accounts", json!({}))?;
-        cfg.paired = true;
-        cfg.pair = None;
-        cfg.device_id = device_id(&s["device_id"]);
-        persist(&cfg, &path)?;
-        return directory(cfg, platform, path);
+        let directory = read_directory(&cfg, &platform)?;
+        return Ok(Patch {
+            paired: Some(device_id(&s["device_id"])),
+            directory: Some(directory),
+            ..Default::default()
+        });
     }
     let proof = s["proof"].as_str().ok_or("配对状态不存在")?;
     let p = cfg.pair.as_ref().ok_or("配对状态不存在")?;
@@ -520,24 +695,25 @@ pub fn pair_poll(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<U
         Some(proof),
         json!({"id":p["id"]}),
     )?;
-    if v["state"] == "paired" {
-        let token = v["device_token"]
-            .as_str()
-            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-            .ok_or("设备授权响应无效")?;
-        platform.vault_write(
-            "cloud-device-v1",
-            &json!({"endpoint":cfg.endpoint,"token":token,"device_id":v["device_id"],"proof":proof}),
-        )?;
-        cfg.paired = true;
-        cfg.pair = None;
-        cfg.device_id = device_id(&v["device_id"]);
-        persist(&cfg, &path)?;
+    if v["state"] != "paired" {
+        return Ok(Patch::default());
     }
-    Ok(done(cfg))
+    let token = v["device_token"]
+        .as_str()
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or("设备授权响应无效")?;
+    platform.vault_write(
+        "cloud-device-v1",
+        &json!({"endpoint":cfg.endpoint,"token":token,"device_id":v["device_id"],"proof":proof}),
+    )?;
+    Ok(Patch {
+        paired: Some(device_id(&v["device_id"])),
+        ..Default::default()
+    })
 }
-pub fn directory(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<Update> {
-    let v = api(&platform, &cfg, "accounts", json!({}))?;
+fn read_directory(cfg: &Config, platform: &Platform) -> Result<Directory> {
+    let read_at = now();
+    let v = api(platform, cfg, "accounts", json!({}))?;
     let rows = v["accounts"].as_array().ok_or("云端账号列表无效")?;
     let keys = [
         "id",
@@ -554,7 +730,7 @@ pub fn directory(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<U
         "error",
         "retry_at",
     ];
-    cfg.accounts = rows
+    let accounts = rows
         .iter()
         .map(|a| {
             let mut row: serde_json::Map<String, Value> = keys
@@ -566,9 +742,7 @@ pub fn directory(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<U
                 .map(|u| {
                     u.iter()
                         .take(32)
-                        .map(
-                            |d| json!({"device_id":d["device_id"],"label":d["label"],"at":d["at"]}),
-                        )
+                        .map(|d| json!({"device_id":d["device_id"],"label":d["label"],"at":d["at"]}))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -576,21 +750,37 @@ pub fn directory(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<U
             Value::Object(row)
         })
         .collect();
-    cfg.devices = v["devices"]
+    let devices = v["devices"]
         .as_array()
         .unwrap_or(&vec![])
         .iter()
         .map(|d| json!({"id":d["id"],"label":d["label"],"last_seen":d["last_seen"]}))
         .collect();
     // Pairings made by older builds kept the device id only beside the device token.
-    if cfg.device_id.is_none() {
-        cfg.device_id = secret(&platform, &cfg)
-            .ok()
-            .and_then(|s| device_id(&s["device_id"]));
-    }
-    cfg.checked_at = Some(now());
+    let device_id = cfg
+        .device_id
+        .clone()
+        .or_else(|| secret(platform, cfg).ok().and_then(|s| device_id(&s["device_id"])));
+    Ok(Directory {
+        accounts,
+        devices,
+        device_id,
+        read_at,
+    })
+}
+/// Reads the directory at the end of a transfer, removal or pairing.
+pub fn directory(mut cfg: Config, platform: Platform, path: PathBuf) -> Result<Update> {
+    let directory = read_directory(&cfg, &platform)?;
+    cfg.take(directory);
     persist(&cfg, &path)?;
     Ok(done(cfg))
+}
+/// The 30-second directory read.
+pub fn sync_directory(cfg: Config, platform: Platform) -> Result<Patch> {
+    Ok(Patch {
+        directory: Some(read_directory(&cfg, &platform)?),
+        ..Default::default()
+    })
 }
 pub fn projection(bundle: &Bundle) -> Bundle {
     let mut b = bundle.clone();
@@ -759,8 +949,18 @@ fn cancel_steps(
     platform.delete_key(VAULT, &key)?;
     Ok(())
 }
-pub fn fetch_lease(cfg: &mut Config, platform: &Platform, id: &str) -> Result<Value> {
-    let v = api(platform, cfg, "lease", json!({"id":id}))?;
+/// `rejected`: the version whose access a client was refused with; the cloud renews it first.
+pub fn fetch_lease(
+    cfg: &mut Config,
+    platform: &Platform,
+    id: &str,
+    rejected: Option<u64>,
+) -> Result<Value> {
+    let body = match rejected {
+        Some(version) => json!({"id":id,"rejected_version":version}),
+        None => json!({"id":id}),
+    };
+    let v = api(platform, cfg, "lease", body)?;
     if v["id"] != id || v["expires_at"].as_u64().is_none_or(|t| t <= now() + 60) {
         return Err("云端凭据标识或有效期无效");
     }
@@ -788,41 +988,49 @@ pub fn fetch_lease(cfg: &mut Config, platform: &Platform, id: &str) -> Result<Va
     cfg.owners.insert(id.into(), owner);
     Ok(v)
 }
-pub fn lease(mut cfg: Config, platform: Platform, path: PathBuf, id: String) -> Result<Update> {
-    let v = fetch_lease(&mut cfg, &platform, &id)?;
-    persist(&cfg, &path)?;
-    Ok(Update {
-        config: cfg,
-        leases: HashMap::from([(id, v)]),
+/// Leases a cloud account's access.
+pub fn lease(
+    mut cfg: Config,
+    platform: Platform,
+    id: String,
+    rejected: Option<u64>,
+) -> Result<Patch> {
+    let v = fetch_lease(&mut cfg, &platform, &id, rejected)?;
+    let owner = cfg.owners.get(&id).cloned().ok_or("云端凭据身份无效")?;
+    Ok(Patch {
+        lease: Some((id, owner, v)),
+        ..Default::default()
     })
 }
-/// Keeps the access-only login of the cloud account in use fresh in the native store.
+/// Keeps the access-only login of the cloud account in use fresh in the native store. Every
+/// native writer takes the same in-process lock, so this never interleaves with a switch.
 pub fn native_sync(
     mut cfg: Config,
     platform: Platform,
-    path: PathBuf,
     id: String,
     native: NativeStore,
-) -> Result<Update> {
-    let v = fetch_lease(&mut cfg, &platform, &id)?;
+) -> Result<Patch> {
+    let v = fetch_lease(&mut cfg, &platform, &id, None)?;
     let target = projection_of(&v)?;
-    publish(&mut cfg, &platform, &path, &native, &id, &target, false)?;
-    Ok(Update {
-        config: cfg,
-        leases: HashMap::from([(id, v)]),
+    publish(&mut cfg, &platform, None, &native, &id, &target)?;
+    let owner = cfg.owners.get(&id).cloned().ok_or("云端凭据身份无效")?;
+    Ok(Patch {
+        lease: Some((id, owner, v)),
+        ..Default::default()
     })
 }
-/// Writes a cloud account's access-only login into the native store. `activate` puts it in use
-/// over whatever the store holds; otherwise it renews the projection written last.
+/// Writes a cloud account's access-only login into the native store. With `path` it puts the
+/// account in use over whatever the store holds and records that; without, it renews the
+/// projection written last and changes no configuration.
 fn publish(
     cfg: &mut Config,
     platform: &Platform,
-    path: &Path,
+    path: Option<&Path>,
     native: &NativeStore,
     id: &str,
     target: &Bundle,
-    activate: bool,
 ) -> Result<()> {
+    let activate = path.is_some();
     let key = format!("cloud-native-{}", target.provider);
     let journal_key = format!("cloud-native-journal-{}", target.provider);
     // Reconcile the prior file/Keychain write before requesting a new write. The
@@ -861,7 +1069,9 @@ fn publish(
             )?;
         }
         cfg.pending_activation = Some(id.into());
-        persist(cfg, path)?;
+        if let Some(path) = path {
+            persist(cfg, path)?;
+        }
     }
     platform.vault_write(
         &journal_key,
@@ -875,11 +1085,11 @@ fn publish(
         native.cloud_initialize(platform, target)?;
     }
     platform.vault_write(&key, &target.encoded())?;
-    if activate {
+    if let Some(path) = path {
         cfg.selected.insert(target.provider.clone(), id.into());
         cfg.pending_activation = None;
+        persist(cfg, path)?;
     }
-    persist(cfg, path)?;
     platform.delete_key(VAULT, &journal_key)?;
     Ok(())
 }
@@ -919,19 +1129,13 @@ fn settle_activation(
     persist(cfg, path)
 }
 /// The cloud checks the account's login; the caller reads its quota with the leased access.
-pub fn check(cfg: Config, platform: Platform, path: PathBuf, id: String) -> Result<Update> {
+pub fn check(cfg: Config, platform: Platform, id: String) -> Result<Patch> {
     api(&platform, &cfg, "check", json!({"id":id}))?;
-    directory(cfg, platform, path)
+    sync_directory(cfg, platform)
 }
-pub fn rename(
-    cfg: Config,
-    platform: Platform,
-    path: PathBuf,
-    id: String,
-    label: String,
-) -> Result<Update> {
+pub fn rename(cfg: Config, platform: Platform, id: String, label: String) -> Result<Patch> {
     api(&platform, &cfg, "update", json!({"id":id,"label":label}))?;
-    directory(cfg, platform, path)
+    sync_directory(cfg, platform)
 }
 /// Removes the account from the cloud; the service then drops its row here.
 pub fn remove(
@@ -1030,7 +1234,10 @@ pub fn export(
     );
     persist(&cfg, &path)?;
     // A commit that does not get through is retried; the login is already this Mac's.
-    let _ = commit(&mut cfg, &platform, &path, &id);
+    if let Ok(spent) = commit(&cfg, &platform, &id) {
+        cfg.committed(&id, spent);
+        persist(&cfg, &path)?;
+    }
     Ok(done(cfg))
 }
 fn export_steps(
@@ -1073,11 +1280,12 @@ fn export_steps(
     }
     Ok(())
 }
-fn commit(cfg: &mut Config, platform: &Platform, path: &Path, id: &str) -> Result<()> {
+/// Asks the cloud to drop its copy of a move back to this Mac. `Some(spent)` once it answered;
+/// `spent`: it renewed the login after giving up on the move, so the copy here is spent.
+fn commit(cfg: &Config, platform: &Platform, id: &str) -> Result<bool> {
     let pending = cfg
         .export_commits
         .get(id)
-        .cloned()
         .ok_or("没有待确认的转回本机")?;
     match api(
         platform,
@@ -1085,34 +1293,18 @@ fn commit(cfg: &mut Config, platform: &Platform, path: &Path, id: &str) -> Resul
         "export.commit",
         json!({"id":id,"operation":pending.operation}),
     ) {
-        Ok(_) => {}
-        // The cloud renewed the login after giving up on the move: the copy here is spent.
-        Err(EXPORT_NOT_ACTIVE) => {
-            cfg.bindings.insert(
-                pending.local_id.clone(),
-                Binding {
-                    cloud_id: Some(id.into()),
-                    phase: "export_lost".into(),
-                    ..Default::default()
-                },
-            );
-        }
-        Err(e) => return Err(e),
+        Ok(_) => Ok(false),
+        Err(EXPORT_NOT_ACTIVE) => Ok(true),
+        Err(e) => Err(e),
     }
-    cfg.export_commits.remove(id);
-    // Gone from the cloud: a directory read before this must not bring it back as a new row.
-    cfg.accounts.retain(|a| a["id"] != id);
-    persist(cfg, path)
 }
 /// Retries the commit of a move back to this Mac.
-pub fn commit_export(
-    mut cfg: Config,
-    platform: Platform,
-    path: PathBuf,
-    id: String,
-) -> Result<Update> {
-    commit(&mut cfg, &platform, &path, &id)?;
-    Ok(done(cfg))
+pub fn commit_export(cfg: Config, platform: Platform, id: String) -> Result<Patch> {
+    let spent = commit(&cfg, &platform, &id)?;
+    Ok(Patch {
+        committed: Some((id, spent)),
+        ..Default::default()
+    })
 }
 /// Gives up a move back that has not saved the login here; the cloud renews it again.
 pub fn cancel_export(

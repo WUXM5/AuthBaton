@@ -180,6 +180,12 @@ fn claude_signed_out(payload: &Value) -> bool {
     payload["claudeAiOauth"].is_null() || cleared_claude_slot(&payload["claudeAiOauth"])
 }
 pub const SIGNED_OUT: &str = "默认登录已退出或被清空；可重新登录此账号，或切换到其他账号";
+/// Held by every writer of a native store in this process across its compare and write, so a
+/// background cloud sync, the desktop bridge and a switch never interleave there.
+static NATIVE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn native_write() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_WRITE.lock().unwrap_or_else(|e| e.into_inner())
+}
 impl NativeStore {
     pub fn codex(directory: &Path, force_file: bool) -> Result<Self> {
         let path = std::fs::canonicalize(directory).map_err(|_| "Codex 认证目录不存在")?;
@@ -397,6 +403,7 @@ impl NativeStore {
             .then(|| crate::claude::SwitchLocks::acquire(self))
             .transpose()?;
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
+        let _write = native_write();
         guard()?;
         if self.cloud_existing(platform)?.is_some() {
             return Err("原生登录已存在，未覆盖");
@@ -471,6 +478,7 @@ impl NativeStore {
             .then(|| crate::claude::SwitchLocks::acquire(self))
             .transpose()?;
         let guard = || locks.as_ref().map_or(Ok(()), |l| l.check());
+        let _write = native_write();
         guard()?;
         // The credential says whose login this is; Claude's identity file is a shared cache that
         // other clients rewrite, so it is not part of the comparison.
@@ -607,6 +615,7 @@ impl NativeStore {
         if target.provider != self.provider {
             return Err("账号类型不一致");
         }
+        let _write = native_write();
         // Raw: the login switched away from may be a cloud account's access-only one.
         if self.read_bundle(platform)? != *expected {
             return Err("原生认证已变化，请重新检查后再切换");
@@ -655,6 +664,7 @@ impl NativeStore {
         target: &Bundle,
         guard: &dyn Fn() -> Result<()>,
     ) -> Result<()> {
+        let _write = native_write();
         if !expected.same_owner(target)? || self.read(platform)? != *expected {
             return Err("原生认证已变化，未覆盖其凭据");
         }
@@ -685,6 +695,7 @@ impl NativeStore {
         Ok(())
     }
     pub fn initialize(&self, platform: &Platform, target: &Bundle) -> Result<()> {
+        let _write = native_write();
         let base = match self.payload(platform) {
             Err("原生凭据不存在" | "原生钥匙串凭据不存在") => {
                 serde_json::json!({})

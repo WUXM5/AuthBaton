@@ -227,7 +227,7 @@ fn assert_cloud_sync_failure_recovery(later_generation: bool, external_change: b
     )
     .unwrap();
     let native = f.native();
-    let (mut cfg, path) = cloud_config(&f);
+    let (mut cfg, _) = cloud_config(&f);
     let old = crate::cloud::projection(&bundle("alice", "SYNTHETIC-unused", now() + 3600));
     let mut next = old.clone();
     next.credential["accessToken"] = json!("SYNTHETIC-next-access");
@@ -247,7 +247,6 @@ fn assert_cloud_sync_failure_recovery(later_generation: bool, external_change: b
         crate::cloud::native_sync(
             cfg.clone(),
             f.platform.clone(),
-            path.clone(),
             "synthetic-cloud".into(),
             native.clone(),
         )
@@ -282,7 +281,6 @@ fn assert_cloud_sync_failure_recovery(later_generation: bool, external_change: b
     let recovered = crate::cloud::native_sync(
         cfg,
         f.platform.clone(),
-        path,
         "synthetic-cloud".into(),
         native.clone(),
     );
@@ -396,7 +394,9 @@ fn add_cloud_row(m: &mut Accounts, id: &str, cloud_id: &str, full: &Bundle, orig
 }
 fn finish_cloud(m: &mut Accounts) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while m.cloud.job.as_ref().is_some_and(|j| !j.is_finished()) {
+    while m.cloud.job.as_ref().is_some_and(|j| !j.is_finished())
+        || m.cloud.light.iter().any(|l| !l.handle.is_finished())
+    {
         assert!(
             std::time::Instant::now() < deadline,
             "cloud job did not finish"
@@ -1335,4 +1335,88 @@ fn transferred_accounts_are_fenced_from_all_local_refresh_entries_after_restart(
     reopened.cloud_tick();
     assert!(!reopened.db.accounts[0].automatic);
     assert_eq!(f.platform.vault_read("alice").unwrap(), a.encoded());
+}
+
+#[test]
+fn routine_cloud_reads_never_hold_back_what_a_person_asks_for() {
+    use crate::automation::{Config, Order, Rule};
+    let f = Fixture::new();
+    let mut m = paired(&f);
+    let native = f.native();
+    m.native_override = Some(native.clone());
+    let nova = bundle("nova", "SYNTHETIC-nova", now() + 3600);
+    native.initialize(&f.platform, &nova).unwrap();
+    f.platform.vault_write("nova", &nova.encoded()).unwrap();
+    m.db.accounts.push(account("nova", &nova, true));
+    let orbit = bundle("orbit", "SYNTHETIC-orbit-cloud", now() + 3600);
+    add_cloud_row(&mut m, "orbit", "cloud-orbit", &orbit, "other");
+    let rules = || Config {
+        enabled: false,
+        accounts: vec![Rule {
+            id: "orbit".into(),
+            order: Order::SwitchFirst,
+            participate: true,
+            below: 5,
+        }],
+    };
+    let listing = std::rc::Rc::new(std::cell::RefCell::new(vec![
+        directory_row("cloud-orbit", &orbit, "orbit"),
+        directory_row("cloud-lab", &bundle("lab", "x", now() + 3600), "lab"),
+    ]));
+    let listed = listing.clone();
+    worker(move |action, _, _| match action {
+        "accounts" => Ok(json!({"accounts":*listed.borrow(),"devices":[]})),
+        _ => panic!("unexpected synthetic cloud action {action}"),
+    });
+    // A routine directory read is still out.
+    m.cloud
+        .start_light("directory", f.platform.clone(), crate::cloud::sync_directory)
+        .unwrap();
+    assert!(m.ensure_check_admission().is_ok());
+    assert_eq!(m.snapshot()["checks_blocked"], false);
+    // 换上 a cloud row, rules and a quota query go ahead.
+    m.activate("orbit", true).unwrap();
+    m.configure_strategy(rules(), false).unwrap();
+    m.request_quota(Some("orbit")).unwrap();
+    // The read lands afterwards without undoing the switch.
+    finish_cloud(&mut m);
+    assert_eq!(m.cloud.config.selected["claude"], "cloud-orbit");
+    assert!(row(&m, "orbit").native && !row(&m, "nova").native);
+    assert_eq!(m.db.accounts.len(), 3, "the read's new account got its row");
+    assert_eq!(f.manager().cloud.config.selected["claude"], "cloud-orbit");
+    // Negative control: a transfer, removal or leaving does hold work back, and a read that was
+    // out while it ran describes what it changed no longer and is dropped.
+    listing
+        .borrow_mut()
+        .push(directory_row("cloud-late", &bundle("late", "x", now() + 3600), "late"));
+    let release = m.cloud.start_light_held(
+        "directory",
+        f.platform.clone(),
+        crate::cloud::sync_directory,
+    );
+    m.cloud
+        .start(f.platform.clone(), |config, _, _| {
+            Ok(crate::cloud::Update {
+                config,
+                leases: HashMap::new(),
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        m.activate("nova", true),
+        Err("云端正在转换、移除账号或断开配对，请稍后重试")
+    );
+    assert!(m.configure_strategy(rules(), false).is_err());
+    assert_eq!(m.snapshot()["checks_blocked"], true);
+    // That job lands first; the read comes back only afterwards.
+    while m.cloud.job.as_ref().is_some_and(|j| !j.is_finished()) {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    m.cloud.poll();
+    assert!(m.cloud.job.is_none() && m.cloud.light_running("directory"));
+    release.send(()).unwrap();
+    finish_cloud(&mut m);
+    assert!(!m.cloud.config.accounts.iter().any(|a| a["id"] == "cloud-late"));
+    assert_eq!(m.db.accounts.len(), 3);
+    m.activate("nova", true).unwrap();
 }
