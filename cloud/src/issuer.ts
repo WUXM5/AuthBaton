@@ -15,11 +15,14 @@ async function request(url: string, token?: string, body?: any, extra: Record<st
 }
 export class OfficialIssuer implements Issuer {
   async verify(b: Bundle): Promise<void> {
-    if (b.provider === 'codex') { await this.codexUsage(b); return; }
+    // Codex has no identity endpoint the Worker can reach: chatgpt.com answers Workers egress with a 403 page
+    // (2026-11-25), and calling it would turn every import and rotation into a refusal. identity() has already
+    // checked that the id and access tokens name the same user and workspace and that access is unexpired; a
+    // refresh token the issuer no longer accepts surfaces as refresh_rejected at the next renewal.
+    if (b.provider === 'codex') return;
     const p = await request('https://api.anthropic.com/api/oauth/profile', b.credential.accessToken, undefined, { 'anthropic-beta': 'oauth-2025-04-20' });
     if (p.account?.uuid !== b.identity.accountUuid || p.organization?.uuid !== b.identity.organizationUuid) throw new Fault('identity_mismatch');
   }
-  private codexUsage(b: Bundle): Promise<any> { return request('https://chatgpt.com/backend-api/wham/usage', b.credential.tokens.access_token, undefined, { 'ChatGPT-Account-Id': b.credential.tokens.account_id, 'User-Agent': 'codex-cli' }); }
   async refresh(b: Bundle): Promise<Bundle> {
     const next = structuredClone(b); const c = next.credential;
     if (b.provider === 'codex') {
@@ -34,19 +37,5 @@ export class OfficialIssuer implements Issuer {
       if (Number.isFinite(p.refresh_token_expires_in)) c.refreshTokenExpiresAt = Date.now() + p.refresh_token_expires_in * 1000;
     }
     identity(next); return next;
-  }
-  async usage(b: Bundle): Promise<any> {
-    const windows: any[] = [];
-    if (b.provider === 'codex') {
-      const p = await this.codexUsage(b);
-      for (const [name, value] of Object.entries({ '订阅': p.rate_limit, '代码审查': p.code_review_rate_limit })) {
-        for (const [kind, w] of Object.entries((value || {}) as any)) { const v = w as any; if (!kind.endsWith('_window') || !Number.isFinite(v?.used_percent)) continue; windows.push({ label: `${name} · ${Math.round(v.limit_window_seconds / 3600)} 小时`, used_percent: Math.min(100, Math.max(0, v.used_percent)), resets_at: v.reset_at || null }); }
-      }
-    } else {
-      const p = await request('https://api.anthropic.com/api/oauth/usage', b.credential.accessToken, undefined, { 'anthropic-beta': 'oauth-2025-04-20' });
-      for (const [name, value] of Object.entries(p)) { const v = value as any; if (!Number.isFinite(v?.utilization)) continue; const labels: Record<string, string> = { five_hour: '5 小时', seven_day: '7 天', seven_day_sonnet: 'Sonnet · 7 天', seven_day_opus: 'Opus · 7 天' }; windows.push({ label: labels[name] || name.replaceAll('_', ' '), used_percent: Math.min(100, Math.max(0, v.utilization)), resets_at: v.resets_at ? Math.floor(Date.parse(v.resets_at) / 1000) : null }); }
-    }
-    if (!windows.length) throw new Fault('usage_unavailable', 503);
-    return { windows, checked_at: Math.floor(Date.now() / 1000) };
   }
 }
