@@ -1049,10 +1049,9 @@ fn publish(
         }
         platform.delete_key(VAULT, &journal_key)?;
     }
+    // The caller has made sure no client still runs on the login being replaced: a switch refuses
+    // while one runs; a hot switch has just logged the desktop in itself, after checking for others.
     let expected = if activate {
-        if client_running(&target.provider) && target.provider != "claude" {
-            return Err("请先结束任务并退出对应客户端，再设为云端当前账号");
-        }
         native.cloud_existing(platform)?
     } else {
         Some(
@@ -1078,7 +1077,7 @@ fn publish(
         &json!({"id":id,"expected":expected,"target":target}),
     )?;
     if let Some(ref expected) = expected {
-        if expected.credential != target.credential {
+        if expected.credential != target.credential || native.codex_projection_outdated(platform)? {
             native.cloud_publish(platform, expected, target)?;
         }
     } else {

@@ -109,6 +109,38 @@ fn unblocked(manager: &Accounts) {
     assert!(manager.ensure_idle().is_ok());
 }
 
+const SIGNED_OUT_DESKTOP: &str =
+    r#"{"owner":null,"mode":null,"boundOwner":null,"hash":null,"signedOut":true}"#;
+#[test]
+fn a_signed_out_desktop_is_logged_in_to_the_account_in_the_default_file() {
+    // 2026-11-25: Codex ignored a cloud row's access-only file when it started, and the bridge
+    // refused the signed-out desktop, so hot switch could never log it in again.
+    let fixture = Fixture::new();
+    let (mut manager, a, _) = setup(&fixture);
+    fs::write(fixture.root.join("desktop-state.json"), SIGNED_OUT_DESKTOP).unwrap();
+    poll(&mut manager);
+    let state = read_json(&fixture.root.join("desktop-state.json"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(state["owner"], "codex:a:workspace-a");
+    assert_eq!(state["mode"], "chatgptAuthTokens");
+    assert_eq!(manager.db.desktop.selected.as_deref(), Some("a"));
+    assert!(manager.desktop_managed());
+    assert_eq!(default_file(&manager, &fixture), a.credential);
+}
+#[test]
+fn a_desktop_signed_out_of_codex_on_purpose_stays_signed_out() {
+    let fixture = Fixture::new();
+    let (mut manager, _, _) = setup(&fixture);
+    fs::write(fixture.root.join("desktop-state.json"), SIGNED_OUT_DESKTOP).unwrap();
+    // Signing out of Codex deletes the default file.
+    fs::remove_file(manager.sources.codex_home.join("auth.json")).unwrap();
+    poll(&mut manager);
+    assert!(manager.desktop.connected && !manager.desktop_managed());
+    assert_eq!(manager.desktop.message, "Codex 桌面未登录");
+    let operations = fs::read_to_string(fixture.root.join("desktop-operations")).unwrap();
+    assert_eq!(operations.lines().collect::<Vec<_>>(), ["poll"]);
+}
 #[test]
 fn a_login_that_landed_before_the_switch_failed_is_finished_by_the_next_poll() {
     let fixture = Fixture::new();

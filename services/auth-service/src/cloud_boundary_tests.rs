@@ -714,10 +714,14 @@ fn switching_codex_to_a_cloud_row_without_hot_switch_writes_access_only() {
     m.db.accounts.push(account("nova", &nova, true));
     add_cloud_row(&mut m, "orbit", "cloud-orbit", &cloud, "");
     m.activate("orbit", true).unwrap();
+    // On disk in the form Codex loads when it starts: a ChatGPT login whose refresh token is empty.
     let written = read_json(&file).unwrap().unwrap();
-    assert!(written["tokens"].get("refresh_token").is_none());
-    assert_eq!(written["auth_mode"], "chatgptAuthTokens");
-    assert_eq!(written, crate::cloud::projection(&cloud).credential);
+    assert_eq!(written["tokens"]["refresh_token"], "");
+    assert_eq!(written["auth_mode"], "chatgpt");
+    assert!(
+        m.native("codex").unwrap().cloud_read(&f.platform).unwrap()
+            == crate::cloud::projection(&cloud)
+    );
     assert_eq!(f.platform.vault_read("nova").unwrap(), nova.encoded());
     m.activate("nova", true).unwrap();
     assert_eq!(read_json(&file).unwrap().unwrap(), nova.credential);
@@ -751,10 +755,11 @@ fn codex_hot_switch_logs_the_desktop_in_with_leased_access_and_back() {
     assert_eq!(state["owner"], "codex:orbit:workspace-orbit");
     assert_eq!(state["mode"], "chatgptAuthTokens");
     let file = m.sources.codex_home.join("auth.json");
-    assert_eq!(
-        read_json(&file).unwrap().unwrap(),
-        crate::cloud::projection(&cloud).credential
+    assert!(
+        m.native("codex").unwrap().cloud_read(&f.platform).unwrap()
+            == crate::cloud::projection(&cloud)
     );
+    assert_eq!(read_json(&file).unwrap().unwrap()["auth_mode"], "chatgpt");
     assert_eq!(m.db.desktop.selected.as_deref(), Some("orbit"));
     assert_eq!(m.cloud.config.selected["codex"], "cloud-orbit");
     let orbit = row(&m, "orbit");
@@ -771,6 +776,38 @@ fn codex_hot_switch_logs_the_desktop_in_with_leased_access_and_back() {
     assert_eq!(m.db.desktop.selected.as_deref(), Some("a"));
     assert!(!m.cloud.config.selected.contains_key("codex"));
     assert!(vault_items_with(&f, &access_of(&cloud)).is_empty());
+    assert!(!fixture_contains(&f.root, b"SYNTHETIC-orbit-cloud-refresh"));
+}
+
+#[test]
+fn a_desktop_signed_out_by_an_old_cloud_file_is_logged_in_and_the_file_rewritten() {
+    let f = Fixture::new();
+    cloud_config(&f);
+    let (mut m, _, _) = super::desktop_boundary_tests::setup(&f);
+    let cloud = codex("orbit", "SYNTHETIC-orbit-cloud-refresh", 1);
+    add_cloud_row(&mut m, "orbit", "cloud-orbit", &cloud, "other");
+    m.activate("orbit", true).unwrap();
+    finish_desktop(&mut m);
+    let file = m.sources.codex_home.join("auth.json");
+    let written = read_json(&file).unwrap().unwrap();
+    assert_eq!(written["auth_mode"], "chatgpt");
+    // What 0.34.0 wrote; Codex ignored it when it started and came up signed out.
+    write_json(&file, &crate::cloud::projection(&cloud).credential).unwrap();
+    fs::write(
+        f.root.join("desktop-state.json"),
+        r#"{"owner":null,"mode":null,"boundOwner":null,"hash":null,"signedOut":true}"#,
+    )
+    .unwrap();
+    m.desktop.finish_after = 0;
+    m.desktop.last_poll = 0;
+    m.desktop_tick();
+    finish_desktop(&mut m);
+    let state = read_json(&f.root.join("desktop-state.json"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(state["owner"], "codex:orbit:workspace-orbit");
+    assert!(m.desktop_managed());
+    assert_eq!(read_json(&file).unwrap().unwrap(), written);
     assert!(!fixture_contains(&f.root, b"SYNTHETIC-orbit-cloud-refresh"));
 }
 

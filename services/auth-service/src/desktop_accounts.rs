@@ -264,7 +264,11 @@ impl Accounts {
             .login_or_projection(&self.platform)?
             .ok_or("原生凭据不存在")?;
         let old_owner = old.access_metadata()?.owner;
-        if observed["owner"] != old_owner && observed["owner"] != metadata.owner {
+        // A signed-out desktop has no identity to compare; it gets the target's login.
+        if !observed["owner"].is_null()
+            && observed["owner"] != old_owner
+            && observed["owner"] != metadata.owner
+        {
             return Err("桌面与默认文件身份不一致，切换未开始");
         }
         self.desktop.observed(&observed)?;
@@ -474,6 +478,10 @@ impl Accounts {
                         if self.desktop.pending_switch.is_none()
                             && self.finish_desktop_login(&value)
                         {
+                            return;
+                        }
+                        if self.desktop.owner.is_none() {
+                            self.log_in_signed_out_desktop();
                             return;
                         }
                         self.desktop.message = "桌面连接就绪；选择账号后将更新全局默认".into();
@@ -730,6 +738,52 @@ impl Accounts {
             self.desktop.message = format!("桌面已登录另一个账号，默认文件还没同步：{message}");
         }
         true
+    }
+    // A signed-out desktop whose default file holds a registered account's login could not use it:
+    // a cloud row's access-only login written by 0.34.0 or earlier in a form Codex ignores when it
+    // starts. Log the desktop in to that account. Signing out of Codex deletes the file, so a
+    // person's sign-out is never undone.
+    fn log_in_signed_out_desktop(&mut self) {
+        self.desktop.message = "Codex 桌面未登录".into();
+        if now() < self.desktop.finish_after
+            || self.desktop.pending_switch.is_some()
+            || self.job.is_some()
+            || self.reset_job.is_some()
+            || self.pending_login.is_some()
+            || self.db.switch.is_some()
+            || self.automation.job.is_some()
+            || self.db.automation.run.is_some()
+        {
+            return;
+        }
+        self.desktop.finish_after = now() + 30;
+        let Some((id, owner)) = self
+            .db
+            .accounts
+            .iter()
+            .find(|a| a.provider == "codex" && a.native)
+            .and_then(|a| Some((a.id.clone(), a.metadata.as_ref()?.owner.clone())))
+        else {
+            return;
+        };
+        let held = self
+            .native("codex")
+            .and_then(|n| n.login_or_projection(&self.platform))
+            .ok()
+            .flatten()
+            .and_then(|b| b.access_metadata().ok())
+            .map(|m| m.owner);
+        if held.as_ref() != Some(&owner) {
+            return;
+        }
+        self.desktop_log(
+            "login_signed_out",
+            Some(&id),
+            "桌面未登录，登录默认文件里的账号",
+        );
+        if let Err(message) = self.activate_desktop(&id) {
+            self.desktop.message = format!("Codex 桌面未登录：{message}");
+        }
     }
     // While AuthManager runs, a desktop that starts without the debug port (opened from the Dock,
     // or restarted by its updater) is restarted in debug mode once it has finished starting and

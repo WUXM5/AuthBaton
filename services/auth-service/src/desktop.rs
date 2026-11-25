@@ -280,10 +280,15 @@ impl Runtime {
         };
         self.target = Some(field("target")?);
         self.instance = Some(field("instance")?);
-        self.owner = Some(field("owner")?);
-        self.mode = Some(field("mode")?);
-        self.hash = Some(field("hash")?);
-        self.bound = value["boundOwner"].as_str() == self.owner.as_deref();
+        // Signed out: Codex has no login it can use, so there is no identity to confirm.
+        if value["signedOut"] == true {
+            (self.owner, self.mode, self.hash) = (None, None, None);
+        } else {
+            self.owner = Some(field("owner")?);
+            self.mode = Some(field("mode")?);
+            self.hash = Some(field("hash")?);
+        }
+        self.bound = self.owner.is_some() && value["boundOwner"].as_str() == self.owner.as_deref();
         self.connected = true;
         self.observed_at = Some(crate::status::now());
         Ok(())
