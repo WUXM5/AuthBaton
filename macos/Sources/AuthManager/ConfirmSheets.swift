@@ -11,7 +11,12 @@ struct AccountSheetView: View {
         Group {
             switch item {
             case .login(let provider, let id):
-                LoginView(provider: provider, account: account(id))
+                // An account the centre renews logs in again into the centre.
+                if let account = account(id), account.cloudRenewed, let cloudID = account.cloud?.id {
+                    LoginView(provider: provider, account: account, cloudAccountID: cloudID)
+                } else {
+                    LoginView(provider: provider, account: account(id))
+                }
             case .switchTo(let id):
                 if let account = account(id) { SwitchSheet(account: account, close: close) }
             case .reset(let id, let credit, let request, let expires, let retry):
@@ -20,6 +25,14 @@ struct AccountSheetView: View {
                 }
             case .remove(let id):
                 if let account = account(id) { RemoveSheet(account: account, close: close) }
+            case .toCloud(let id):
+                if let account = account(id) {
+                    if service.directory?.cloud?.paired == true { ToCloudSheet(account: account, close: close) } else { PairFirstSheet(account: account, close: close) }
+                }
+            case .toLocal(let id):
+                if let account = account(id) { ToLocalSheet(account: account, close: close) }
+            case .cloudRemove(let id):
+                if let account = account(id) { CloudRemoveSheet(account: account, close: close) }
             case .recover(let id):
                 if let account = account(id) { RecoverSaveSheet(account: account, close: close) }
             case .rename(let id):
@@ -44,12 +57,12 @@ struct AccountSheetView: View {
 
 // Runs one operation and closes only when the service accepted it.
 @MainActor
-private func submit(_ service: ServiceController, _ method: String, _ params: LoginParams, close: @escaping () -> Void) async {
+func submit(_ service: ServiceController, _ method: String, _ params: LoginParams, close: @escaping () -> Void) async {
     await service.accountOperation(method, params: params)
     if service.accountError == nil { close() }
 }
 
-private struct SheetError: View {
+struct SheetError: View {
     @EnvironmentObject private var service: ServiceController
     var body: some View {
         if let error = service.accountError { Banner(text: error) }

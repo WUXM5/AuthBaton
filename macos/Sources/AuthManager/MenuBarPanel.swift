@@ -9,14 +9,17 @@ struct MenuBarPanel: View {
     @State private var expanded: String?
     @State private var working = false
     @State private var attemptSince: Double?
+    // 退出 asked first: accounts in use here that the centre renews stop getting fresh logins once AuthBaton quits.
+    @State private var quitting = MenuBarPanel.previewQuitting
+    // Preview renders only: draws the panel with its quit confirmation open.
+    @MainActor static var previewQuitting = false
 
     private var directory: AccountDirectory? { service.directory }
-    private var local: Bool { directory?.cloud?.mode != "cloud" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let directory, local {
+            if let directory {
                 rings(directory).padding(.top, 9)
                 issues(directory)
                 ForEach(["codex", "claude"], id: \.self) { provider in
@@ -24,8 +27,6 @@ struct MenuBarPanel: View {
                 }
                 if let desktop = directory.claudeDesktop, desktop.installed { claudeDesktop(desktop) }
                 if let network = directory.network, network.available { networkRow(network) }
-            } else if let cloud = directory?.cloud, !local {
-                cloudSummary(cloud)
             } else if service.isConnected {
                 Text("正在载入账号…").font(.system(size: 12)).foregroundStyle(Palette.ink3).padding(7)
             } else {
@@ -45,6 +46,7 @@ struct MenuBarPanel: View {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+        .onDisappear { quitting = false }
         .onChange(of: service.directory?.desktop?.action) { _, action in
             if let action, let since = attemptSince, action.state == "complete", (action.at ?? 0) >= since {
                 expanded = nil
@@ -123,6 +125,7 @@ struct MenuBarPanel: View {
                 HStack(spacing: 5) {
                     if let current { Seal(current.displayName, style: .inUse, size: 15) }
                     Text(accountName: current?.displayName ?? "没有在用的账号").font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    if let current { CloudBadge(account: current, size: 10) }
                 }
                 .padding(.top, 7)
                 Text(caption(current, windows)).font(.system(size: 10)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
@@ -423,26 +426,66 @@ struct MenuBarPanel: View {
         }
     }
 
-    private func cloudSummary(_ cloud: CloudStatus) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("云端模式 · \(cloud.paired ? "设备已配对" : "还没配对")").font(.system(size: 12, weight: .semibold))
-            ForEach(cloud.accounts.filter { cloud.selected.values.contains($0.id) }) { account in
-                Text("\(account.label) · \(account.stateLabel)").font(.system(size: 11)).foregroundStyle(Palette.ink2)
-            }
-            Text("\(cloud.accounts.count) 个云端账号").font(.system(size: 11)).foregroundStyle(Palette.ink3)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .loopCard(radius: 12)
-        .padding(.top, 9)
-    }
-
     private var footer: some View {
-        VStack(spacing: 0) {
+        let inUse = directory?.cloudInUse ?? []
+        return VStack(spacing: 0) {
             Rectangle().fill(Palette.edge.opacity(0.7)).frame(height: 1).padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 5)
             MenuRow(title: "打开 AuthBaton", action: openWindow)
-            MenuRow(title: "退出", shortcut: "⌘Q", key: "q") { NSApplication.shared.terminate(nil) }
+            if quitting && !inUse.isEmpty {
+                quitConfirm(inUse)
+            } else {
+                // What quitting costs is said where it is clicked, and nowhere else.
+                MenuRow(title: "退出", shortcut: "⌘Q", key: "q",
+                        detail: inUse.isEmpty ? nil : "在用云端号 \(inUse.map(\.displayName).joined(separator: "、")) · 退出约 \(Self.lapse(inUse))掉登录") {
+                    if inUse.isEmpty { NSApplication.shared.terminate(nil) } else { quitting = true }
+                }
+            }
         }
+    }
+
+    // How long until the first client in use loses its login once nothing renews it: what its short-lived
+    // login has left, or the usual lifetime when that is not known.
+    static func lapse(_ accounts: [ManagedAccount]) -> String {
+        if let soonest = accounts.compactMap({ $0.cloud?.accessExpiresAt }).min(),
+           let countdown = When.countdown(to: Date(timeIntervalSince1970: soonest)) { return countdown }
+        return (accounts.contains { $0.provider == "claude" } ? "8 小时" : "10 天") + "后"
+    }
+
+    private func quitConfirm(_ accounts: [ManagedAccount]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Icon(.alert, size: 15, color: Palette.attention)
+                    .frame(width: 30, height: 30)
+                    .background(Palette.attentionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("现在退出 AuthBaton？").font(.system(size: 13, weight: .bold))
+                    Text("退出后将停止为在用云端账号续签短期凭据，客户端到期后会掉登录。")
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            VStack(spacing: 4) {
+                ForEach(accounts) { account in
+                    HStack(spacing: 5) {
+                        Icon(.provider(account.provider), size: 11)
+                        Text("\(GlyphTile.name(account.provider)) · \(account.displayName)").font(.system(size: 11, weight: .medium)).lineLimit(1)
+                        CloudShape().fill(Palette.ink3).frame(width: 10, height: 10)
+                        Spacer(minLength: 4)
+                        Text("约 \(Self.lapse([account]))失效").font(.system(size: 11)).foregroundStyle(Palette.attentionText).lineLimit(1).fixedSize()
+                    }
+                    .padding(.horizontal, 8).frame(height: 28)
+                    .background(Palette.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+            HStack(spacing: 7) {
+                Spacer()
+                Button("仍然退出") { NSApplication.shared.terminate(nil) }.buttonStyle(.pill(.secondary, height: 26))
+                Button("保持运行") { quitting = false }.buttonStyle(.pill(.primary, height: 26)).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+        .padding(.top, 5)
     }
 }
 
@@ -460,6 +503,7 @@ private struct SwitchRow: View {
             HStack(spacing: 9) {
                 Seal(account.displayName, style: .standby, size: 19)
                 Text(accountName: account.displayName).font(.system(size: 12)).lineLimit(1)
+                CloudBadge(account: account, size: 11)
                 if next { PointerMark().fill(Palette.brand).frame(width: 6, height: 7.5).help(PointerRank.meaning) }
                 if account.needsAction { Circle().fill(Palette.attentionDot).frame(width: 5, height: 5) }
                 Spacer(minLength: 3.5)
@@ -486,18 +530,29 @@ private struct MenuRow: View {
     let title: String
     var shortcut: String? = nil
     var key: KeyEquivalent? = nil
+    // A second line under the title: what the action costs right now.
+    var detail: String? = nil
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: 12))
-                Spacer()
-                if let shortcut { Text(shortcut).font(.system(size: 12)).foregroundStyle(Palette.ink3) }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(title).font(.system(size: 12))
+                    Spacer()
+                    if let shortcut { Text(shortcut).font(.system(size: 12)).foregroundStyle(Palette.ink3) }
+                }
+                if let detail {
+                    HStack(spacing: 4) {
+                        CloudShape().fill(Palette.ink3).frame(width: 10, height: 10)
+                        Text(detail).font(.system(size: 10)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    }
+                }
             }
             .padding(.horizontal, 7)
-            .frame(height: 26)
+            .padding(.vertical, detail == nil ? 0 : 5)
+            .frame(minHeight: 26)
             .background(hovering ? Palette.rail : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -513,10 +568,9 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let directory = service.directory
-        let local = directory?.cloud?.mode != "cloud"
-        let lowest = local ? directory?.current("codex")?.lowestPrimary : nil
-        let urgent = local && ((directory?.attentionCount ?? 0) > 0)
-        let reminded = local && !ExpiryReminder.all(directory?.accounts ?? [], dismissed: ReminderStore.dismissed()).isEmpty
+        let lowest = directory?.current("codex")?.lowestPrimary
+        let urgent = (directory?.attentionCount ?? 0) > 0
+        let reminded = !ExpiryReminder.all(directory?.accounts ?? [], dismissed: ReminderStore.dismissed()).isEmpty
         let offline = !service.isConnected && !service.isConnecting
         HStack(spacing: 3) {
             Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))

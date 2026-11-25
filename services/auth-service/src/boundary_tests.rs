@@ -1291,20 +1291,17 @@ fn only_accounts_the_local_strategy_resets_are_paced_toward_their_line() {
     manager.quota_tick();
     assert_eq!(manager.quota.line("native"), Some(5.0));
     manager.quota.stop(now());
-    for (enabled, rule, mode) in [
-        (false, rule(Order::ResetFirst, true), "local"),
-        (true, rule(Order::ResetFirst, false), "local"),
-        (true, rule(Order::SwitchOnly, true), "local"),
-        (true, rule(Order::ResetFirst, true), "cloud"),
+    for (enabled, rule) in [
+        (false, rule(Order::ResetFirst, true)),
+        (true, rule(Order::ResetFirst, false)),
+        (true, rule(Order::SwitchOnly, true)),
     ] {
         manager.db.automation.config = Config {
             enabled,
             accounts: vec![rule],
         };
-        manager.cloud.config.mode = mode.into();
-        assert_eq!(manager.quota_line("native"), None, "{enabled} {mode}");
+        assert_eq!(manager.quota_line("native"), None, "{enabled}");
     }
-    manager.cloud.config.mode = "local".into();
     manager.db.automation.config = Config {
         enabled: true,
         accounts: vec![rule(Order::SwitchFirst, true)],

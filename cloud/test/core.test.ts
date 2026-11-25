@@ -625,3 +625,225 @@ test('alarm reconciles a persisted interrupted refresh by re-granting the creden
   assert.equal((await restarted.run('lease', { id: f.id }, f.device.bearer)).version, 2);
   assert.equal(issuer.refreshes, 2);
 });
+
+test('export.begin gives one device the full credential, and a repeated begin returns the same one without extending it', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+  const stored = structuredClone(f.store.value!.accounts[0].bundle);
+  const request = { id: f.id, operation: 'synthetic-export' };
+  const begun = await f.authority.run('export.begin', request, f.device.bearer);
+  assert.deepEqual(begun, { id: f.id, owner: 'claude:synthetic-user:synthetic-org', version: 1, bundle: stored });
+  assert.equal(begun.bundle.credential.refreshToken, 'SYNTHETIC-refresh-1');
+  assert.deepEqual(f.store.value!.accounts[0].export, { device: f.device.id, operation: 'synthetic-export', at: f.clock() });
+  const saves = f.store.saves; f.advance(30);
+  assert.deepEqual(await f.authority.run('export.begin', request, f.device.bearer), begun);
+  assert.equal(f.store.saves, saves);
+  await assert.rejects(f.authority.run('export.begin', { ...request, operation: 'another-export' }, f.device.bearer), code('export_in_progress'));
+  await assert.rejects(f.authority.run('export.begin', request, other.bearer), code('export_in_progress'));
+  assert.equal((await f.authority.run('accounts', {}, other.bearer)).accounts[0].state, 'exporting');
+  assert.equal(issuer.refreshes, 0);
+});
+
+test('only a ready account can be taken back', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer);
+  await assert.rejects(f.authority.run('export.begin', { id: f.id, operation: 'synthetic-export' }, f.device.bearer), code('account_not_ready'));
+  await f.commit();
+  issuer.beforeRefresh = async () => { throw new Fault('refresh_rejected'); };
+  await assert.rejects(f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer), code('refresh_rejected'));
+  await assert.rejects(f.authority.run('export.begin', { id: f.id, operation: 'synthetic-export' }, f.device.bearer), code('account_not_ready'));
+  assert.equal(f.store.value!.accounts[0].state, 'reauthorization_required');
+  await assert.rejects(f.authority.run('export.begin', { id: 'missing', operation: 'synthetic-export' }, f.device.bearer), code('account_missing'));
+});
+
+test('while an account is taken back nothing renews it, and only the device taking it is given its current access', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  f.advance(2800); // Access expires within 15 minutes: a ready account is renewed now.
+  await f.authority.run('maintenance', {}, null, true);
+  await assert.rejects(f.authority.run('lease', { id: f.id }, other.bearer), code('account_exporting'));
+  await assert.rejects(f.authority.run('check', { id: f.id }, other.bearer), code('account_exporting'));
+  const lease = await f.authority.run('lease', { id: f.id, rejected_version: 1 }, f.device.bearer);
+  assert.equal(lease.access_token, 'SYNTHETIC-access-1'); assert.equal(lease.version, 1);
+  assert.equal(issuer.refreshes, 0); assert.equal(f.store.value!.accounts[0].state, 'exporting');
+  // Abandoned, the account is renewed again.
+  await f.authority.run('export.abort', request, f.device.bearer);
+  await f.authority.run('maintenance', {}, null, true);
+  assert.equal(issuer.refreshes, 1);
+  assert.equal((await f.authority.run('lease', { id: f.id }, other.bearer)).version, 2);
+});
+
+test('the device taking an account back is not given an access about to expire', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+  await f.authority.run('export.begin', { id: f.id, operation: 'synthetic-export' }, f.device.bearer);
+  f.advance(3550);
+  await assert.rejects(f.authority.run('lease', { id: f.id }, f.device.bearer), code('account_exporting'));
+  assert.equal(issuer.refreshes, 0);
+});
+
+test('export.commit deletes the account only for the device and operation that began it, and a repeated commit succeeds', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  await f.authority.run('export.begin', request, f.device.bearer);
+  await assert.rejects(f.authority.run('export.commit', request, other.bearer), code('export_in_progress'));
+  await assert.rejects(f.authority.run('export.commit', { ...request, operation: 'another-export' }, f.device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.accounts.length, 1);
+  f.store.fault = value => value.accounts.length === 0 ? 'after' : undefined; // The deletion is stored, its reply lost.
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer));
+  f.store.fault = undefined;
+  assert.deepEqual(f.store.value!.accounts, []);
+  assert.deepEqual(await f.authority.run('export.commit', request, f.device.bearer), { removed: true });
+  await assert.rejects(f.authority.run('lease', { id: f.id }, other.bearer), code('account_missing'));
+});
+
+test('export.abort returns the account to cloud renewal only for the device that began it, and repeats harmlessly', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  await assert.rejects(f.authority.run('export.abort', request, other.bearer), code('export_in_progress'));
+  await assert.rejects(f.authority.run('export.abort', { ...request, operation: 'another-export' }, f.device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.accounts[0].state, 'exporting');
+  assert.deepEqual(await f.authority.run('export.abort', request, f.device.bearer), { aborted: true });
+  assert.equal(f.store.value!.accounts[0].state, 'ready'); assert.equal('export' in f.store.value!.accounts[0], false);
+  assert.deepEqual(await f.authority.run('export.abort', request, f.device.bearer), { aborted: true });
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  assert.equal((await f.authority.run('lease', { id: f.id }, other.bearer)).version, 1);
+  await f.authority.run('export.begin', { ...request, operation: 'other-export' }, other.bearer);
+  assert.equal(f.store.value!.accounts[0].export!.device, other.id);
+});
+
+test('maintenance abandons an export not committed within an hour, whatever the maintenance setting', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+  await f.authority.run('update', { id: f.id, automatic: false }, f.device.bearer);
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  f.advance(3000); await f.authority.run('export.begin', request, f.device.bearer);
+  f.advance(599); await f.authority.run('maintenance', {}, null, true);
+  assert.equal(f.store.value!.accounts[0].state, 'exporting');
+  f.advance(1); await f.authority.run('maintenance', {}, null, true);
+  assert.equal(f.store.value!.accounts[0].state, 'ready'); assert.equal('export' in f.store.value!.accounts[0], false);
+  await f.authority.run('update', { id: f.id, automatic: true }, f.device.bearer);
+  await f.authority.run('maintenance', {}, null, true);
+  assert.equal(issuer.refreshes, 1); assert.equal(f.store.value!.accounts[0].version, 2);
+});
+
+test('an account being taken back cannot be replaced by a new sign-in until the export ends', async () => {
+  const f = await setup(); await f.commit();
+  await f.authority.run('export.begin', { id: f.id, operation: 'synthetic-export' }, f.device.bearer);
+  await assert.rejects(f.authority.run('import', { operation: 'synthetic-replacement', replace_id: f.id, label: 'New', bundle: bundle('claude', 100) }, f.device.bearer), code('handoff_in_progress'));
+  assert.equal(f.store.value!.accounts[0].state, 'exporting');
+});
+
+test('accounts lists the devices that leased or checked each account in the last 30 days, newest first', async () => {
+  const f = await setup(); await f.commit(); const b = await pair(f.authority, 'b'); const c = await pair(f.authority, 'c');
+  const usedBy = async () => (await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by;
+  assert.deepEqual(await usedBy(), []);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); const first = f.clock();
+  f.advance(10); await f.authority.run('check', { id: f.id }, b.bearer);
+  f.advance(10); await f.authority.run('lease', { id: f.id }, c.bearer);
+  assert.deepEqual(await usedBy(), [
+    { device_id: c.id, label: 'synthetic-c', at: first + 20 },
+    { device_id: b.id, label: 'synthetic-b', at: first + 10 },
+    { device_id: f.device.id, label: 'synthetic-a', at: first },
+  ]);
+  await f.authority.run('admin.revoke', { id: c.id }, null, true);
+  f.advance(2591985); // 30 days after the first lease, not yet after the check.
+  assert.deepEqual((await usedBy()).map((u: any) => u.device_id), [b.id]);
+});
+
+test('a device using an account is recorded at most once every five minutes', async () => {
+  const f = await setup(); await f.commit();
+  const listed = async () => await f.authority.run('accounts', {}, f.device.bearer);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); const first = f.clock(); const saves = f.store.saves;
+  f.advance(299);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); await f.authority.run('check', { id: f.id }, f.device.bearer);
+  assert.equal(f.store.saves, saves); assert.equal((await listed()).accounts[0].used_by[0].at, first);
+  f.advance(1); await f.authority.run('check', { id: f.id }, f.device.bearer);
+  assert.equal(f.store.saves, saves + 1); assert.equal((await listed()).accounts[0].used_by[0].at, first + 300);
+  assert.equal((await listed()).devices[0].last_seen, first + 300);
+});
+
+test('a new sign-in keeps the record of the devices using the account', async () => {
+  const f = await setup(); await f.commit();
+  await f.authority.run('lease', { id: f.id }, f.device.bearer);
+  const before = (await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by;
+  await f.authority.run('import', { operation: 'synthetic-replacement', replace_id: f.id, label: 'New', bundle: bundle('claude', 100) }, f.device.bearer);
+  await f.authority.run('import.commit', { id: f.id, operation: 'synthetic-replacement' }, f.device.bearer);
+  assert.equal(before.length, 1);
+  assert.deepEqual((await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by, before);
+});
+
+test('a device can leave by itself, a repeated leave succeeds, and its pairing cannot hand its credential out again', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  await f.authority.run('lease', { id: f.id }, f.device.bearer);
+  assert.deepEqual(await f.authority.run('leave', {}, f.device.bearer), { revoked: true });
+  await assert.rejects(f.authority.run('accounts', {}, f.device.bearer), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('lease', { id: f.id }, f.device.bearer), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('pair.poll', { id: f.device.pending.id }, f.device.proofHash), code('pair_expired'));
+  assert.deepEqual(await f.authority.run('leave', {}, f.device.bearer), { revoked: true });
+  const listed = await f.authority.run('accounts', {}, other.bearer);
+  assert.deepEqual(listed.devices.map((d: any) => d.id), [other.id]); assert.deepEqual(listed.accounts[0].used_by, []);
+  await assert.rejects(f.authority.run('leave', {}, await hash('unknown')), code('device_unauthorized'));
+  await assert.rejects(f.authority.run('leave', {}, null), code('device_unauthorized'));
+});
+
+test('a device cannot leave while it is taking an account back; another device taking one back does not stop it', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  await assert.rejects(f.authority.run('leave', {}, f.device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.devices[0].revoked, false);
+  await f.authority.run('export.abort', request, f.device.bearer);
+  await f.authority.run('export.begin', request, other.bearer);
+  await f.authority.run('leave', {}, f.device.bearer);
+  assert.equal(f.store.value!.devices[0].revoked, true);
+});
+
+for (const [failure, state] of [['issuer_rate_limited', 'ready'], ['refresh_rejected', 'reauthorization_required'], ['issuer_outcome_unknown', 'uncertain']] as const) {
+  test(`after an abandoned export the device's commit still deletes the account when the Worker's renewal ends ${state}`, async () => {
+    // The device renewed the account itself first, so the Worker's renewal is refused or unanswered; the version stays.
+    const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+    const request = { id: f.id, operation: 'synthetic-export' };
+    await f.authority.run('export.begin', request, f.device.bearer);
+    issuer.beforeRefresh = async () => { throw new Fault(failure, 503); };
+    f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+    assert.equal(issuer.refreshes, 1); assert.equal(f.store.value!.accounts[0].state, state); assert.equal(f.store.value!.accounts[0].version, 1);
+    await assert.rejects(f.authority.run('export.commit', { ...request, operation: 'another-export' }, f.device.bearer), code('export_not_active'));
+    await assert.rejects(f.authority.run('export.commit', request, other.bearer), code('export_not_active'));
+    assert.deepEqual(await f.authority.run('export.commit', request, f.device.bearer), { removed: true });
+    assert.deepEqual(f.store.value!.accounts, []);
+  });
+}
+
+test('after an abandoned export the Worker renewed, the device commit is refused for good', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+  assert.equal(f.store.value!.accounts[0].version, 2);
+  for (let n = 0; n < 2; n++) await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  assert.equal(f.store.value!.accounts.length, 1);
+});
+
+test('a new export clears what an abandoned one left, so its commit no longer deletes the account', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  issuer.beforeRefresh = async () => { throw new Fault('issuer_rate_limited', 503); };
+  f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+  await f.authority.run('export.begin', { ...request, operation: 'other-export' }, other.bearer);
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_in_progress'));
+  await f.authority.run('export.abort', { ...request, operation: 'other-export' }, other.bearer);
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  assert.equal(f.store.value!.accounts.length, 1);
+});
+
+test('nobody can remove an account while it is being taken back', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  for (const device of [other, f.device]) await assert.rejects(f.authority.run('remove', { id: f.id }, device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.accounts.length, 1);
+  await f.authority.run('export.abort', request, f.device.bearer);
+  assert.deepEqual(await f.authority.run('remove', { id: f.id }, other.bearer), { removed: true });
+});

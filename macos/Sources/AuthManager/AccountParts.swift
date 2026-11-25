@@ -276,18 +276,36 @@ struct AccountMenu: View {
     var body: some View {
         let checkDisabled = service.accountBusy || (directory.checksBlocked ?? true) || account.checkStatus != nil
         let querying = service.quotaRequests.contains(account.id) || account.usage?.refreshing == true
+        // Two sets: an account this Mac renews, and one the authentication centre renews.
+        let cloud = account.cloudRenewed
         Menu {
             Button(querying ? "正在查询额度…" : "查询额度") { Task { await service.checkQuota(id: account.id) } }
                 .disabled(querying)
-            Button("本地检查") { check(online: false) }.disabled(checkDisabled)
-            Button("认证检查") { check(online: true) }.disabled(checkDisabled || account.state == "unsaved")
+            if cloud {
+                Button("云端状态检查") { Task { await service.cloudAction("refresh") } }.disabled(directory.cloud?.busy == true)
+                Button("认证检查") { Task { await service.cloudAction("check", id: account.id, confirm: true) } }.disabled(directory.cloud?.busy == true)
+            } else {
+                Button("本地检查") { check(online: false) }.disabled(checkDisabled)
+                Button("认证检查") { check(online: true) }.disabled(checkDisabled || account.state == "unsaved")
+            }
             Divider()
-            Button("重新登录…") { open(.login(provider: account.provider, accountID: account.id)) }
+            if cloud {
+                Button("更新云端登录…") { open(.login(provider: account.provider, accountID: account.id)) }
+                Button("转回本机续期…") { open(.toLocal(account.id)) }
+            } else {
+                Button("重新登录…") { open(.login(provider: account.provider, accountID: account.id)) }
+                Button("转到云端续期…") { open(.toCloud(account.id)) }
+            }
             Button("重命名…") { open(.rename(account.id)) }
             Button("执行记录") { open(.history(account.id)) }
             Divider()
-            Button("从 AuthBaton 移除…", role: .destructive) { open(.remove(account.id)) }
-                .disabled(account.removeBlocker(directory) != nil)
+            if cloud {
+                Button("从认证中心移除…", role: .destructive) { open(.cloudRemove(account.id)) }
+                    .disabled(account.removeBlocker(directory) != nil)
+            } else {
+                Button("从 AuthBaton 移除…", role: .destructive) { open(.remove(account.id)) }
+                    .disabled(account.removeBlocker(directory) != nil)
+            }
         } label: {
             MoreDots(color: filled ? Palette.ink2 : Palette.ink3)
                 .frame(width: 26, height: 26)
@@ -298,8 +316,9 @@ struct AccountMenu: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded)
-        .help("查询额度、检查、重新登录、重命名、执行记录、移除")
+        // A move to the centre or back holds the account until it finishes.
+        .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded || account.transferRunning)
+        .help(cloud ? "查询额度、检查、更新云端登录、转回本机、重命名、执行记录、移除" : "查询额度、检查、重新登录、转到云端、重命名、执行记录、移除")
         .accessibilityLabel("\(account.displayName) 的更多操作")
     }
 
@@ -322,7 +341,10 @@ struct AccountActions: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if let next = account.nextReset {
+            if account.transferRunning {
+                // The account waits for its move; the footer says so instead of offering anything.
+                Text(account.health.title).font(.system(size: 12)).foregroundStyle(Palette.ink2).lineLimit(1)
+            } else if let next = account.nextReset {
                 Button("用 1 张重置卡") {
                     open(.reset(accountID: account.id, creditID: next.creditID, requestID: UUID().uuidString, expiresAt: next.expiresAt, retry: false))
                 }

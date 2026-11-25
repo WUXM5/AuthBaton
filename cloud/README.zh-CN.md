@@ -4,6 +4,8 @@
 
 可选组件：部署在你自己 Cloudflare 账户里的 Worker + SQLite Durable Object，集中保存并续期 refresh token，让多台设备共用同一批账号。它不代理模型请求，也不记录请求体或凭据。macOS 客户端在「个人云端」页填写 Worker 地址并配对设备。
 
+账号也能转回某一台设备：`/v1/export.begin` 把完整凭据交给这台设备并停止云端续期，`/v1/export.commit` 随后从 Worker 删除该账号，`/v1/export.abort`（或一小时内没有提交）让它回到云端续期。`/v1/accounts` 列出每个账号最近 30 天用过它的设备，`/v1/leave` 让设备自行断开配对。
+
 ## Worker 配置
 
 | 名称 | 类型 | 说明 |

@@ -18,9 +18,6 @@ impl Accounts {
                 return Err("自动额度策略只支持 Codex 和 Claude 账号");
             }
         }
-        if config.enabled && self.cloud.config.mode != "local" {
-            return Err("自动额度策略目前仅适用于本地模式");
-        }
         self.db.automation.config = config;
         self.db.automation.last_message =
             "策略已保存；逐账号独立检查主额度，重置不依赖桌面连接".into();
@@ -137,15 +134,36 @@ impl Accounts {
             (a, b) => a.or(b),
         }
     }
-    fn strategy_account_ready(&self, a: &Account) -> bool {
-        matches!(a.provider.as_str(), "codex" | "claude")
-            && !self.cloud.config.bindings.contains_key(&a.id)
-            && a.pending_profile.is_none()
-            && matches!(a.state.as_str(), "saved" | "healthy" | "delegated")
-            && a.metadata
-                .as_ref()
-                .and_then(|m| m.expires_at)
-                .is_some_and(|t| t > now() + 60)
+    pub(super) fn strategy_account_ready(&self, a: &Account) -> bool {
+        if !matches!(a.provider.as_str(), "codex" | "claude") || a.pending_profile.is_some() {
+            return false;
+        }
+        match self.cloud.config.bindings.get(&a.id) {
+            None => {
+                matches!(a.state.as_str(), "saved" | "healthy" | "delegated")
+                    && a.metadata
+                        .as_ref()
+                        .and_then(|m| m.expires_at)
+                        .is_some_and(|t| t > now() + 60)
+            }
+            // A cloud row is ready while the cloud renews it and its access, leased or as the
+            // directory last listed it, has time left.
+            Some(b) if b.phase == crate::cloud::CLOUD_MANAGED => {
+                let Some(cloud_id) = b.cloud_id.as_deref() else {
+                    return false;
+                };
+                let directory = self.cloud.account(cloud_id);
+                let leased = self
+                    .cloud
+                    .lease(cloud_id)
+                    .and_then(|l| l["expires_at"].as_u64());
+                directory.is_some_and(|d| d["state"] == "ready")
+                    && leased
+                        .max(directory.and_then(|d| d["expires_at"].as_u64()))
+                        .is_some_and(|t| t > now() + 60)
+            }
+            Some(_) => false,
+        }
     }
     fn strategy_switch_blocker(&self, account: &Account) -> Option<&'static str> {
         if !account.native {
@@ -362,10 +380,6 @@ impl Accounts {
             return;
         }
         self.automation.next_check = now() + 5;
-        if self.cloud.config.mode != "local" {
-            self.automation.message = "云端模式下，本地额度策略暂停".into();
-            return;
-        }
         let ids: Vec<_> = self
             .db
             .automation
@@ -631,8 +645,8 @@ impl Accounts {
         // Read and validate both credentials before even preparing a task interruption batch.
         let source = self.bundle(current)?;
         let target = self.bundle(&self.db.accounts[self.index(target_id)?])?;
-        let source_owner = source.metadata()?.owner;
-        let target_meta = target.metadata()?;
+        let source_owner = source.access_metadata()?.owner;
+        let target_meta = target.access_metadata()?;
         if target_meta.expires_at.is_none_or(|t| t <= now() + 60) {
             return Err("候选凭据即将到期，未暂停任务");
         }
