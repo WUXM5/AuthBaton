@@ -136,7 +136,7 @@ struct FlowEnd {
 struct CloudFlow: View {
     let from: FlowEnd
     let to: FlowEnd
-    // Over the line: 已连接 · 实时同步, 未配对. Without it the line is an arrow.
+    // Over the line: 已连接, 未配对. Without it the line is an arrow.
     var caption: String? = nil
     var linked = true
 

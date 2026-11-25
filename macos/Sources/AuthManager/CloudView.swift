@@ -173,7 +173,7 @@ struct CloudConnectionView: View {
             }
             CloudFlow(from: FlowEnd(title: service.directory?.thisMac ?? "这台 Mac", caption: "这台 Mac"),
                       to: FlowEnd(title: "认证中心", caption: host ?? "未连接", centre: true, dashed: !paired),
-                      caption: paired ? "已连接 · 实时同步" : cloud?.pair != nil ? "等你在 Safari 里批准" : "未配对", linked: paired)
+                      caption: paired ? "已连接" : cloud?.pair != nil ? "等你在 Safari 里批准" : "未配对", linked: paired)
                 .padding(.top, 12)
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 5) {
