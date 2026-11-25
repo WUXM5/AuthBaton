@@ -1,10 +1,11 @@
 // Runs only in the inspected Codex primary renderer. Never logs credentials.
 (async () => {
   const key = '__authManagerDesktopV1';
-  if (globalThis[key]?.revision===11) return true;
+  if (globalThis[key]?.revision===12) return true;
   if (globalThis[key]) {
     const old=await globalThis[key].call({operation:'poll',params:{}});
-    if(!old.ok || old.requests?.length)throw Error('bridge_upgrade_busy');
+    // Revision 11 answered a signed-out desktop with unsupported_auth; such a bridge holds nothing.
+    if((!old.ok && old.code!=='unsupported_auth') || old.requests?.length)throw Error('bridge_upgrade_busy');
     await globalThis[key].call({operation:'release',params:{}});
   }
   // Releases before 0.18 installed a page adapter that kept the page through a switch. An idle one is
@@ -39,6 +40,12 @@
   }
   async function status() {
     const value = await rpc('getAuthStatus', {includeToken:true, refreshToken:false});
+    // Signed out: Codex has no login it can use (it ignores a chatgptAuthTokens file on start). Reported, so
+    // AuthBaton can log it in; any other kind of login is still refused.
+    if (value.authMethod==null && value.requiresOpenaiAuth!==false) {
+      observedOwner=null;usageObservation=null;
+      return {owner:null, workspace:null, expiresAt:null, mode:null, hash:null, signedOut:true};
+    }
     if (!['chatgpt','chatgptAuthTokens'].includes(value.authMethod) || !value.authToken) throw Error('unsupported_auth');
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value.authToken))), b=>b.toString(16).padStart(2,'0')).join('');
     const owner=identity(value.authToken).owner;
@@ -118,7 +125,7 @@
     if (changed) setTimeout(() => location.reload(), 200);
   }
   globalThis[key] = {
-    revision:11,
+    revision:12,
     async call(input) {
       let previousOwner=null, loginSent=false;
       try {
@@ -136,7 +143,7 @@
         if (input.operation==='apply' || input.operation==='update') {
           const before=await status(), p=input.params;
           previousOwner=before.owner;
-          if (before.owner!==p.previousOwner && before.owner!==p.owner) throw Error('identity_changed');
+          if (before.owner!==null && before.owner!==p.previousOwner && before.owner!==p.owner) throw Error('identity_changed');
           if (refreshes.size) throw Error('refresh_pending');
           if (input.operation==='apply') await idle();
           else if (before.owner!==p.owner || before.mode!=='chatgptAuthTokens') throw Error('identity_changed');

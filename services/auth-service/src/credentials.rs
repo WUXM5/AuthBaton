@@ -282,7 +282,21 @@ impl NativeStore {
             ".credentials.json"
         })
     }
+    /// What the store holds, with a cloud row's access-only Codex login back in its own form.
     fn payload(&self, platform: &Platform) -> Result<(Value, bool)> {
+        let (payload, keyring) = self.raw_payload(platform)?;
+        if self.provider == "codex" {
+            return Ok((codex_from_disk(payload), keyring));
+        }
+        Ok((payload, keyring))
+    }
+    /// A cloud row's access-only Codex login that an earlier build wrote in the form Codex
+    /// ignores when it starts.
+    pub fn codex_projection_outdated(&self, platform: &Platform) -> Result<bool> {
+        Ok(self.provider == "codex"
+            && self.raw_payload(platform)?.0["auth_mode"] == "chatgptAuthTokens")
+    }
+    fn raw_payload(&self, platform: &Platform) -> Result<(Value, bool)> {
         if self.mode == "file" {
             return read_json(&self.file())?
                 .map(|v| (v, false))
@@ -411,7 +425,7 @@ impl NativeStore {
         let payload = if self.provider == "claude" {
             serde_json::json!({"claudeAiOauth":target.credential})
         } else {
-            target.credential.clone()
+            codex_on_disk(&target.credential)
         };
         if self.mode == "file" {
             crate::platform::write_json(&self.file(), &payload)?;
@@ -495,7 +509,7 @@ impl NativeStore {
                 payload = merge_claude_credentials(payload, &target.credential)?;
             }
         } else {
-            payload = target.credential.clone();
+            payload = codex_on_disk(&target.credential);
         }
         guard()?;
         if keyring {
@@ -823,6 +837,32 @@ impl NativeStore {
         }
         Ok(())
     }
+}
+// Codex keeps an `auth_mode: chatgptAuthTokens` login in memory only (its host hands it over and
+// renews it), so when it starts it ignores such a file and finds no login. A cloud row's access-only
+// login goes to disk as an ordinary ChatGPT login with an empty refresh token instead: Codex loads it
+// and, before renewing an access about to run out or after a 401, reads the file again (codex-rs
+// 0.172 `AuthManager::auth`, `UnauthorizedRecovery`), where the cloud sync keeps a fresh access.
+fn codex_on_disk(credential: &Value) -> Value {
+    let mut c = credential.clone();
+    if c["auth_mode"] == "chatgptAuthTokens" && c.pointer("/tokens/refresh_token").is_none() {
+        c["auth_mode"] = serde_json::json!("chatgpt");
+        c["tokens"]["refresh_token"] = serde_json::json!("");
+    }
+    c
+}
+// The reverse, on every read. Only AuthBaton writes an empty refresh token: Codex's own logins and
+// renewals always carry one.
+fn codex_from_disk(mut payload: Value) -> Value {
+    if payload["auth_mode"] == "chatgpt"
+        && payload.pointer("/tokens/refresh_token") == Some(&Value::from(""))
+    {
+        payload["auth_mode"] = serde_json::json!("chatgptAuthTokens");
+        if let Some(tokens) = payload["tokens"].as_object_mut() {
+            tokens.remove("refresh_token");
+        }
+    }
+    payload
 }
 fn codex_mode(directory: &Path) -> Result<String> {
     let content = match std::fs::read_to_string(directory.join("config.toml")) {

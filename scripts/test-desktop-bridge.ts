@@ -10,8 +10,9 @@ function jwt(user:string,generation=1):string {
     return `header.${Buffer.from(JSON.stringify({exp:2000000000,generation,'https://api.openai.com/auth':{chatgpt_user_id:user,chatgpt_account_id:`workspace-${user}`}})).toString('base64url')}.synthetic`;
 }
 // oldAdapter: phase of a page adapter left in the page by a release before 0.18.
-function fixture(oldAdapter?:string) {
-    let token=jwt('a'),mode='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,landed=true;
+// oldBridge: a bridge an earlier release left in the page.
+function fixture(oldAdapter?:string,oldBridge?:any) {
+    let token=jwt('a'),mode:string|null='chatgpt',active=false,success=true,readFails=false,clockOffset=0,completionDelay=0,landed=true;
     // Latest turn status of a thread in systemError; null when the thread is not in that state.
     let errored:string|null=null;
     // How the thread was started: a background generation is ephemeral with its own source.
@@ -30,7 +31,8 @@ function fixture(oldAdapter?:string) {
         const {id,method,params}=message.request;
         let result:any;
         switch(method) {
-            case 'getAuthStatus': result={authMethod:mode,authToken:token};break;
+            // Signed out, Codex reports no method and no token.
+            case 'getAuthStatus': result=mode?{authMethod:mode,authToken:token}:{authMethod:null,authToken:null,requiresOpenaiAuth:true};break;
             case 'thread/loaded/list':result={data:['synthetic-thread'],nextCursor:null};break;
             case 'thread/read':result={thread:{name:'合成任务',status:{type:active?'active':errored?'systemError':'idle',activeFlags:[]},...origin}};break;
             case 'thread/turns/list':assert.equal(params.limit,1);result={data:[{id:'synthetic-turn',status:errored??'completed',items:[]}],nextCursor:null};break;
@@ -50,12 +52,13 @@ function fixture(oldAdapter?:string) {
     class Clock extends Date {static now():number{return Date.now()+clockOffset;}}
     const context=vm.createContext({window:{electronBridge:{sendMessageFromView:send},addEventListener:(_:string,l:(e:any)=>void)=>listeners.push(l),removeEventListener:(_:string,l:(e:any)=>void)=>{const i=listeners.indexOf(l);if(i>=0)listeners.splice(i,1)}},location:{reload:()=>{reloads++}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,atob,Date:Clock,setTimeout,clearTimeout});
     if(oldAdapter)context.__authManagerSelectiveUIV1={revision:6,state:()=>({phase:oldAdapter}),dispose:()=>{disposed++}};
-    vm.runInContext(source,context);
+    if(oldBridge)context.__authManagerDesktopV1=oldBridge;
+    const ready=vm.runInContext(source,context);
     const call=(operation:string,params:any={}):Promise<any>=>operation==='preflight'?vm.runInContext(preflightSource,context):context.__authManagerDesktopV1.call({operation,params});
     const auth=(user:string,generation=1)=>({accessToken:jwt(user,generation),chatgptAccountId:`workspace-${user}`,chatgptPlanType:'pro'});
     const apply=(user:string)=>call('apply',{previousOwner:'codex:a:workspace-a',owner:`codex:${user}:workspace-${user}`,auth:auth(user)});
     const refresh=(id:number,workspace='workspace-b')=>emit({type:'mcp-request',hostId:'local',request:{id,method:'account/chatgptAuthTokens/refresh',params:{reason:'unauthorized',previousAccountId:workspace}}});
-    return {call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,reloads,disposed,adapter:context.__authManagerSelectiveUIV1}),setActive:(v:boolean)=>{active=v},setOrigin:(v:{ephemeral?:boolean,threadSource?:string|null})=>{origin=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setLanded:(v:boolean)=>{landed=v}};
+    return {ready,call,auth,apply,refresh,notify,replies,bridge:()=>context.__authManagerDesktopV1,listenerCount:()=>listeners.length,state:()=>({token,mode,injections,reloads,disposed,adapter:context.__authManagerSelectiveUIV1}),setActive:(v:boolean)=>{active=v},setOrigin:(v:{ephemeral?:boolean,threadSource?:string|null})=>{origin=v},setErrored:(v:string|null)=>{errored=v},setSuccess:(v:boolean)=>{success=v},setReadFails:(v:boolean)=>{readFails=v},advance:(ms:number)=>{clockOffset+=ms},setCompletionDelay:(ms:number)=>{completionDelay=ms},setLanded:(v:boolean)=>{landed=v},setSignedOut:()=>{mode=null}};
 }
 // A reload is scheduled 200 ms after the bridge answers.
 const settled=()=>new Promise(resolve=>setTimeout(resolve,250));
@@ -163,6 +166,27 @@ await test('post-install account read failure is a partial operation; the page f
     await settled();assert.equal(f.state().reloads,0);
     const g=fixture();g.setReadFails(true);g.setSuccess(false);assert.equal((await g.apply('b')).ok,false);
     await settled();assert.equal(g.state().reloads,1);
+});
+await test('a signed-out desktop is reported, not refused, and can be logged in',async()=>{
+    // 2026-11-25: a cloud row's access-only file left the desktop signed out, and the bridge refused to take it over.
+    const f=fixture();f.setSignedOut();
+    const seen=await f.call('poll');
+    assert.equal(seen.ok,true);assert.equal(seen.signedOut,true);assert.equal(seen.owner,null);assert.equal(seen.mode,null);
+    assert.equal((await f.call('preflight')).signedOut,true);
+    assert.equal((await f.call('bind',{owner:'codex:b:workspace-b'})).code,'identity_changed');
+    assert.equal((await f.call('update',{previousOwner:'codex:b:workspace-b',owner:'codex:b:workspace-b',auth:f.auth('b')})).code,'identity_changed');
+    assert.equal(f.state().injections,0);
+    const r=await f.apply('b');
+    assert.equal(r.confirmed,true);assert.equal(r.owner,'codex:b:workspace-b');assert.equal(r.mode,'chatgptAuthTokens');
+    await settled();assert.equal(f.state().reloads,0);
+});
+await test('a revision 11 bridge that refused a signed-out desktop is replaced; a busy one is not',async()=>{
+    let released=0;
+    const old=(poll:any)=>({revision:11,call:async(input:any)=>{if(input.operation==='release')released++;return input.operation==='poll'?poll:{ok:true};}});
+    const f=fixture(undefined,old({ok:false,code:'unsupported_auth'}));
+    assert.equal(await f.ready,true);assert.equal(released,1);assert.equal(f.bridge().revision,12);
+    const busy=fixture(undefined,old({ok:true,requests:[{id:1}]}));
+    await assert.rejects(busy.ready,/bridge_upgrade_busy/);assert.equal(busy.bridge().revision,11);
 });
 await test('unrelated identity never injected, and the page is left alone',async()=>{
     const f=fixture();const r=await f.call('apply',{previousOwner:'other',owner:'codex:b:workspace-b',auth:f.auth('b')});assert.equal(r.code,'identity_changed');assert.equal(f.state().injections,0);
