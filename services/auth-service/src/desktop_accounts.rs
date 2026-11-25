@@ -607,28 +607,42 @@ impl Accounts {
                 self.reply_refresh(None);
                 return;
             }
-            let Ok(bundle) = self
+            // A cloud row's newest login is its lease in memory; without one, a lease is asked for below.
+            let cloud_id = self
+                .cloud_lease_id(&refresh.account_id)
+                .map(str::to_string);
+            let bundle = match self
                 .index(&refresh.account_id)
                 .and_then(|index| self.bundle(&self.db.accounts[index]))
-            else {
-                self.reply_refresh(None);
-                return;
+            {
+                Ok(bundle) => Some(bundle),
+                Err(_) if cloud_id.is_some() => None,
+                Err(_) => {
+                    self.reply_refresh(None);
+                    return;
+                }
             };
             use sha2::{Digest, Sha256};
-            let hash = format!(
-                "{:x}",
-                Sha256::digest(
-                    bundle.credential["tokens"]["access_token"]
-                        .as_str()
-                        .unwrap_or("")
-                        .as_bytes()
-                )
-            );
             // A renewal is never pushed to the desktop: logging it in again rebuilds its windows.
             // Codex asks only after a 401 and then retries once, so it gets the newer token here,
             // at once and offline, even while another account's check holds the job slot.
-            if hash != refresh.hash && self.desktop_owns(&refresh.account_id) {
-                self.reply_refresh(desktop::external_auth(&bundle).ok());
+            if let Some(bundle) = &bundle
+                && format!(
+                    "{:x}",
+                    Sha256::digest(
+                        bundle.credential["tokens"]["access_token"]
+                            .as_str()
+                            .unwrap_or("")
+                            .as_bytes()
+                    )
+                ) != refresh.hash
+                && self.desktop_owns(&refresh.account_id)
+            {
+                self.reply_refresh(desktop::external_auth(bundle).ok());
+                return;
+            }
+            if let Some(cloud_id) = cloud_id {
+                self.refresh_from_cloud(&refresh, cloud_id);
                 return;
             }
             if self.job.is_none() {
@@ -762,6 +776,43 @@ impl Accounts {
             Completion::Restart(relaunch(port))
         }));
         true
+    }
+    /// The desktop was refused with the cloud row's newest access: the cloud renews it when asked
+    /// for a lease naming the refused version. Its answer is merged on the next tick, and the
+    /// desktop gets it then; one that brings nothing new ends in the usual empty reply.
+    fn refresh_from_cloud(&mut self, refresh: &Refresh, cloud_id: String) {
+        let tag = format!("lease:{cloud_id}");
+        if self.cloud.light_running(&tag) {
+            return;
+        }
+        if refresh.attempted {
+            self.reply_refresh(None);
+            return;
+        }
+        if let Some(r) = self.desktop.refresh.as_mut() {
+            r.attempted = true;
+        }
+        let rejected = self
+            .cloud
+            .lease(&cloud_id)
+            .and_then(|l| l["version"].as_u64());
+        let started = self
+            .cloud
+            .start_light(&tag, self.platform.clone(), move |cfg, p| {
+                crate::cloud::lease(cfg, p, cloud_id, rejected)
+            });
+        match started {
+            Ok(()) => self.desktop_log(
+                "refresh_start",
+                Some(&refresh.account_id),
+                "向云端要新的 Access 以回复桌面",
+            ),
+            Err(e) => {
+                self.desktop_log("refresh_unavailable", Some(&refresh.account_id), e);
+                self.desktop.message = e.into();
+                self.reply_refresh(None);
+            }
+        }
     }
     fn start_desktop_refresh(&mut self, id: &str) {
         let result = (|| -> Result<()> {

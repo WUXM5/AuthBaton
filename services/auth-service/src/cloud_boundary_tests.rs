@@ -1337,6 +1337,85 @@ fn transferred_accounts_are_fenced_from_all_local_refresh_entries_after_restart(
     assert_eq!(f.platform.vault_read("alice").unwrap(), a.encoded());
 }
 
+fn finish_desktop(m: &mut Accounts) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while let Some(job) = m.desktop.job.as_ref() {
+        assert!(std::time::Instant::now() < deadline);
+        if job.is_finished() {
+            m.desktop_tick();
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+#[test]
+fn a_desktop_refused_with_a_cloud_rows_access_gets_the_cloud_to_renew_it() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    cloud_config(&f);
+    let (mut m, _, _) = super::desktop_boundary_tests::setup(&f);
+    let first = codex("orbit", "SYNTHETIC-orbit-cloud-refresh", 1);
+    add_cloud_row(&mut m, "orbit", "cloud-orbit", &first, "other");
+    m.activate("orbit", true).unwrap();
+    finish_desktop(&mut m);
+    assert_eq!(m.db.desktop.selected.as_deref(), Some("orbit"));
+    let digest = |token: &str| format!("{:x}", Sha256::digest(token.as_bytes()));
+    let replied = || fs::read_to_string(f.root.join("reply-hash")).unwrap();
+    // The desktop's next poll: still holding `held`, asking for a token after a 401.
+    let ask = |m: &mut Accounts, held: &Bundle| {
+        let owner = "codex:orbit:workspace-orbit";
+        fs::write(
+            f.root.join("poll.json"),
+            json!({"ok":true,"owner":owner,"boundOwner":owner,"mode":"chatgptAuthTokens","target":"synthetic-target",
+                "instance":"synthetic-instance","hash":digest(&access_of(held)),"requests":[{"id":7,"epoch":1,"ageMs":100}]})
+            .to_string(),
+        )
+        .unwrap();
+        m.desktop.last_poll = 0;
+        m.desktop_tick();
+        finish_desktop(m);
+    };
+    let renewed = codex("orbit", "SYNTHETIC-orbit-cloud-renewed", 2);
+    let mut next = lease_of("cloud-orbit", &renewed);
+    next["version"] = json!(2);
+    let calls = worker(move |action, body, _| match action {
+        "lease" => {
+            assert_eq!(body["id"], "cloud-orbit");
+            assert_eq!(body["rejected_version"], 1, "names the version the desktop was refused with");
+            Ok(next.clone())
+        }
+        _ => panic!("unexpected synthetic cloud action {action}"),
+    });
+    // Refused with the newest access there is: the cloud renews it, and the desktop gets that.
+    ask(&mut m, &first);
+    assert_eq!(actions(&calls), ["lease"]);
+    assert!(m.desktop.refresh.is_some(), "waits for the cloud's answer");
+    m.cloud_tick();
+    m.desktop_tick();
+    finish_desktop(&mut m);
+    assert!(m.desktop.refresh.is_none());
+    assert_eq!(replied(), digest(&access_of(&renewed)));
+    // Holding an older access than the lease here: the newest goes back at once, without the cloud.
+    fs::remove_file(f.root.join("reply-hash")).unwrap();
+    ask(&mut m, &first);
+    assert_eq!(actions(&calls), ["lease"]);
+    assert_eq!(replied(), digest(&access_of(&renewed)));
+    // The cloud cannot renew it: the desktop gets the usual empty reply instead of waiting on.
+    let failed = worker(|action, _, _| match action {
+        "lease" => Err("synthetic outage"),
+        _ => panic!("unexpected synthetic cloud action {action}"),
+    });
+    ask(&mut m, &renewed);
+    assert_eq!(actions(&failed), ["lease"]);
+    m.cloud_tick();
+    m.desktop_tick();
+    finish_desktop(&mut m);
+    assert!(m.desktop.refresh.is_none());
+    assert_eq!(replied(), digest(""));
+    assert_eq!(actions(&failed), ["lease"], "asked once, not again");
+}
+
 #[test]
 fn routine_cloud_reads_never_hold_back_what_a_person_asks_for() {
     use crate::automation::{Config, Order, Rule};
