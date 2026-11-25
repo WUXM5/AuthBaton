@@ -283,7 +283,7 @@ struct AccountMenu: View {
                 .disabled(querying)
             if cloud {
                 Button("云端状态检查") { Task { await service.cloudAction("refresh") } }.disabled(directory.cloud?.busy == true)
-                Button("认证检查") { Task { await service.cloudAction("check", id: account.id) } }.disabled(directory.cloud?.busy == true)
+                Button("认证检查") { Task { await service.cloudAction("check", id: account.id, confirm: true) } }.disabled(directory.cloud?.busy == true)
             } else {
                 Button("本地检查") { check(online: false) }.disabled(checkDisabled)
                 Button("认证检查") { check(online: true) }.disabled(checkDisabled || account.state == "unsaved")

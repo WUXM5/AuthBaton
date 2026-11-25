@@ -52,11 +52,10 @@ extension ManagedAccount {
         guard let transfer = cloud?.transfer, !transfer.running, transfer.error != nil else { return nil }
         return transfer
     }
-    // The centre could not renew it: only a new login brings it back.
+    // The centre's login was refused: only a new login brings it back. Its other states settle on their own.
     var cloudTrouble: String? {
-        guard cloudRenewed else { return nil }
-        if let error = cloud?.error { return error }
-        return cloud?.state == "reauthorization_required" ? "续期被拒（刷新凭据已失效），需重新登录以恢复云端续期。" : nil
+        guard cloudRenewed, cloud?.state == "reauthorization_required" else { return nil }
+        return cloud?.error ?? "续期被拒（刷新凭据已失效），需重新登录以恢复云端续期。"
     }
     // About how long a client keeps working on a short-lived login once AuthBaton stops: Claude's access
     // lasts about 8 hours, Codex's about 10 days.
@@ -102,6 +101,9 @@ extension ManagedAccount {
         }
         if !cloudRenewed, let notice = loginNotice, notice.needsAttention {
             return Health(tone: .attention, title: notice.state == "expired" ? "登录已到期" : "登录即将到期", detail: notice.message)
+        }
+        if cloudRenewed, ["uncertain", "verification_pending"].contains(cloud?.state ?? "") {
+            return Health(tone: .neutral, title: "云端续期待确认", detail: cloud?.error)
         }
         if cloudRenewed, ["delegated", "healthy", "saved"].contains(ownState) {
             return Health(tone: .neutral, title: "可用", detail: "由认证中心续期，这台 Mac 领取短期凭据。")

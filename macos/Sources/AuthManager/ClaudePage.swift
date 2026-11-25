@@ -452,7 +452,7 @@ private struct ClaudeSide: View {
             HStack(spacing: 7) {
                 Button("云端状态检查") { Task { await service.cloudAction("refresh") } }.buttonStyle(.pill(.secondary))
                     .help("从认证中心同步这个账号的续期状态")
-                Button("认证检查") { Task { await service.cloudAction("check", id: account.id) } }.buttonStyle(.pill(.secondary))
+                Button("认证检查") { Task { await service.cloudAction("check", id: account.id, confirm: true) } }.buttonStyle(.pill(.secondary))
                     .help("让认证中心核对登录，再查一次额度")
             }
             .disabled(service.accountBusy || service.directory?.cloud?.busy == true || account.transferRunning)
