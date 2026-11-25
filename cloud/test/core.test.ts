@@ -722,8 +722,6 @@ test('maintenance abandons an export not committed within an hour, whatever the 
   assert.equal(f.store.value!.accounts[0].state, 'exporting');
   f.advance(1); await f.authority.run('maintenance', {}, null, true);
   assert.equal(f.store.value!.accounts[0].state, 'ready'); assert.equal('export' in f.store.value!.accounts[0], false);
-  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
-  assert.equal(f.store.value!.accounts.length, 1);
   await f.authority.run('update', { id: f.id, automatic: true }, f.device.bearer);
   await f.authority.run('maintenance', {}, null, true);
   assert.equal(issuer.refreshes, 1); assert.equal(f.store.value!.accounts[0].version, 2);
@@ -800,3 +798,43 @@ test('a device cannot leave while it is taking an account back; another device t
   await f.authority.run('leave', {}, f.device.bearer);
   assert.equal(f.store.value!.devices[0].revoked, true);
 });
+
+for (const [failure, state] of [['issuer_rate_limited', 'ready'], ['refresh_rejected', 'reauthorization_required'], ['issuer_outcome_unknown', 'uncertain']] as const) {
+  test(`after an abandoned export the device's commit still deletes the account when the Worker's renewal ends ${state}`, async () => {
+    // The device renewed the account itself first, so the Worker's renewal is refused or unanswered; the version stays.
+    const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+    const request = { id: f.id, operation: 'synthetic-export' };
+    await f.authority.run('export.begin', request, f.device.bearer);
+    issuer.beforeRefresh = async () => { throw new Fault(failure, 503); };
+    f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+    assert.equal(issuer.refreshes, 1); assert.equal(f.store.value!.accounts[0].state, state); assert.equal(f.store.value!.accounts[0].version, 1);
+    await assert.rejects(f.authority.run('export.commit', { ...request, operation: 'another-export' }, f.device.bearer), code('export_not_active'));
+    await assert.rejects(f.authority.run('export.commit', request, other.bearer), code('export_not_active'));
+    assert.deepEqual(await f.authority.run('export.commit', request, f.device.bearer), { removed: true });
+    assert.deepEqual(f.store.value!.accounts, []);
+  });
+}
+
+test('after an abandoned export the Worker renewed, the device commit is refused for good', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit();
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+  assert.equal(f.store.value!.accounts[0].version, 2);
+  for (let n = 0; n < 2; n++) await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  assert.equal(f.store.value!.accounts.length, 1);
+});
+
+test('a new export clears what an abandoned one left, so its commit no longer deletes the account', async () => {
+  const issuer = new SyntheticIssuer(); const f = await setup('claude', issuer); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  issuer.beforeRefresh = async () => { throw new Fault('issuer_rate_limited', 503); };
+  f.advance(3600); await f.authority.run('maintenance', {}, null, true);
+  await f.authority.run('export.begin', { ...request, operation: 'other-export' }, other.bearer);
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_in_progress'));
+  await f.authority.run('export.abort', { ...request, operation: 'other-export' }, other.bearer);
+  await assert.rejects(f.authority.run('export.commit', request, f.device.bearer), code('export_not_active'));
+  assert.equal(f.store.value!.accounts.length, 1);
+});
+

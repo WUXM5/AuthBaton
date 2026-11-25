@@ -2,9 +2,11 @@
 export type Provider = 'codex' | 'claude';
 export type Bundle = { provider: Provider; credential: any; identity: any };
 export type Identity = { owner: string; display: string; plan: string; expires_at: number; refresh_expires_at: number | null };
-type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry; export?: Export; used?: Record<string, number> };
+type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry; export?: Export; exported_by?: Exported; used?: Record<string, number> };
 // A device taking an account back to renew it itself.
 type Export = { device: string; operation: string; at: number };
+// An export abandoned after an hour, at the version the device was given.
+type Exported = { device: string; operation: string; version: number };
 type Device = { id: string; label: string; secret_hash: string; revoked: boolean; last_seen: number };
 type Pair = { id: string; code: string; label: string; proof: string; expires: number; approved: boolean; source: string; device?: Device; token?: string };
 export type State = { schema: 1; accounts: Entry[]; devices: Device[]; pairs: Pair[] };
@@ -85,8 +87,9 @@ export class Authority {
     if (action === 'admin.revoke' && admin) { const d = s.devices.find(d => d.id === body.id); if (!d) throw new Fault('device_missing'); d.revoked = true; s.pairs = s.pairs.filter(p => p.device?.id !== d.id); await this.store.save(s); return { revoked: true }; }
     if (action === 'maintenance' && admin) {
       for (const a of s.accounts) {
-        // An export not committed within an hour is abandoned, and the Worker renews the account again.
-        if (a.state === 'exporting' && a.export!.at + 3600 <= now) { a.state = 'ready'; delete a.export; await this.store.save(s); }
+        // An export not committed within an hour is abandoned, and the Worker renews the account again. The device may
+        // already renew it itself, so its commit still deletes the account while the version it was given is current.
+        if (a.state === 'exporting' && a.export!.at + 3600 <= now) { a.exported_by = { device: a.export!.device, operation: a.export!.operation, version: a.version }; a.state = 'ready'; delete a.export; await this.store.save(s); }
         if (!a.automatic) continue;
         try { if (a.state === 'refreshing') { a.state = 'uncertain'; a.error = 'refresh_outcome_unknown'; await this.store.save(s); } else if (a.state === 'verification_pending') await this.verifyRotated(s, a); else if (a.state === 'uncertain' || (a.state === 'ready' && a.identity.expires_at < now + 900)) await this.renew(s, a); }
         catch { /* State is persisted; one account cannot starve maintenance for the others. */ }
@@ -126,11 +129,13 @@ export class Authority {
     if (action === 'import.status') { const a = s.accounts.find(a => a.operation === body.operation && a.source === device.id); return { account: a ? safe(a) : null }; }
     if (action === 'import.abort') { const a = s.accounts.find(a => a.operation === body.operation && a.source === device.id); if (a && a.state !== 'awaiting_handoff') throw new Fault('handoff_already_committed'); s.accounts = s.accounts.filter(x => x !== a); if (a?.replacement) s.accounts.push(a.replacement); await this.store.save(s); return { aborted: true }; }
     if (action === 'export.commit') {
-      // Only the device taking the account back deletes it; a repeated commit finds it gone.
+      // Only the device taking the account back deletes it; a repeated commit finds it gone. After an abandoned export
+      // it still can, unless the Worker has renewed the account since: export_not_active is final.
       const operation = text(body.operation, 80); const a = s.accounts.find(a => a.id === text(body.id, 80));
       if (!a) return { removed: true };
-      if (a.state !== 'exporting') throw new Fault('export_not_active');
-      if (a.export!.device !== device.id || a.export!.operation !== operation) throw new Fault('export_in_progress');
+      const e = a.exported_by;
+      if (a.state === 'exporting') { if (a.export!.device !== device.id || a.export!.operation !== operation) throw new Fault('export_in_progress'); }
+      else if (!e || e.device !== device.id || e.operation !== operation || e.version !== a.version) throw new Fault('export_not_active');
       s.accounts = s.accounts.filter(x => x !== a); await this.store.save(s); return { removed: true };
     }
     const a = s.accounts.find(a => a.id === body.id); if (!a) throw new Fault('account_missing', 404);
@@ -141,7 +146,7 @@ export class Authority {
       if (a.state !== 'exporting') {
         if (a.state !== 'ready') throw new Fault('account_not_ready');
         // The device is given the refresh token: from here on nothing renews the account.
-        a.state = 'exporting'; a.export = { device: device.id, operation, at: now }; await this.store.save(s);
+        a.state = 'exporting'; a.export = { device: device.id, operation, at: now }; delete a.exported_by; await this.store.save(s);
       }
       return { id: a.id, owner: a.identity.owner, version: a.version, bundle: a.bundle };
     }
