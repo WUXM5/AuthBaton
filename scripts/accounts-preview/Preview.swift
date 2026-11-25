@@ -549,17 +549,8 @@ enum Fixture {
             second["native"] = false; second["state"] = "uncertain"; second["message"] = "续期请求没有收到回应；稍后自动用同一凭据重新确认，无需操作"
             list.append(second)
             data["accounts"] = list
-        case "cloud":
-            // Back in local mode after handing two accounts to the cloud; one state is newer than this build.
-            var list = data["accounts"] as! [[String: Any]]
-            list[0]["state"] = "cloud_transfer"; list[0]["message"] = "云端交接尚未完成，请在云端模式恢复"; list[0]["automatic"] = false
-            list[3]["state"] = "cloud_managed"; list[3]["message"] = "凭据由个人云端维护，请在云端模式查看"; list[3]["automatic"] = false
-            list[1]["state"] = "synthetic_future"; list[1]["message"] = "合成：这个版本不认识的状态"
-            data["accounts"] = list
-            var cloud = data["cloud"] as! [String: Any]
-            cloud["transfers"] = [["local_id": "synthetic-nova", "cloud_id": NSNull(), "phase": "prepared"],
-                                  ["local_id": "synthetic-team", "cloud_id": "synthetic-cloud-team", "phase": "cloud_managed"]]
-            data["cloud"] = cloud
+        case let name where name.hasPrefix("cloud"):
+            cloudScenario(&data, name)
         case "many":
             // More accounts than the strategy takes rules for (32).
             var list = data["accounts"] as! [[String: Any]]
@@ -572,6 +563,94 @@ enum Fixture {
         }
         return data
     }
+    // The user's own authentication centre, paired: this Mac and one more (both names synthetic).
+    static func pairCloud(_ data: inout [String: Any], this: String = "测试 MacBook Pro", other: String = "lab Mac mini") {
+        data["cloud"] = ["endpoint": "https://auth.example.invalid", "label": this, "paired": true, "busy": false, "checked_at": now - 20,
+                         "admin_url": "https://auth.example.invalid/admin",
+                         "devices": [["id": "device-this", "label": this, "last_seen": now - 20, "this": true],
+                                     ["id": "device-other", "label": other, "last_seen": now - 180, "this": false]]]
+    }
+
+    // Who renews an account, as the service publishes it next to the account.
+    static func renewal(_ id: String?, maintainer: String = "cloud", origin: String = "this", fresh: Bool = false, transfer: [String: Any]? = nil,
+                        error: String? = nil, usedBy: [[String: Any]] = []) -> [String: Any] {
+        let cloud = maintainer == "cloud"
+        return ["id": id ?? NSNull(), "maintainer": maintainer, "origin": origin, "fresh": fresh, "transfer": transfer ?? NSNull(),
+                "state": cloud ? (error == nil ? "ready" : "reauthorization_required") : NSNull(), "error": error ?? NSNull(), "used_by": usedBy,
+                "last_refresh": cloud ? now - 14 * 60 : NSNull(), "next_refresh": cloud ? now + 6 * 3600 : NSNull(),
+                "access_expires_at": cloud ? now + 6.25 * 3600 : NSNull()]
+    }
+
+    // Accounts renewed by the user's authentication centre next to this Mac's own (the 11-25 Neon drafts).
+    static func cloudScenario(_ data: inout [String: Any], _ name: String) {
+        pairCloud(&data)
+        // Codex 桌面 connected, so no connection band stands between the header and the cards.
+        data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+        let here: [String: Any] = ["label": "测试 MacBook Pro", "at": now - 30, "this": true]
+        let lab: [String: Any] = ["label": "lab Mac mini", "at": now - 180, "this": false]
+        // The service still marks a row the centre keeps with the old mode's state; the UI goes by its cloud.
+        func renewed(_ account: inout [String: Any], _ cloud: [String: Any]) {
+            account["cloud"] = cloud
+            if cloud["maintainer"] as? String == "cloud" {
+                account["state"] = "cloud_managed"; account["automatic"] = false; account["message"] = "凭据由个人云端维护"
+            } else {
+                account["state"] = "cloud_transfer"; account["automatic"] = false; account["message"] = "云端交接中"
+            }
+        }
+        func change(_ id: String, _ edit: (inout [String: Any]) -> Void) {
+            var list = data["accounts"] as! [[String: Any]]
+            if let index = list.firstIndex(where: { $0["id"] as? String == id }) { edit(&list[index]) }
+            data["accounts"] = list
+        }
+        switch name {
+        case "cloudmix":
+            // Codex: nova renewed by the centre, last used on lab Mac mini too. Claude (the in-use page): Code's beta-3 came
+            // from another Mac, beta-2 went up from this one; desk-only can never go up.
+            change("synthetic-nova") { renewed(&$0, renewal("cloud-nova", usedBy: [lab, here])) }
+            inUse(&data, "inuse", now: now)
+            change("c-b3") { renewed(&$0, renewal("cloud-b3", origin: "other", usedBy: [here, lab])) }
+            change("c-b2") { renewed(&$0, renewal("cloud-b2", usedBy: [here])) }
+            // Claude 桌面 in use on the account only it has signed in: its card's 转到云端续期… says why it cannot go up.
+            var desktop = data["claude_desktop"] as! [String: Any]
+            desktop["accounts"] = (desktop["accounts"] as! [[String: Any]]).map { row -> [String: Any] in
+                var row = row
+                row["in_use"] = row["handle"] as? String == "h-desk"
+                return row
+            }
+            data["claude_desktop"] = desktop
+        case "cloudtransfer":
+            // The four states of a move: to the centre under way (个人) and failed (lab team), back to this Mac under
+            // way (nova) and failed (orbit, in use).
+            change("synthetic-p") { renewed(&$0, renewal(nil, maintainer: "local", transfer: ["direction": "to_cloud", "running": true])) }
+            change("synthetic-team") {
+                renewed(&$0, renewal(nil, maintainer: "local", transfer: ["direction": "to_cloud", "running": false, "error": "认证中心连接超时"]))
+            }
+            change("synthetic-nova") { renewed(&$0, renewal("cloud-nova", transfer: ["direction": "to_local", "running": true], usedBy: [here])) }
+            change("synthetic-orbit") {
+                renewed(&$0, renewal("cloud-orbit", transfer: ["direction": "to_local", "running": false, "error": "认证中心返回 503，未能迁回凭据。"],
+                                     usedBy: [here]))
+            }
+        case "cloudtrouble":
+            // The centre could not renew the Claude account in use; nova is fine. One state is newer than this build.
+            change("synthetic-nova") { renewed(&$0, renewal("cloud-nova", usedBy: [here])) }
+            change("synthetic-claude") { renewed(&$0, renewal("cloud-claude", error: "续期被拒（刷新凭据已失效），需重新登录以恢复云端续期。", usedBy: [here])) }
+            change("synthetic-p") { $0["state"] = "synthetic_future"; $0["message"] = "合成：这个版本不认识的状态" }
+        case "cloudother":
+            // Another Mac: nova just came from 测试 MacBook Pro through the centre, with no relay rule yet.
+            pairCloud(&data, this: "lab Mac mini", other: "测试 MacBook Pro")
+            data["accounts"] = (data["accounts"] as! [[String: Any]]).filter { ["synthetic-orbit", "synthetic-nova", "synthetic-claude"].contains($0["id"] as? String ?? "") }
+            change("synthetic-nova") {
+                renewed(&$0, renewal("cloud-nova", origin: "other", fresh: true, usedBy: [["label": "测试 MacBook Pro", "at": now - 120, "this": false]]))
+            }
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            config["accounts"] = (config["accounts"] as! [[String: Any]]).filter { $0["id"] as? String == "synthetic-orbit" }
+            strategy["config"] = config
+            data["strategy"] = strategy
+        default: break
+        }
+    }
+
     static let snapshot = #"{"checked_at":1790649075,"service_version":"0.15.0","verification":"仅检查本地凭据和 Claude CLI 登录状态，未请求模型，也未验证刷新能力。","providers":[{"id":"codex","name":"Codex","state":"configured","auth_kind":"ChatGPT OAuth","summary":"本地 access token 尚未到期","source":"~/.codex/auth.json","expires_at":1790778068,"details":[]},{"id":"claude","name":"Claude Code","state":"configured","auth_kind":"Claude 订阅","summary":"Claude CLI 显示已登录","source":"/opt/homebrew/bin/claude","expires_at":null,"details":[]},{"id":"pi","name":"pi · OpenAI Codex","state":"configured","auth_kind":"AuthBaton 本机服务","summary":"已安装统一账号插件","source":"~/.pi/agent/auth.json","expires_at":null,"details":[]}]}"#
 
     // `action` is the desktop's report on the latest switch attempt, as the service publishes it.
@@ -711,6 +790,8 @@ extension NSWindow {
 
     static var menuChoice: String?
     static var lastMenu: [(title: String, enabled: Bool)] = []
+    // The second line under an item's title, where the menu has one.
+    static var lastSubtitles: [String: String] = [:]
 
     static func settle(_ seconds: Double = 0.5) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
 
@@ -848,6 +929,7 @@ extension NSWindow {
             RunLoop.main.perform(inModes: [.eventTracking, .default, .modalPanel]) {
                 MainActor.assumeIsolated {
                     lastMenu = menu.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) }
+                    lastSubtitles = Dictionary(menu.items.compactMap { item in item.subtitle.map { (item.title, $0) } }, uniquingKeysWith: { first, _ in first })
                     let index = menuChoice.flatMap { choice in menu.items.firstIndex { $0.title == choice && $0.isEnabled } }
                     menuChoice = nil
                     menu.cancelTracking()
@@ -1225,15 +1307,29 @@ extension NSWindow {
             check.expect(false, "找到连接详情里的热切换开关")
         }
     }
-    section(8, "个人云端：切换模式需要确认") {
+    section(8, "个人云端：没有运行模式；续期出错的号在小结里给重新登录；断开配对先确认，在用云端续期的号时不能断开") {
+        Fixture.load("cloudtrouble", into: state)
         select(.cloud)
+        check.expect(!Driver.visible("运行模式") && !Driver.visible("两种模式"), "页面不再有运行模式")
+        check.visible("1个异常", "续期出错时小结写「1 个异常」")
+        check.visible("续期被拒", "出错的账号写明原因")
+        Driver.press("重新登录", .prefix)
+        check.visible("的云端登录", "「重新登录…」打开更新云端登录")
+        Driver.press("取消", .exact)
         state.calls.removeAll()
-        // The 本地 / 云端 segments sometimes read as one line; the lone 云端 further down is a heading.
-        if Driver.hits("本地 云端").isEmpty { Driver.press("云端", .exact) } else { Driver.press("云端", .within("本地 云端")) }
-        check.expect(state.calls.isEmpty, "点击「云端」不会直接切换")
-        check.visible("包括自动重", "确认框写明自动重置也暂停")
-        Driver.press("切换", .exact)
-        check.expect(check.lastCall("accounts.cloud")?.contains("\"mode\":\"cloud\"") == true, "确认后才发送 configure mode=cloud")
+        Driver.press("断开配对…")
+        // OCR drops a small 的 now and then.
+        check.visible("断开与认证中心", "断开配对先确认")
+        check.visible("先换上本机续期", "在用云端续期的号时写明不能断开")
+        check.expect(check.lastCall("accounts.cloud") == nil, "没确认不发送")
+        Driver.press("取消", .exact)
+        print("  → 没有在用的云端号")
+        Fixture.load("cloudpaired", into: state)
+        Driver.settle(0.5)
+        Driver.press("断开配对…")
+        Driver.press("断开配对", .exact)
+        let call = check.lastCall("accounts.cloud") ?? ""
+        check.expect(call.contains("\"cloud_action\":\"leave\"") && call.contains("\"confirm\":true"), "确认后才发送 leave")
     }
     section(9, "添加账号：名称默认用登录邮箱，登录新账号前不填名称，导入没改名时不带名称") {
         select(.accounts)
@@ -1382,38 +1478,61 @@ extension NSWindow {
         // OCR can merge the ⓘ before it into the first character (read as 「①警待」).
         check.expect(Driver.visible("待重新确认"), "写明在等什么")
     }
-    section(15, "云端交接和云端维护的账号：不显示成「可用」，交接未完成算要处理；不认识的状态不算正常") {
-        Fixture.load("cloud", into: state)
+    section(15, "按账号选续期方：转换中锁住、失败算要处理且「换上」照常可用；云端续期的号能换上、不算要处理；不认识的状态不算正常") {
+        Fixture.load("cloudtransfer", into: state)
         select(.codex)
-        check.visible("云端交接未完成", "交接中的账号显示「云端交接未完成」")
-        check.visible("由云端维护", "云端维护的账号显示「由云端维护」")
+        check.visible("正在转到云端", "转到云端进行中：底栏写「正在转到云端…」")
+        check.visible("正在转回本机", "转回本机进行中：底栏写「正在转回本机…」")
+        check.visible("转到云端失败", "转到云端失败写在卡上")
+        check.visible("仍由云端续期", "转回本机失败写明仍由云端续期")
+        let failed = state.directory!.accounts.first { $0.id == "synthetic-team" }!
+        check.expect(state.directory!.primaryAction(for: failed) == .switchTo && !Driver.hits("换上", .exact).isEmpty, "转到云端失败的号照常给「换上」")
+        // The reminders issue points at an account too; only the accounts' own issues count here.
+        let issues = state.directory!.issues(dismissed: []).filter { $0.id.hasPrefix("account-") }
+        check.expect(issues.contains { $0.account == "synthetic-team" } && issues.contains { $0.account == "synthetic-orbit" }
+                     && !issues.contains { $0.account == "synthetic-p" } && !issues.contains { $0.account == "synthetic-nova" }, "转换失败算要处理，进行中不算")
+        let running = state.directory!.accounts.first { $0.id == "synthetic-p" }!
+        check.expect(state.directory!.primaryAction(for: running) == .wait && state.directory!.resetBlocked(running, busy: false),
+                     "转换中的号不能换上、不能用重置卡")
+        print("  → 云端续期的号")
+        Fixture.load("cloudmix", into: state)
+        Driver.settle(0.5)
+        check.expect(Driver.near("nova", "换上") != nil, "云端续期的号能换上")
+        check.expect(!state.directory!.issues(dismissed: []).contains { $0.id == "account-synthetic-nova" }, "云端续期正常的号不算要处理")
+        print("  → 续期出错与不认识的状态")
+        Fixture.load("cloudtrouble", into: state)
+        Driver.settle(0.5)
         check.visible("状态未识别", "不认识的状态显示「状态未识别」")
-        check.expect(Driver.near("nova", "换上") == nil && Driver.near("lab team", "换上") == nil, "交接中和云端维护的账号不给「换上」")
-        let issues = state.directory!.issues(dismissed: [])
-        check.expect(issues.contains { $0.account == "synthetic-nova" } && !issues.contains { $0.account == "synthetic-team" }, "交接未完成算要处理，云端维护不算")
-        select(.accounts)
-        check.expect(Driver.visible("\(issues.count)件事要处理"), "账号页页头写明 \(issues.count) 件事要处理")
+        let trouble = state.directory!.accounts.first { $0.id == "synthetic-claude" }!
+        check.expect(state.directory!.primaryAction(for: trouble) == .relogin && state.directory!.issues(dismissed: []).contains { $0.account == "synthetic-claude" },
+                     "云端续期出错算要处理，出路是重新登录")
     }
-    section(16, "换号与重置：规则不含云端账号（含已保存的），超过 32 个账号时说明并只发 32 条") {
-        Fixture.load("cloud", into: state)
+    section(16, "换号与重置：规则含云端续期的号；别的 Mac 新来的号默认不参与；超过 32 个账号时说明并只发 32 条") {
+        // The rules a save sent, read back from the recorded call.
+        func rules(_ call: String?) -> [[String: Any]] {
+            guard let call, let brace = call.firstIndex(of: "{"),
+                  let json = try? JSONSerialization.jsonObject(with: Data(call[brace...].utf8)) as? [String: Any],
+                  let strategy = json["strategy"] as? [String: Any] else { return [] }
+            return strategy["accounts"] as? [[String: Any]] ?? []
+        }
+        Fixture.load("cloudmix", into: state)
         select(.automation)
-        check.expect(!Driver.visible("lab team") && !Driver.visible("nova"), "接力线不列云端交接或云端维护的账号")
+        check.expect(Driver.visible("nova"), "接力线列出云端续期的号")
         setOrder(from: "先换号", to: "先重置")
         saveRules()
-        var strategy = check.lastCall("accounts.strategy") ?? ""
-        check.expect(!strategy.isEmpty && !strategy.contains("synthetic-team") && !strategy.contains("synthetic-nova"),
-                     "保存的规则不含云端账号，已保存配置里的残留也去掉")
-        print("  → 编辑中账号转交云端：发送时也去掉")
-        Fixture.load("default", into: state)
+        var saved = rules(check.lastCall("accounts.strategy"))
+        check.expect(saved.contains { $0["id"] as? String == "synthetic-nova" } && saved.contains { $0["id"] as? String == "c-b3" },
+                     "保存的规则含云端续期的号")
+        print("  → 别的 Mac 新来的号")
+        Fixture.load("cloudother", into: state)
         select(.accounts)
         select(.automation)
         state.calls.removeAll()
         setOrder(from: "先换号", to: "先重置")
-        Fixture.load("cloud", into: state)
-        Driver.settle(0.5)
         saveRules()
-        strategy = check.lastCall("accounts.strategy") ?? ""
-        check.expect(!strategy.isEmpty && !strategy.contains("synthetic-team") && !strategy.contains("synthetic-nova"), "发送前去掉已转交云端的账号")
+        saved = rules(check.lastCall("accounts.strategy"))
+        check.expect(saved.contains { $0["id"] as? String == "synthetic-nova" && $0["participate"] as? Bool == false }, "别的 Mac 新来的号默认不参与接力")
+        var strategy = ""
         print("  → 36 个账号")
         Fixture.load("many", into: state)
         select(.accounts)
@@ -2088,6 +2207,77 @@ extension NSWindow {
             check.expect(false, "拖动后的顺位能生成规则")
         }
     }
+    section(38, "按账号选续期方：卡片「…」两套菜单；没配对先引导；转到云端 / 转回本机两个确认框写明在用和别的 Mac；仅桌面登录的号不能上云；转换失败给放弃 / 重试") {
+        select(.codex)
+        more("lab team", choose: "转到云端续期…")
+        let local = Driver.lastMenu.map(\.title)
+        check.expect(local.contains("转到云端续期…") && local.contains("本地检查") && local.contains("从 AuthBaton 移除…") && !local.contains("转回本机续期…"),
+                     "本机号的菜单含「转到云端续期…」")
+        check.visible("先配对个人云端", "没配对时先引导去配对")
+        Driver.press("前往个人云端")
+        check.expect(AppNavigation.shared.page == .cloud, "「前往个人云端」打开个人云端页")
+        print("  → 已配对")
+        Fixture.load("cloudmix", into: state)
+        select(.codex)
+        more("nova", choose: nil)
+        let cloudMenu = ["查询额度", "云端状态检查", "认证检查", "更新云端登录…", "转回本机续期…", "重命名…", "执行记录", "从认证中心移除…"]
+        check.expect(Driver.lastMenu.map(\.title) == cloudMenu, "云端号的菜单换成云端那一套")
+        if Driver.lastMenu.map(\.title) != cloudMenu { print("    菜单：\(Driver.lastMenu.map(\.title))") }
+        more("nova", choose: "转回本机续期…")
+        check.visible("转回本机续期?", "打开转回本机的确认框")
+        check.visible("将失去此账号", "最近有别的 Mac 在用时琥珀提示它会失去此账号")
+        state.calls.removeAll()
+        Driver.press("转回本机续期", .exact)
+        var call = check.lastCall("accounts.cloud") ?? ""
+        check.expect(call.contains("\"cloud_action\":\"export\"") && call.contains("synthetic-nova") && call.contains("\"confirm\":true"),
+                     "确认后才发送 export，带本机账号")
+        more("lab team", choose: "转到云端续期…")
+        check.visible("换上后客户端仅拿短期凭据", "不在用的号：写明换上后要开着 AuthBaton")
+        check.visible("lab Mac mini", "列出已配对的 Mac")
+        Driver.press("取消", .exact)
+        more("orbit", choose: "转到云端续期…")
+        check.visible("请先退出正在运行", "在用的号：琥珀提示先退出 CLI")
+        state.calls.removeAll()
+        Driver.press("已退出 CLI，转到云端")
+        call = check.lastCall("accounts.cloud") ?? ""
+        check.expect(call.contains("\"cloud_action\":\"import\"") && call.contains("synthetic-orbit"), "确认后才发送 import")
+        print("  → Claude 页：只在桌面登录过的号")
+        select(.claude)
+        more("desk-only", choose: nil)
+        check.expect(Driver.lastMenu.contains { $0.title == "转到云端续期…" && !$0.enabled }, "只在桌面登录过的号「转到云端续期…」不可用")
+        check.expect(Driver.lastSubtitles["转到云端续期…"]?.contains("仅在 Claude 桌面登录") == true, "菜单项下写明原因")
+        if Driver.lastSubtitles["转到云端续期…"] == nil { print("    菜单：\(Driver.lastMenu) \(Driver.lastSubtitles)") }
+        print("  → 转换没成")
+        Fixture.load("cloudtransfer", into: state)
+        select(.codex)
+        state.calls.removeAll()
+        for (name, id, action) in [("lab team", "synthetic-team", "resume_import"), ("orbit", "synthetic-orbit", "export")] {
+            if !Driver.pressNear(name, "重试") { check.expect(false, "找到 \(name) 卡上的「重试」") }
+            check.expect(check.lastCall("accounts.cloud").map { $0.contains("\"cloud_action\":\"\(action)\"") && $0.contains(id) } == true,
+                         "\(name)：「重试」发送 \(action)")
+        }
+        for (name, id, action) in [("lab team", "synthetic-team", "cancel_import"), ("orbit", "synthetic-orbit", "cancel_export")] {
+            if !Driver.pressNear(name, "放弃") { check.expect(false, "找到 \(name) 卡上的「放弃」") }
+            check.expect(check.lastCall("accounts.cloud").map { $0.contains("\"cloud_action\":\"\(action)\"") && $0.contains(id) } == true,
+                         "\(name)：「放弃」发送 \(action)")
+        }
+    }
+    section(39, "菜单栏：在用云端续期的号时「退出」下一行写后果，点退出先确认，默认保持运行；没有时直接退出") {
+        Fixture.load("cloudmix", into: state)
+        main.orderOut(nil)
+        let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 900))
+        check.visible("在用云端号", "「退出」下一行写在用云端号的后果")
+        Driver.press("退出", .prefix)
+        check.visible("现在退出AuthBaton", "点「退出」先确认，不直接退出")
+        check.visible("保持运行", "确认框给「保持运行」")
+        Driver.press("保持运行")
+        check.expect(!Driver.visible("现在退出AuthBaton", wait: 0.4) && Driver.visible("在用云端号"), "「保持运行」收起确认")
+        Fixture.load("default", into: state)
+        Driver.settle(0.5)
+        check.expect(!Driver.visible("在用云端号", wait: 0.4), "没有在用的云端号时「退出」下面不多一行")
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
+    }
     main.orderOut(nil)
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     print(check.failures.isEmpty ? "全部通过" : "失败 \(check.failures.count) 项：\(check.failures)")
@@ -2288,7 +2478,12 @@ extension NSWindow {
             let pages: [(String, String, Page, String?)] = [
                 ("accounts", "default", .accounts, nil), ("accounts-attention", "attention", .accounts, nil), ("accounts-empty", "empty", .accounts, nil),
                 ("accounts-connected", "connected", .accounts, nil), ("accounts-plain", "plain", .accounts, nil), ("accounts-claude2", "claude2", .accounts, nil),
-                ("codex", "default", .codex, nil), ("codex-attention", "attention", .codex, nil), ("codex-cloud", "cloud", .codex, nil),
+                ("codex", "default", .codex, nil), ("codex-attention", "attention", .codex, nil),
+                // 按账号选续期方: the centre's accounts next to this Mac's, a move under way or failed, another Mac's new one.
+                ("codex-cloudmix", "cloudmix", .codex, nil), ("claude-cloudmix", "cloudmix", .claude, nil), ("automation-cloudmix", "cloudmix", .automation, nil),
+                ("codex-cloudtransfer", "cloudtransfer", .codex, nil), ("codex-cloudother", "cloudother", .codex, nil),
+                ("cloud-paired", "cloudmix", .cloud, nil), ("cloud-trouble", "cloudtrouble", .cloud, nil),
+                ("claude-cloudtrouble", "cloudtrouble", .claude, nil), ("claude-cloud-account", "cloudtrouble", .claude, "synthetic-claude"),
                 ("codex-unmanaged", "unmanaged", .codex, nil), ("codex-selected", "connected", .codex, "synthetic-nova"),
                 ("claude", "default", .claude, nil), ("claude-both", "claudeboth", .claude, nil), ("claude-code", "default", .claude, nil),
                 ("claude-desktop", "claude2", .claude, nil), ("claude-account", "default", .claude, "synthetic-claude"),
@@ -2357,6 +2552,31 @@ extension NSWindow {
                 let size = render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
                 print("\(appearance)/\(name): \(size.width) × \(size.height)")
             }
+            // 按账号选续期方: the two confirmations with their variants, pairing first, removing, leaving, the cloud login,
+            // and the menu bar with its quit confirmation.
+            Fixture.load("cloudmix", into: state)
+            func cloudAccount(_ id: String) -> ManagedAccount { state.directory!.accounts.first { $0.id == id }! }
+            let cloudSheets: [(String, AnyView)] = [
+                ("sheet-to-cloud", AnyView(ToCloudSheet(account: cloudAccount("synthetic-team"), close: {}))),
+                ("sheet-to-cloud-inuse", AnyView(ToCloudSheet(account: cloudAccount("synthetic-orbit"), close: {}))),
+                ("sheet-to-local", AnyView(ToLocalSheet(account: cloudAccount("synthetic-nova"), close: {}))),
+                ("sheet-to-local-only", AnyView(ToLocalSheet(account: cloudAccount("c-b2"), close: {}))),
+                ("sheet-cloud-remove", AnyView(CloudRemoveSheet(account: cloudAccount("synthetic-nova"), close: {}))),
+                ("sheet-cloud-leave-inuse", AnyView(CloudLeaveSheet(close: {}))),
+                ("sheet-login-cloud", AnyView(LoginView(provider: "codex", account: cloudAccount("synthetic-nova"), cloudAccountID: "cloud-nova"))),
+                ("menubar-cloud", AnyView(MenuBarPanel(openWindow: {}))),
+            ]
+            for (name, view) in cloudSheets {
+                let size = render(view.background(Palette.card), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
+                print("\(appearance)/\(name): \(size.width) × \(size.height)")
+            }
+            MenuBarPanel.previewQuitting = true
+            _ = render(MenuBarPanel(openWindow: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-menubar-cloud-quit.png"))
+            MenuBarPanel.previewQuitting = false
+            Fixture.load("default", into: state)
+            _ = render(PairFirstSheet(account: state.directory!.accounts.first { $0.id == "synthetic-team" }!, close: {}).background(Palette.card),
+                       size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-pair-first.png"))
+            print("\(appearance)/cloud sheets")
             UserDefaults.standard.removeObject(forKey: ClaudeUse.key)
             Fixture.load("default", into: state)
             let consentSize = render(TokenQuotaSheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-token-quota.png"))
