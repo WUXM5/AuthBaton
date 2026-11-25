@@ -735,3 +735,42 @@ test('an account being taken back cannot be replaced by a new sign-in until the 
   await assert.rejects(f.authority.run('import', { operation: 'synthetic-replacement', replace_id: f.id, label: 'New', bundle: bundle('claude', 100) }, f.device.bearer), code('handoff_in_progress'));
   assert.equal(f.store.value!.accounts[0].state, 'exporting');
 });
+
+test('accounts lists the devices that leased or checked each account in the last 30 days, newest first', async () => {
+  const f = await setup(); await f.commit(); const b = await pair(f.authority, 'b'); const c = await pair(f.authority, 'c');
+  const usedBy = async () => (await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by;
+  assert.deepEqual(await usedBy(), []);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); const first = f.clock();
+  f.advance(10); await f.authority.run('check', { id: f.id }, b.bearer);
+  f.advance(10); await f.authority.run('lease', { id: f.id }, c.bearer);
+  assert.deepEqual(await usedBy(), [
+    { device_id: c.id, label: 'synthetic-c', at: first + 20 },
+    { device_id: b.id, label: 'synthetic-b', at: first + 10 },
+    { device_id: f.device.id, label: 'synthetic-a', at: first },
+  ]);
+  await f.authority.run('admin.revoke', { id: c.id }, null, true);
+  f.advance(2591985); // 30 days after the first lease, not yet after the check.
+  assert.deepEqual((await usedBy()).map((u: any) => u.device_id), [b.id]);
+});
+
+test('a device using an account is recorded at most once every five minutes', async () => {
+  const f = await setup(); await f.commit();
+  const listed = async () => await f.authority.run('accounts', {}, f.device.bearer);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); const first = f.clock(); const saves = f.store.saves;
+  f.advance(299);
+  await f.authority.run('lease', { id: f.id }, f.device.bearer); await f.authority.run('check', { id: f.id }, f.device.bearer);
+  assert.equal(f.store.saves, saves); assert.equal((await listed()).accounts[0].used_by[0].at, first);
+  f.advance(1); await f.authority.run('check', { id: f.id }, f.device.bearer);
+  assert.equal(f.store.saves, saves + 1); assert.equal((await listed()).accounts[0].used_by[0].at, first + 300);
+  assert.equal((await listed()).devices[0].last_seen, first + 300);
+});
+
+test('a new sign-in keeps the record of the devices using the account', async () => {
+  const f = await setup(); await f.commit();
+  await f.authority.run('lease', { id: f.id }, f.device.bearer);
+  const before = (await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by;
+  await f.authority.run('import', { operation: 'synthetic-replacement', replace_id: f.id, label: 'New', bundle: bundle('claude', 100) }, f.device.bearer);
+  await f.authority.run('import.commit', { id: f.id, operation: 'synthetic-replacement' }, f.device.bearer);
+  assert.equal(before.length, 1);
+  assert.deepEqual((await f.authority.run('accounts', {}, f.device.bearer)).accounts[0].used_by, before);
+});

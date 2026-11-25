@@ -2,7 +2,7 @@
 export type Provider = 'codex' | 'claude';
 export type Bundle = { provider: Provider; credential: any; identity: any };
 export type Identity = { owner: string; display: string; plan: string; expires_at: number; refresh_expires_at: number | null };
-type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry; export?: Export };
+type Entry = { id: string; label: string; bundle: Bundle; identity: Identity; version: number; state: string; source: string; operation: string; digest: string; last_refresh: number | null; error: string | null; retry_at: number; automatic: boolean; replacement?: Entry; export?: Export; used?: Record<string, number> };
 // A device taking an account back to renew it itself.
 type Export = { device: string; operation: string; at: number };
 type Device = { id: string; label: string; secret_hash: string; revoked: boolean; last_seen: number };
@@ -41,6 +41,10 @@ export function identity(bundle: Bundle): Identity {
   if (!Array.isArray(c.scopes) || !c.scopes.includes('user:inference')) throw new Fault('inference_scope_required', 400);
   const i = bundle.identity;
   return { owner: `claude:${text(i.accountUuid)}:${text(i.organizationUuid)}`, display: mask(text(i.emailAddress)), plan: c.subscriptionType || '未知', expires_at: Math.floor(finite(c.expiresAt) / 1000), refresh_expires_at: c.refreshTokenExpiresAt ? Math.floor(finite(c.refreshTokenExpiresAt) / 1000) : null };
+}
+// Devices that leased or checked an account in the last 30 days, newest first.
+function usedBy(s: State, a: Entry, now: number): any[] {
+  return Object.entries(a.used ?? {}).flatMap(([id, at]) => { const d = s.devices.find(d => d.id === id && !d.revoked); return d && at > now - 2592000 ? [{ device_id: id, label: d.label, at }] : []; }).sort((x, y) => y.at - x.at);
 }
 function safe(a: Entry): any { return { id: a.id, provider: a.bundle.provider, label: a.label, identity: a.identity.display, plan: a.identity.plan, expires_at: a.identity.expires_at, refresh_expires_at: a.identity.refresh_expires_at, version: a.version, state: a.state, automatic: a.automatic, last_refresh: a.last_refresh, error: a.error, retry_at: a.retry_at }; }
 export class Authority {
@@ -91,7 +95,7 @@ export class Authority {
     }
     const device = s.devices.find(d => !d.revoked && d.secret_hash === bearer);
     if (!device) throw new Fault('device_unauthorized', 401);
-    if (action === 'accounts') return { accounts: s.accounts.map(safe), devices: s.devices.filter(d => !d.revoked).map(d => ({ id: d.id, label: d.label, last_seen: d.last_seen })) };
+    if (action === 'accounts') return { accounts: s.accounts.map(a => ({ ...safe(a), used_by: usedBy(s, a, now) })), devices: s.devices.filter(d => !d.revoked).map(d => ({ id: d.id, label: d.label, last_seen: d.last_seen })) };
     if (action === 'import') {
       const operation = text(body.operation, 80); const bundle = body.bundle as Bundle; const id = identity(bundle);
       const digest = await hash(JSON.stringify(bundle));
@@ -106,7 +110,7 @@ export class Authority {
       if (id.expires_at <= now + 60) throw new Fault('source_access_expired');
       await this.issuer.verify(bundle);
       const a: Entry = { id: crypto.randomUUID(), label: text(body.label, 100), bundle, identity: id, version: 1, state: 'awaiting_handoff', source: device.id, operation, digest, last_refresh: null, error: null, retry_at: 0, automatic: false };
-      if (replacement) { a.id = replacement.id; a.version = replacement.version + 1; a.label = replacement.label; a.replacement = structuredClone(replacement); s.accounts = s.accounts.filter(x => x !== replacement); }
+      if (replacement) { a.id = replacement.id; a.version = replacement.version + 1; a.label = replacement.label; a.used = replacement.used; a.replacement = structuredClone(replacement); s.accounts = s.accounts.filter(x => x !== replacement); }
       s.accounts.push(a); device.last_seen = now; await this.store.save(s); return safe(a);
     }
     if (action === 'import.status') { const a = s.accounts.find(a => a.operation === body.operation && a.source === device.id); return { account: a ? safe(a) : null }; }
@@ -157,7 +161,9 @@ export class Authority {
       }
       if (a.state !== 'ready' || a.identity.expires_at <= now + 60) throw new Fault(a.error || 'credential_expired');
     }
-    device.last_seen = now; await this.store.save(s);
+    // Shown before an account is taken back to one device. One write per device and account every five minutes at most.
+    const used = a.used ??= {};
+    if (now - (used[device.id] ?? 0) >= 300) { used[device.id] = device.last_seen = now; await this.store.save(s); }
     if (action === 'check') { await this.issuer.verify(a.bundle); return safe(a); }
     const c = a.bundle.credential;
     // Native projection never includes refresh. ID token is only for the Codex native format.

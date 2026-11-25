@@ -51,6 +51,7 @@ try {
   assert.equal(JSON.stringify(lease).includes(credential.credential.refreshToken),false);
   const list=await (await call('/v1/accounts',{},paired.device_token)).text();
   assert.equal(list.includes(credential.credential.accessToken),false);
+  assert.equal(JSON.parse(list).accounts[0].used_by[0].device_id,paired.device_id);
   await mf.dispose();
   let persistedFiles=0;
   async function scan(path:string):Promise<void> { for(const e of await readdir(path,{withFileTypes:true})){const p=join(path,e.name);if(e.isDirectory())await scan(p);else {persistedFiles++;const value=await readFile(p);assert.equal(value.includes(credential.credential.refreshToken),false);assert.equal(value.includes(paired.device_token),false);}} }
