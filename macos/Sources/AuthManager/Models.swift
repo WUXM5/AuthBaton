@@ -59,7 +59,6 @@ struct LoginParams: Encodable, Sendable {
     var reset_kind: String? = nil
     var reset_id: String? = nil
     var cloud_action: String? = nil
-    var mode: String? = nil
     var endpoint: String? = nil
     var cloud_account_id: String? = nil
     var strategy: CodexStrategyInput? = nil
@@ -250,45 +249,57 @@ struct CodexStrategyStatus: Decodable, Equatable, Sendable {
     }
 }
 
+// The pairing with the user's own authentication centre. Which accounts it renews is on each account (`cloud`).
 struct CloudStatus: Decodable, Equatable, Sendable {
-    let mode: String
     let endpoint: String
     let label: String
     let paired: Bool
     let pair: CloudPair?
-    let accounts: [CloudAccount]
     let devices: [CloudDevice]
-    let selected: [String: String]
     let busy: Bool
     let error: String?
     let checkedAt: Double?
-    let pendingActivation: String?
-    let transfers: [CloudTransfer]
+    // The centre's admin page, where an authorised device is revoked; devices cannot revoke each other.
+    var adminUrl: String? = nil
 }
 struct CloudPair: Decodable, Equatable, Sendable { let id: String; let code: String; let url: String; let expiresAt: Double }
-struct CloudDevice: Decodable, Equatable, Identifiable, Sendable { let id: String; let label: String; let lastSeen: Double? }
-struct CloudTransfer: Decodable, Equatable, Sendable { let localId: String; let cloudId: String?; let phase: String }
-struct CloudAccount: Decodable, Equatable, Identifiable, Sendable {
+struct CloudDevice: Decodable, Equatable, Identifiable, Sendable {
     let id: String
-    let provider: String
     let label: String
-    let identity: String
-    let plan: String
-    let expiresAt: Double
-    let refreshExpiresAt: Double?
-    let version: Int
-    let state: String
-    let automatic: Bool
-    let lastRefresh: Double?
-    let error: String?
-    let usage: CloudUsage?
-    let usageError: String?
-    var stateLabel: String {
-        switch state { case "ready": "云端维护中"; case "awaiting_handoff": "等待交接"; case "verification_pending": "续期已保存，待验证"; case "refreshing": "正在续期"; case "uncertain": "等待重新确认"; case "reauthorization_required": "需要重新授权"; default: "需要处理" }
+    let lastSeen: Double?
+    var this: Bool? = nil
+}
+// Who renews an account, while that is the authentication centre or a transfer between the two is under way.
+struct AccountCloud: Decodable, Equatable, Sendable {
+    let id: String?
+    // "local" or "cloud": who renews it now.
+    let maintainer: String
+    // "this": handed to the centre from this Mac; "other": came from another Mac.
+    let origin: String
+    // From another Mac, with no relay rule yet and never switched to here.
+    var fresh: Bool? = nil
+    var transfer: Transfer? = nil
+    var state: String? = nil
+    // The centre's fixed sentence when renewing failed.
+    var error: String? = nil
+    var usedBy: [Use]? = nil
+    var lastRefresh: Double? = nil
+    var nextRefresh: Double? = nil
+    var accessExpiresAt: Double? = nil
+
+    struct Transfer: Decodable, Equatable, Sendable {
+        // "to_cloud" or "to_local".
+        let direction: String
+        let running: Bool
+        var error: String? = nil
+    }
+    // A Mac that took this account's short-lived login in the last 30 days, newest first.
+    struct Use: Decodable, Equatable, Sendable {
+        let label: String
+        let at: Double
+        var this: Bool? = nil
     }
 }
-struct CloudUsage: Decodable, Equatable, Sendable { let windows: [CloudWindow]; let checkedAt: Double }
-struct CloudWindow: Decodable, Equatable, Sendable { let label: String; let usedPercent: Double; let resetsAt: Double? }
 struct LoginNotice: Decodable, Equatable, Sendable {
     let state: String
     let expiresAt: Double?
@@ -340,6 +351,8 @@ struct ManagedAccount: Decodable, Equatable, Identifiable, Sendable {
     let checkStatus: String?
     let checkOnline: Bool?
     let warmup: ClaudeWarmup?
+    // Renewed by the authentication centre, or on its way there or back; nil for a plain local account.
+    var cloud: AccountCloud? = nil
     var checkLabel: String? {
         guard let checkStatus else { return nil }
         let kind = checkOnline == true ? "认证检查" : "本地检查"

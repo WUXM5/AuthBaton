@@ -34,13 +34,35 @@ extension ManagedAccount {
     }
 
     var needsAction: Bool {
-        switch state {
-        case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": true
+        if transferFailed != nil || cloudTrouble != nil { return true }
+        switch ownState {
+        case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": return true
         // The cloud renews it; the local login dates behind the notice no longer apply.
-        case "cloud_managed": false
-        default: loginNotice?.needsAttention == true
+        case "cloud_managed": return false
+        default: return !cloudRenewed && loginNotice?.needsAttention == true
         }
     }
+
+    // Renewed by the authentication centre: this Mac only takes short-lived logins for it.
+    var cloudRenewed: Bool { cloud?.maintainer == "cloud" }
+    // A transfer to the centre or back is under way: the account's operations wait for it.
+    var transferRunning: Bool { cloud?.transfer?.running == true }
+    // A transfer that stopped with an error; the account stays with whoever renewed it before.
+    var transferFailed: AccountCloud.Transfer? {
+        guard let transfer = cloud?.transfer, !transfer.running, transfer.error != nil else { return nil }
+        return transfer
+    }
+    // The centre's login was refused: only a new login brings it back. Its other states settle on their own.
+    var cloudTrouble: String? {
+        guard cloudRenewed, cloud?.state == "reauthorization_required" else { return nil }
+        return cloud?.error ?? "续期被拒（刷新凭据已失效），需重新登录以恢复云端续期。"
+    }
+    // About how long a client keeps working on a short-lived login once AuthBaton stops: Claude's access
+    // lasts about 8 hours, Codex's about 10 days.
+    var cloudLapse: String { provider == "claude" ? "8 小时" : "10 天" }
+    // The service still marks a row the centre keeps, or one on its way, with the old cloud mode's states;
+    // next to `cloud` they say nothing about the login itself.
+    private var ownState: String { cloud != nil && ["cloud_managed", "cloud_transfer"].contains(state) ? "healthy" : state }
 
     // Claude's coordinated states, or any unsaved result. An unanswered renewal needs no hand:
     // the service reconciles it on its own.
@@ -57,7 +79,13 @@ extension ManagedAccount {
     // Only states that need a hand are amber; "可用" is the quiet default.
     var health: Health {
         if let label = checkLabel { return Health(tone: .active, title: label, detail: nil) }
-        switch state {
+        if let transfer = cloud?.transfer {
+            let back = transfer.direction == "to_local"
+            if transfer.running { return Health(tone: .active, title: back ? "正在转回本机…" : "正在转到云端…", detail: nil) }
+            if let error = transfer.error { return Health(tone: .attention, title: back ? "转回本机失败" : "转到云端失败", detail: error) }
+        }
+        if let trouble = cloudTrouble { return Health(tone: .attention, title: "云端续期出错", detail: trouble) }
+        switch ownState {
         case "reauth": return Health(tone: .attention, title: "需重新登录", detail: message)
         case "unsaved":
             return provider == "claude" && native
@@ -71,10 +99,16 @@ extension ManagedAccount {
         case "cloud_managed": return Health(tone: .neutral, title: "由云端维护", detail: message)
         default: break
         }
-        if let notice = loginNotice, notice.needsAttention {
+        if !cloudRenewed, let notice = loginNotice, notice.needsAttention {
             return Health(tone: .attention, title: notice.state == "expired" ? "登录已到期" : "登录即将到期", detail: notice.message)
         }
-        switch state {
+        if cloudRenewed, ["uncertain", "verification_pending"].contains(cloud?.state ?? "") {
+            return Health(tone: .neutral, title: "云端续期待确认", detail: cloud?.error)
+        }
+        if cloudRenewed, ["delegated", "healthy", "saved"].contains(ownState) {
+            return Health(tone: .neutral, title: "可用", detail: "由认证中心续期，这台 Mac 领取短期凭据。")
+        }
+        switch ownState {
         case "retry": return Health(tone: .neutral, title: "等待重试", detail: message)
         case "limited": return Health(tone: .neutral, title: "在线查询受限", detail: message)
         case "pending": return Health(tone: .active, title: "等待登录", detail: message)
@@ -88,7 +122,8 @@ extension ManagedAccount {
     }
 
     // A state worth a line on the account even when nothing is broken: waiting, checking, unknown.
-    var quietState: Bool { ["delegated", "healthy", "saved"].contains(state) && checkLabel == nil && !needsAction }
+    // A transfer says so on the card itself (its footer, or the box with 放弃 / 重试).
+    var quietState: Bool { (["delegated", "healthy", "saved"].contains(ownState) && checkLabel == nil && !needsAction) || cloud?.transfer != nil }
 
     // Short status for the quota line; stale or unknown quota is muted, not alarming.
     var quotaCaption: String? {
@@ -159,6 +194,7 @@ extension ManagedAccount {
     // Why this account cannot be removed right now, if it cannot.
     func removeBlocker(_ directory: AccountDirectory) -> String? {
         if native || directory.desktop?.selected == id { return "在用的账号不能移除，先换上别的账号。" }
+        if transferRunning { return "正在转换续期方，稍后再移除。" }
         if reset?.unresolved == true { return "先确认上次重置的结果。" }
         if usage?.refreshing == true { return "正在查额度，稍后再移除。" }
         if warmup?.running == true { return "正在预热，稍后再移除。" }
@@ -319,16 +355,22 @@ extension AccountDirectory {
         !account.native || (account.provider == "codex" && desktop?.enabled == true && desktop?.selected != account.id)
     }
 
-    // The service refuses every local operation naming an account handed to the cloud, strategy rules included.
-    func cloudBound(_ id: String) -> Bool { cloud?.transfers.contains { $0.localId == id } == true }
+    // This Mac, as the authentication centre knows it.
+    var thisMac: String { cloud?.devices.first { $0.this == true }?.label ?? cloud?.label ?? "这台 Mac" }
+
+    // Accounts in use here whose login the centre renews: their clients lapse a while after AuthBaton stops.
+    var cloudInUse: [ManagedAccount] { accounts.filter { $0.native && $0.cloudRenewed } }
 
     // The one thing an account's main button offers. Every page and the menu bar share it,
     // so none offers a switch to an account whose saved login is broken or unconfirmed.
+    // A transfer under way holds the account; a failed one leaves it where it was, so it can still be switched to.
     func primaryAction(for account: ManagedAccount) -> PrimaryAction {
-        if ["cloud_transfer", "cloud_managed"].contains(account.state) { return .wait }
+        if account.transferRunning || (account.cloud == nil && ["cloud_transfer", "cloud_managed"].contains(account.state)) { return .wait }
         if account.staged == true { return .capture }
         if account.recoverable { return .recover }
-        if account.state == "reauth" || account.loginNotice?.needsAttention == true { return .relogin }
+        // For an account the centre renews, 重新登录 updates the centre's login.
+        if account.cloudTrouble != nil { return .relogin }
+        if account.state == "reauth" || (!account.cloudRenewed && account.loginNotice?.needsAttention == true) { return .relogin }
         guard canSwitch(to: account) else { return .current }
         // An unanswered renewal may already have replaced the saved refresh token.
         return account.state == "uncertain" ? .wait : .switchTo
@@ -374,9 +416,9 @@ extension AccountDirectory {
     }
 
     // A reset needs a fresh quota reading and an idle service; an unconfirmed earlier reset comes first,
-    // and the service refuses any local operation on an account handed to the cloud.
+    // and an account waits while it moves to the centre or back.
     func resetBlocked(_ account: ManagedAccount, busy accountBusy: Bool) -> Bool {
-        accountBusy || busy || recoveryNeeded || maintenanceRunning != true || account.usage?.refreshing == true || cloudBound(account.id)
+        accountBusy || busy || recoveryNeeded || maintenanceRunning != true || account.usage?.refreshing == true || account.transferRunning
             || account.usage?.state != "ready" || account.reset?.unresolved == true || account.nextReset == nil
     }
 

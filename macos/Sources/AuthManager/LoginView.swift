@@ -84,8 +84,9 @@ struct LoginView: View {
 
     private var title: String {
         if attempt != nil { return "登录 \(name)" }
+        if cloudAccountID != nil { return account.map { "更新「\($0.displayName)」的云端登录" } ?? "重新登录并更新云端" }
         if let account { return "重新登录「\(account.displayName)」" }
-        return cloudAccountID != nil ? "重新登录并更新云端" : "添加账号"
+        return "添加账号"
     }
 
     // MARK: 开始之前
@@ -107,11 +108,11 @@ struct LoginView: View {
                                  selected: importing, signIn: importing ? signInEmail : nil) { importing = true }
                 }
                 .padding(.top, 12)
-            } else if account?.native == true {
-                Banner(text: "这会更新在用账号的默认登录。先结束任务并退出官方客户端，完成后再打开。").padding(.top, 15)
             } else if cloudAccountID != nil {
                 Text("授权完成后自动发到个人云端，更新同一个云端账号。请在浏览器里选这个账号；本机客户端保持现在的登录。")
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true).padding(.top, 15)
+            } else if account?.native == true {
+                Banner(text: "这会更新在用账号的默认登录。先结束任务并退出官方客户端，完成后再打开。").padding(.top, 15)
             } else {
                 Text("授权完成后，更新这个账号保存的登录；现在的默认登录不变。")
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true).padding(.top, 15)
@@ -122,7 +123,7 @@ struct LoginView: View {
             } else if adding {
                 Text("名称默认用登录邮箱，完成后可以改。现在的默认登录不变。")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.top, 14)
-            } else {
+            } else if cloudAccountID == nil {
                 NameField(text: $accountLabel, placeholder: "例如：个人 / 工作").padding(.top, 14)
             }
             if let error = service.loginError ?? (importing ? service.accountError : nil) { Banner(text: error).padding(.top, 12) }
@@ -146,7 +147,7 @@ struct LoginView: View {
                         Task { await service.startLogin(provider: provider, label: adding ? "" : accountLabel, accountID: account?.id, cloudAccountID: cloudAccountID) }
                     }
                     .buttonStyle(.pill(.primary, height: 27)).keyboardShortcut(.defaultAction)
-                    .disabled((!adding && accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || service.loginBusy)
+                    .disabled((!adding && cloudAccountID == nil && accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || service.loginBusy)
                 }
             }
             .padding(.top, 19)

@@ -45,7 +45,6 @@ final class ServiceController: ObservableObject {
     private var lifetimePipe: Pipe?
     private var loginTask: Task<Void, Never>?
     private var connectionFailures = 0
-    private var cloudRefreshAt: Double = 0
 
     var socketPath: String {
         FileManager.default.homeDirectoryForCurrentUser
@@ -277,16 +276,6 @@ final class ServiceController: ObservableObject {
 
     func refreshQuotaIfNeeded() async {
         guard isConnected else { return }
-        if let cloud = directory?.cloud, cloud.mode == "cloud" {
-            // The service refreshes the cloud directory itself every 30 s while idle, and a refresh holds
-            // its writer slot. App activation only fills a longer gap, and never while an operation runs.
-            let now = Date().timeIntervalSince1970
-            guard cloud.paired, !cloud.busy, directory?.busy != true, !accountBusy,
-                  now - max(cloud.checkedAt ?? 0, cloudRefreshAt) >= 60 else { return }
-            cloudRefreshAt = now
-            await cloudAction("refresh")
-            return
-        }
         await checkQuota()
     }
 
@@ -327,8 +316,9 @@ final class ServiceController: ObservableObject {
         }
     }
 
-    func cloudAction(_ action: String, id: String? = nil, mode: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil, automatic: Bool? = nil) async {
-        await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, automatic: automatic, cloud_action: action, mode: mode, endpoint: endpoint))
+    // The authentication centre: pairing, and moving an account's renewal to it or back (id is the account's own).
+    func cloudAction(_ action: String, id: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil) async {
+        await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, cloud_action: action, endpoint: endpoint))
     }
 
     func checkQuota(id: String? = nil) async {

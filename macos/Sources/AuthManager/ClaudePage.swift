@@ -126,6 +126,7 @@ private struct ClaudeMain: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
                             Text(accountName: account.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                            CloudBadge(account: account)
                             InUsePill(entry: entry, use: use, codeRelayOn: directory.claudeDesktop?.codeRelay?.enabled == true)
                         }
                         Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -359,7 +360,11 @@ private struct ClaudeSide: View {
 
     // MARK: 自动检查与续期
 
-    private var maintenance: some View {
+    @ViewBuilder private var maintenance: some View {
+        if account.cloudRenewed { cloudRenewal } else { localMaintenance }
+    }
+
+    private var localMaintenance: some View {
         let checked = [account.lastLocal, account.lastOnline].compactMap { $0 }.max()
         let paused = account.automatic && account.state == "reauth"
         let checkDisabled = service.accountBusy || (directory.checksBlocked ?? true) || account.checkStatus != nil
@@ -417,6 +422,46 @@ private struct ClaudeSide: View {
         .loopCard()
     }
 
+    // The centre renews this account: no switch to turn, only when it renewed and when it renews next.
+    private var cloudRenewal: some View {
+        let cloud = account.cloud
+        let stamps: [(String, Double?)] = [("最近续期", cloud?.lastRefresh), ("下一次续期", cloud?.nextRefresh), ("Access 到期", cloud?.accessExpiresAt)]
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 9) {
+                CloudShape().fill(account.cloudTrouble != nil ? Palette.attention : Palette.ink2).frame(width: 15, height: 15)
+                Text("云端续期").font(.system(size: 13, weight: .semibold))
+            }
+            // What went wrong is said once, on the account's card.
+            Text("由认证中心续期，这台 Mac 领取短期凭据；换上后要保持 AuthBaton 运行。")
+                .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 24).padding(.top, 3.5)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 7) {
+                ForEach(stamps, id: \.0) { stamp in
+                    GridRow {
+                        Text(stamp.0).foregroundStyle(Palette.ink3)
+                        Text(stamp.1.map { When.text($0) } ?? "暂无记录").monospacedDigit()
+                            .foregroundStyle(stamp.1 == nil ? Palette.ink3 : Palette.ink)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .help(stamp.1.map(When.exact) ?? "")
+                    }
+                }
+            }
+            .font(.system(size: 11))
+            .padding(.top, 10)
+            HStack(spacing: 7) {
+                Button("云端状态检查") { Task { await service.cloudAction("refresh") } }.buttonStyle(.pill(.secondary))
+                    .help("从认证中心同步这个账号的续期状态")
+                Button("认证检查") { Task { await service.cloudAction("check", id: account.id, confirm: true) } }.buttonStyle(.pill(.secondary))
+                    .help("让认证中心核对登录，再查一次额度")
+            }
+            .disabled(service.accountBusy || service.directory?.cloud?.busy == true || account.transferRunning)
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 17).padding(.vertical, 15)
+        .loopCard()
+    }
+
     private func check(online: Bool) {
         Task { await service.accountOperation("accounts.check", params: LoginParams(id: account.id, online: online)) }
     }
@@ -469,10 +514,13 @@ private struct ClaudeSide: View {
     private var removal: some View {
         let blocker = account.removeBlocker(directory)
         return VStack(alignment: .leading, spacing: 2) {
-            Button("从 AuthBaton 移除…", role: .destructive) { open(.account(.remove(account.id))) }
-                .buttonStyle(.pill(.danger))
-                .disabled(blocker != nil || locked)
-            Text((blocker ?? "") + "只删 AuthBaton 保存的记录和凭据，不注销官方账号。")
+            // The centre renews it: removing it takes it out of the centre, for every paired Mac.
+            Button(account.cloudRenewed ? "从认证中心移除…" : "从 AuthBaton 移除…", role: .destructive) {
+                open(.account(account.cloudRenewed ? .cloudRemove(account.id) : .remove(account.id)))
+            }
+            .buttonStyle(.pill(.danger))
+            .disabled(blocker != nil || locked)
+            Text((blocker ?? "") + (account.cloudRenewed ? "认证中心删掉它的登录，所有已配对的 Mac 都不能再用。" : "只删 AuthBaton 保存的记录和凭据，不注销官方账号。"))
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
             if use.desk, let desk = entry.desk {
                 DeskRemoval(desk: desk, open: open).padding(.top, 9)

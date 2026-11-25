@@ -237,7 +237,12 @@ struct ClaudeHomePage: View {
         // On a first run the starter card is the page; only 添加账号 stays in the header.
         let starting = Onboarding.starting(onboarding, empty: entries.isEmpty)
         let codeRelayOn = status?.codeRelay?.enabled == true
-        return PageScaffold(title: "Claude", subtitle: Text(starting ? "还没有账号" : subtitle(use, entries: entries, code: codeNow, desk: deskNow, codeRelayOn: codeRelayOn)), provider: "claude", spacing: 14) {
+        // Accounts another Mac just handed to the centre show up here on their own.
+        let fresh = entries.compactMap { $0.cli?.cloud?.fresh == true ? $0.name : nil }
+        let lead = Text(starting ? "还没有账号" : subtitle(use, entries: entries, code: codeNow, desk: deskNow, codeRelayOn: codeRelayOn))
+        return PageScaffold(title: "Claude", subtitle: starting || fresh.isEmpty ? lead
+                                : lead + Text(" · ") + Text("刚同步 " + fresh.joined(separator: "、")).fontWeight(.semibold).foregroundStyle(Palette.ink),
+                            provider: "claude", spacing: 14) {
             if !starting {
                 modeMenu(use)
                 RefreshPill(checkedAt: entries.compactMap { $0.cli?.usage?.checkedAt }.max(), busy: service.isRefreshing) {
@@ -776,6 +781,7 @@ struct ClaudeEntryCard: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 6) {
                                     Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                    if let cli = entry.cli { CloudBadge(account: cli) }
                                     InUsePill(entry: entry, use: use, codeRelayOn: codeRelayOn)
                                     if let cli = entry.cli { LowPill(account: cli, notch: directory.notch(for: cli)) }
                                 }
@@ -833,6 +839,7 @@ struct ClaudeEntryCard: View {
             }
             .padding(.horizontal, 14).padding(.top, 15).padding(.bottom, 14)
             Spacer(minLength: 0)
+            if let cli = entry.cli, cli.transferFailed != nil { TransferBox(account: cli).padding(.horizontal, 14).padding(.bottom, 10) }
             if hasFooter(rule, codeRelayOn: codeRelayOn) { footer(rule, showCode: showCode) }
             if let cli = entry.cli, showCode {
                 AccountStrips(account: cli, directory: directory, open: { open(.account($0)) }).padding(.horizontal, 14)
@@ -840,6 +847,11 @@ struct ClaudeEntryCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(CardChrome(on: chrome, raised: entry.inUse))
+        .overlay {
+            if chrome, entry.cli?.transferFailed != nil {
+                RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(Palette.attention, lineWidth: 1.5)
+            }
+        }
     }
 
     // The desktop's number, the relay rank, a reset card or a way to switch; without any of them no empty row.
@@ -1259,6 +1271,9 @@ private struct ClaudeEntryMenu: View {
             if let cli = entry.cli {
                 let querying = service.quotaRequests.contains(cli.id) || cli.usage?.refreshing == true
                 Button(querying ? "正在查询额度…" : "查询额度") { Task { await service.checkQuota(id: cli.id) } }.disabled(querying)
+                if cli.cloudRenewed {
+                    Button("云端状态检查") { Task { await service.cloudAction("refresh") } }.disabled(directory.cloud?.busy == true)
+                }
                 let joined = directory.rule(for: cli.id)?.participate == true
                 Button(joined ? "移出自动接力" : "加入自动接力") {
                     if let config = directory.relayConfig(cli.id, participate: !joined) {
@@ -1283,16 +1298,34 @@ private struct ClaudeEntryMenu: View {
             }
             Divider()
             if let cli = entry.cli {
-                Button("重新登录…") { open(.account(.login(provider: "claude", accountID: cli.id))) }
+                // For an account the centre renews, logging in again updates the centre's login.
+                if cli.cloudRenewed {
+                    Button("更新云端登录…") { open(.account(.login(provider: "claude", accountID: cli.id))) }
+                    Button("转回本机续期…") { open(.account(.toLocal(cli.id))) }
+                } else {
+                    Button("重新登录…") { open(.account(.login(provider: "claude", accountID: cli.id))) }
+                    Button("转到云端续期…") { open(.account(.toCloud(cli.id))) }
+                }
                 Button("重命名…") { open(.account(.rename(cli.id))) }
                 Button("执行记录") { open(.account(.history(cli.id))) }
             } else if let desk = entry.desk {
+                // Claude 桌面's own sign-in files never leave this Mac.
+                Button {} label: {
+                    Text("转到云端续期…")
+                    Text("仅在 Claude 桌面登录，无法交由云端续期")
+                }
+                .disabled(true)
                 Button("重命名…") { open(.desktop(.rename(desk.handle))) }
             }
             Divider()
             if let cli = entry.cli {
-                Button("从 AuthBaton 移除…", role: .destructive) { open(.account(.remove(cli.id))) }
-                    .disabled(cli.removeBlocker(directory) != nil)
+                if cli.cloudRenewed {
+                    Button("从认证中心移除…", role: .destructive) { open(.account(.cloudRemove(cli.id))) }
+                        .disabled(cli.removeBlocker(directory) != nil)
+                } else {
+                    Button("从 AuthBaton 移除…", role: .destructive) { open(.account(.remove(cli.id))) }
+                        .disabled(cli.removeBlocker(directory) != nil)
+                }
             }
             if use.desk, let desk = entry.desk {
                 Button("移除桌面登录…", role: .destructive) { open(.desktop(.remove(desk.handle))) }.disabled(desk.inUse)
@@ -1301,7 +1334,7 @@ private struct ClaudeEntryMenu: View {
             MoreDots(color: Palette.ink3).frame(width: 26, height: 26).contentShape(Circle())
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded || status?.busy == true)
+        .disabled(service.accountBusy || directory.busy || directory.recoveryNeeded || status?.busy == true || entry.cli?.transferRunning == true)
         .accessibilityLabel("\(entry.name) 的更多操作")
     }
 }
