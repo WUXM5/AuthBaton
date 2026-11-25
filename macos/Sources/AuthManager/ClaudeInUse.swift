@@ -588,6 +588,7 @@ struct ClaudeAnchorRow: View {
             RankMark(place: place, next: next)
             Seal(entry.name, style: .inUse, size: 18)
             Text(accountName: entry.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
+            if let cli = entry.cli { CloudBadge(account: cli, size: 11) }
             Pill(slot, style: .brand, small: true)
             Spacer(minLength: 8)
             HStack(spacing: 3) {
@@ -692,6 +693,7 @@ struct ClaudeRelayRow: View {
         HStack(spacing: 5) {
             Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 .layoutPriority(1)
+            if let cli { CloudBadge(account: cli, size: 11) }
             if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk).fixedSize() }
             if let tag { Pill(tag, style: .brand, small: true).fixedSize() }
             // Signed in to AuthBaton only, while 无感换号 lends Code logins: the desktop's Code tab can use it.

@@ -74,7 +74,7 @@ struct CodexPage: View {
                 let accounts = directory.relay("codex")
                 let starting = Onboarding.starting(onboarding, empty: accounts.isEmpty)
                 ScrollViewReader { proxy in
-                    PageScaffold(title: "Codex", subtitle: Text(subtitle(directory, accounts, use: use)), provider: "codex") {
+                    PageScaffold(title: "Codex", subtitle: subtitle(directory, accounts, use: use), provider: "codex") {
                         // On a first run the starter card is the page; only 添加账号 stays in the header.
                         if !starting {
                             modeMenu(use)
@@ -154,8 +154,8 @@ struct CodexPage: View {
         sheet = .desktopConnection
     }
 
-    private func subtitle(_ directory: AccountDirectory, _ accounts: [ManagedAccount], use: CodexUse) -> String {
-        if accounts.isEmpty { return "还没有账号" }
+    private func subtitle(_ directory: AccountDirectory, _ accounts: [ManagedAccount], use: CodexUse) -> Text {
+        if accounts.isEmpty { return Text("还没有账号") }
         var parts = ["\(accounts.count) 个账号"]
         if let current = directory.current("codex") { parts.append("在用 \(current.displayName)") }
         let pi = service.snapshot?.piFollows == true
@@ -164,7 +164,10 @@ struct CodexPage: View {
         case .desktop: break
         case .cli: parts.append(pi ? "CLI、VS Code、pi 共用这份登录" : "CLI、VS Code 共用这份登录")
         }
-        return parts.joined(separator: " · ")
+        let text = Text(parts.joined(separator: " · "))
+        // Accounts another Mac just handed to the centre show up here on their own.
+        let fresh = accounts.filter { $0.cloud?.fresh == true }.map(\.displayName)
+        return fresh.isEmpty ? text : text + Text(" · ") + Text("刚同步 " + fresh.joined(separator: "、")).fontWeight(.semibold).foregroundStyle(Palette.ink)
     }
 
     private func modeMenu(_ use: CodexUse) -> some View {
@@ -284,6 +287,7 @@ private struct CodexCard: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
                             Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                            CloudBadge(account: account)
                             if account.native { Pill("在用", style: .brand, small: true) }
                             if !account.native, directory.desktop?.selected == account.id { Pill("桌面在用", style: .brand, small: true) }
                         }
@@ -305,15 +309,23 @@ private struct CodexCard: View {
             }
             .padding(.horizontal, 14).padding(.top, 15).padding(.bottom, 14)
             Spacer(minLength: 0)
+            if account.transferFailed != nil { TransferBox(account: account).padding(.horizontal, 14).padding(.bottom, 10) }
             HStack(spacing: 5) {
-                if let rule {
-                    if let rank = directory.rank(of: account) { Pill("第 \(rank) 位", style: rule.participate ? .neutral : .dashed) }
-                    Pill("≤ \(rule.below)%", style: rule.participate ? .neutral : .dashed)
-                    Pill(rule.order.label, style: rule.participate ? .neutral : .dashed).help(rule.order.explanation)
-                    if !rule.participate { Pill("不参与") }
-                } else if directory.strategy != nil {
-                    Pill("还没有规则", style: .dashed).help("在「换号与重置」保存一次规则后加入接力")
+                HStack(spacing: 5) {
+                    if let rule {
+                        if let rank = directory.rank(of: account) { Pill("第 \(rank) 位", style: rule.participate ? .neutral : .dashed) }
+                        Pill("≤ \(rule.below)%", style: rule.participate ? .neutral : .dashed)
+                        Pill(rule.order.label, style: rule.participate ? .neutral : .dashed).help(rule.order.explanation)
+                        if !rule.participate { Pill("不参与") }
+                    } else if account.cloud?.fresh == true {
+                        // Came from another Mac: it stays out of the relay until someone adds it.
+                        Pill("未加入接力", style: .dashed)
+                        Button("去设置") { AppNavigation.shared.show(.automation, select: account.id) }.buttonStyle(.pill(.link))
+                    } else if directory.strategy != nil {
+                        Pill("还没有规则", style: .dashed).help("在「换号与重置」保存一次规则后加入接力")
+                    }
                 }
+                .opacity(account.transferRunning ? 0.45 : 1)
                 Spacer(minLength: 7)
                 // Taking the desktop over is the page band's job; the in-use card offers no 接管 of its own.
                 AccountActions(account: account, directory: directory, open: open, showSwitch: !account.native)
@@ -325,7 +337,14 @@ private struct CodexCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .loopCard(radius: 19, raised: account.native)
         .overlay {
-            if selected { RoundedRectangle(cornerRadius: 19, style: .continuous).strokeBorder(Palette.brand, lineWidth: 1.5) }
+            let shape = RoundedRectangle(cornerRadius: 19, style: .continuous)
+            if selected {
+                shape.strokeBorder(Palette.brand, lineWidth: 1.5)
+            } else if account.transferFailed != nil {
+                shape.strokeBorder(Palette.attention, lineWidth: 1.5)
+            } else if account.cloud?.fresh == true {
+                shape.strokeBorder(Palette.dashStrong, style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+            }
         }
     }
 }
