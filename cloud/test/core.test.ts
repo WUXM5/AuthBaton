@@ -838,3 +838,12 @@ test('a new export clears what an abandoned one left, so its commit no longer de
   assert.equal(f.store.value!.accounts.length, 1);
 });
 
+test('nobody can remove an account while it is being taken back', async () => {
+  const f = await setup(); await f.commit(); const other = await pair(f.authority, 'b');
+  const request = { id: f.id, operation: 'synthetic-export' };
+  await f.authority.run('export.begin', request, f.device.bearer);
+  for (const device of [other, f.device]) await assert.rejects(f.authority.run('remove', { id: f.id }, device.bearer), code('export_in_progress'));
+  assert.equal(f.store.value!.accounts.length, 1);
+  await f.authority.run('export.abort', request, f.device.bearer);
+  assert.deepEqual(await f.authority.run('remove', { id: f.id }, other.bearer), { removed: true });
+});

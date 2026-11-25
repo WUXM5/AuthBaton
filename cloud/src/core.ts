@@ -156,7 +156,7 @@ export class Authority {
       return safe(a);
     }
     if (action === 'update') { if (body.label !== undefined) a.label = text(body.label, 100); if (typeof body.automatic === 'boolean') a.automatic = body.automatic && a.state !== 'awaiting_handoff'; await this.store.save(s); return safe(a); }
-    if (action === 'remove') { if (a.state === 'refreshing' || a.state === 'uncertain') throw new Fault('recovery_required'); s.accounts = s.accounts.filter(x => x !== a); await this.store.save(s); return { removed: true }; }
+    if (action === 'remove') { if (a.state === 'exporting') throw new Fault('export_in_progress'); if (a.state === 'refreshing' || a.state === 'uncertain') throw new Fault('recovery_required'); s.accounts = s.accounts.filter(x => x !== a); await this.store.save(s); return { removed: true }; }
     if (!['lease', 'check', 'usage'].includes(action)) throw new Fault('unknown_action', 400);
     if (a.state === 'awaiting_handoff') throw new Fault('handoff_required');
     // Quota is read on the device with a leased access. From Workers egress chatgpt.com answers 403 and Anthropic's
