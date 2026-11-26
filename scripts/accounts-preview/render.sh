@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: render.sh [output-dir] | render.sh interact | render.sh dump [scenario] [page] [selection]
+# Usage: render.sh [output-dir] | render.sh interact | render.sh dump [scenario] [page] [selection] | render.sh wingrender <out-dir>
 #        | render.sh live <directory.json> <snapshot.json> <out-dir> | render.sh imagerender <out.png> | render.sh classes <page> [scenario]
 #        | render.sh perf [directory.json|-] [rounds] | render.sh same <poll.json> <poll.json>...
 # PREVIEW_ONLY=1,4 limits interact to those sections; DRIVER_DEBUG=1 prints where each synthetic click lands.
@@ -19,6 +19,6 @@ swiftc -sdk "$SDK" -parse-as-library ${OPT[@]+"${OPT[@]}"} \
   "$SRC/MenuBarPanel.swift" "$SRC/MenuBarStatus.swift" "$SRC/LoginView.swift" "$SRC/CloudView.swift" "$SRC/CloudParts.swift" "$SRC/ResetHistoryView.swift" \
   "$ROOT/scripts/accounts-preview/Preview.swift" -o "$BIN"
 case "${1:-}" in
-  interact|dump|live|imagerender|classes|perf|same) "$BIN" "$@" ;;
+  interact|dump|live|imagerender|wingrender|classes|perf|same) "$BIN" "$@" ;;
   *) APPEARANCE=light "$BIN" "${1:-$ROOT/dist/accounts-preview}" && APPEARANCE=dark "$BIN" "${1:-$ROOT/dist/accounts-preview}" ;;
 esac
