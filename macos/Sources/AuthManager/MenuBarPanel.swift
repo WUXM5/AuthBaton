@@ -5,6 +5,9 @@ import SwiftUI
 struct MenuBarPanel: View {
     @EnvironmentObject private var service: ServiceController
     @ObservedObject private var reminders = ReminderModel.shared
+    @ObservedObject private var bar = MenuBarController.shared
+    @AppStorage(MenuBarShows.key) private var shows = ""
+    @AppStorage(MenuBarShows.lastKey) private var lastPage = ""
     let openWindow: () -> Void
     @State private var expanded: String?
     @State private var working = false
@@ -47,6 +50,10 @@ struct MenuBarPanel: View {
             }
         }
         .onDisappear { quitting = false }
+        .onChange(of: bar.quitAsked) { _, asked in
+            if asked { quitting = true }
+            bar.quitAsked = false
+        }
         .onChange(of: service.directory?.desktop?.action) { _, action in
             if let action, let since = attemptSince, action.state == "complete", (action.at ?? 0) >= since {
                 expanded = nil
@@ -104,12 +111,15 @@ struct MenuBarPanel: View {
             Text("还没有账号；打开 AuthBaton 添加。").font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(7)
         } else {
             HStack(spacing: 9) {
-                ForEach(providers, id: \.self) { provider in ringCard(provider, current: directory.current(provider)) }
+                ForEach(providers, id: \.self) { provider in
+                    ringCard(provider, current: directory.current(provider), shown: providers.count > 1 && provider == MenuBarShows.provider(shows, last: lastPage))
+                }
             }
         }
     }
 
-    private func ringCard(_ provider: String, current: ManagedAccount?) -> some View {
+    // shown: the tool whose number the menu bar carries, ringed and tagged.
+    private func ringCard(_ provider: String, current: ManagedAccount?, shown: Bool) -> some View {
         let windows = Array((current?.primaryWindows ?? []).prefix(2))
         return Button {
             AppNavigation.shared.show(provider == "codex" ? .codex : .claude)
@@ -120,6 +130,7 @@ struct MenuBarPanel: View {
                     Icon(.provider(provider), size: 12)
                     Text(GlyphTile.name(provider)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
                     Spacer(minLength: 0)
+                    if shown { Pill("菜单栏", style: .brand, small: true).fixedSize().help("菜单栏显示的是它；右键菜单栏图标可以改") }
                 }
                 Ring(values: windows.map(\.remaining), size: 65).padding(.top, 7)
                 HStack(spacing: 5) {
@@ -134,6 +145,7 @@ struct MenuBarPanel: View {
             .padding(10)
             .frame(maxWidth: .infinity)
             .loopCard(radius: 14)
+            .overlay { if shown { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.brand.opacity(0.55), lineWidth: 1.2) } }
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -185,7 +197,7 @@ struct MenuBarPanel: View {
         // Claude's list moves Claude Code; with 无感换号 the desktop's Code tab follows it (11-22: the window's Code slot).
         let relayOn = directory.claudeDesktop?.codeRelay?.enabled == true
         let title = provider == "claude" ? (relayOn ? "换 Code 账号（无感）" : "换 Claude Code 账号") : "换 \(GlyphTile.name(provider)) 账号"
-        let next = provider == "claude" && directory.strategy?.config.enabled == true ? directory.strategy?.nextClaude : nil
+        let next = directory.relayNext(provider)
         if !others.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3)
@@ -559,23 +571,5 @@ private struct MenuRow: View {
         .buttonStyle(.plain)
         .keyboardShortcut(key.map { KeyboardShortcut($0) })
         .onHover { hovering = $0 }
-    }
-}
-
-// Menu bar label: the brand icon, Codex's lowest primary quota, and a dot when something needs attention.
-struct MenuBarLabel: View {
-    @EnvironmentObject private var service: ServiceController
-
-    var body: some View {
-        let directory = service.directory
-        let lowest = directory?.current("codex")?.lowestPrimary
-        let urgent = (directory?.attentionCount ?? 0) > 0
-        let reminded = !ExpiryReminder.all(directory?.accounts ?? [], dismissed: ReminderStore.dismissed()).isEmpty
-        let offline = !service.isConnected && !service.isConnecting
-        HStack(spacing: 3) {
-            Image(nsImage: BrandArtwork.menuIcon(badge: offline || urgent ? .systemRed : reminded ? .systemOrange : nil))
-            if let lowest { Text("\(lowest)%").monospacedDigit() }
-        }
-        .accessibilityLabel(offline ? "AuthBaton，后台服务未连接" : urgent ? "AuthBaton，有待处理的事项" : "AuthBaton")
     }
 }

@@ -133,7 +133,6 @@ enum ClaudeSheet: Identifiable {
     case codeRelayUninstall
     case chromeSync
     case chromeSyncUninstall
-    case relayEdit(RelayEdit)
 
     var id: String {
         switch self {
@@ -145,7 +144,6 @@ enum ClaudeSheet: Identifiable {
         case .codeRelayUninstall: "code-relay-uninstall"
         case .chromeSync: "chrome-sync"
         case .chromeSyncUninstall: "chrome-sync-uninstall"
-        case .relayEdit(let edit): "relay-\(edit.id)"
         }
     }
 }
@@ -179,6 +177,7 @@ struct ClaudeHomePage: View {
             }
         }
         .task { await service.refreshQuotaIfNeeded() }
+        .overlay(alignment: .bottom) { RelayUndoToast(provider: "claude") }
         .sheet(item: $sheet) { item in
             Group {
                 switch item {
@@ -191,7 +190,6 @@ struct ClaudeHomePage: View {
                 case .codeRelayUninstall: CodeRelayUninstallSheet(close: { self.sheet = nil })
                 case .chromeSync: ChromeSyncSheet(close: { self.sheet = nil }, openUninstall: { self.sheet = .chromeSyncUninstall })
                 case .chromeSyncUninstall: ChromeSyncUninstallSheet(close: { self.sheet = nil })
-                case .relayEdit(let edit): RelayEditSheet(edit: edit, close: { self.sheet = nil })
                 }
             }
             .environmentObject(service)
@@ -200,14 +198,9 @@ struct ClaudeHomePage: View {
 
     private var scope: SwitchScope { SwitchScope.remembered(scopeSetting, service.directory) }
 
-    // Sheets from cards and rows. A relay change saves at once while the rules are off; with them on it is
-    // confirmed first, as on 换号与重置.
+    // Sheets from cards, rows and the desktop's bar.
     private func present(_ item: ClaudeSheet, _ directory: AccountDirectory) {
-        if case .relayEdit(let edit) = item, directory.strategy?.config.enabled != true {
-            Task { await service.accountOperation("accounts.strategy", params: LoginParams(confirm: true, strategy: edit.config.input)) }
-        } else {
-            sheet = item
-        }
+        sheet = item
     }
 
     private func settle(_ directory: AccountDirectory, entries: [ClaudeEntry]) {
@@ -337,6 +330,11 @@ struct ClaudeHomePage: View {
         let sides = ClaudeUse.sides(use, directory)
         let present = { (item: ClaudeSheet) in self.present(item, directory) }
         let switchTo = { (entry: ClaudeEntry, scope: SwitchScope?) in perform(entry, scope, directory: directory, use: use) }
+        // Claude 桌面's chat / work stays on one account while Code relays: it is a bar of its own, not a slot (11-25).
+        if sides.desk && sides.code, let status = directory.claudeDesktop {
+            ClaudeDeskBar(status: status, entries: entries, use: use, directory: directory, present: present)
+        }
+        if sides.code { RelayStatusSlot(directory: directory, provider: "claude", present: { sheet = .account($0) }) }
         ClaudeStage(entries: entries, use: use, directory: directory, present: present, switchTo: switchTo)
         if !sides.code {
             // Only Claude 桌面: it never switches by itself, so its numbered list stands in for the relay.
@@ -361,7 +359,8 @@ struct ClaudeHomePage: View {
             if !out.isEmpty {
                 ClaudeDrawer(title: "不参与自动接力", entries: out, use: use, directory: directory, present: present, switchTo: switchTo) { entry in
                     guard let cli = entry.cli, let config = directory.relayConfig(cli.id, participate: true) else { return nil }
-                    return ("+ 加入接力", { present(.relayEdit(RelayEdit(config: config, title: "让 \(entry.name) 加入自动接力？"))) })
+                    // Joining takes effect at once, as a drop in the queue does.
+                    return ("加入接力", { Task { await RelayRules.save(config, service) } })
                 }
             }
         }
@@ -436,15 +435,7 @@ struct ClaudeHomePage: View {
     private func footer(_ use: ClaudeUse, status: ClaudeDesktopStatus?, managed: Bool, deck: Bool) -> some View {
         let showCode = use.code || status?.codeRelay?.enabled == true
         return VStack(alignment: .leading, spacing: 5) {
-            if deck {
-                Text("点卡片看 5 小时窗口预热与续期。")
-            } else if showCode {
-                HStack(spacing: 0) {
-                    Text("点卡片看 5 小时窗口预热与续期；改自动换号顺序和见底线去")
-                    Button("换号与重置") { nav.show(.automation) }.buttonStyle(.pill(.link))
-                    Text("。")
-                }
-            } else if managed {
+            if deck || showCode || managed {
                 Text("点卡片看 5 小时窗口预热与续期。")
             }
             if use.desk, let feature = status?.tokenQuota, feature.enabled {
@@ -867,7 +858,7 @@ struct ClaudeEntryCard: View {
                 if use.desk, let desk = entry.desk { DeskNumber(desk: desk) }
                 if showCode, let cli = entry.cli, let rule {
                     if let rank = directory.rank(of: cli) {
-                        let order = "换号与重置里的顺序：≤ \(rule.below)% · \(rule.order.label)"
+                        let order = "自动接力：≤ \(rule.below)% · \(rule.order.label)"
                         if next && rule.participate {
                             PointerRank(text: "第 \(rank) 位", small: false, help: PointerRank.meaning + "\n" + order)
                         } else {
@@ -1255,7 +1246,7 @@ struct ClaudeSwitchControl: View {
 }
 
 // The card's … menu: the account's own actions, then the desktop's.
-private struct ClaudeEntryMenu: View {
+struct ClaudeEntryMenu: View {
     @EnvironmentObject private var service: ServiceController
     @ObservedObject private var nav = AppNavigation.shared
     let entry: ClaudeEntry
@@ -1276,9 +1267,7 @@ private struct ClaudeEntryMenu: View {
                 }
                 let joined = directory.rule(for: cli.id)?.participate == true
                 Button(joined ? "移出自动接力" : "加入自动接力") {
-                    if let config = directory.relayConfig(cli.id, participate: !joined) {
-                        open(.relayEdit(RelayEdit(config: config, title: joined ? "让 \(entry.name) 退出自动接力？" : "让 \(entry.name) 加入自动接力？")))
-                    }
+                    if let config = directory.relayConfig(cli.id, participate: !joined) { Task { await RelayRules.save(config, service) } }
                 }
                 .disabled(directory.strategy == nil)
             }

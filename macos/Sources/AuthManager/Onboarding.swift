@@ -55,7 +55,7 @@ struct OnboardingNext {
             return OnboardingNext(text: "已添加「\(names[0])」。再加一个备用号，就能一键换号或开启自动接力。", action: "添加备用号", go: .add(provider))
         }
         if names.count >= 2, directory.strategy?.config.enabled != true {
-            return OnboardingNext(text: "已有 \(names.count) 个账号，想在额度见底时自动换号，可以去确认接力规则并开启。", action: "去换号与重置", go: .relay)
+            return OnboardingNext(text: "已有 \(names.count) 个账号，想在额度见底时自动换号，可以开启自动接力。", action: "开启自动接力", go: .relay)
         }
         return nil
     }
@@ -75,7 +75,7 @@ struct NextStrip: View {
             Button(next.action) {
                 switch next.go {
                 case .add(let provider): open(.login(provider: provider, accountID: nil))
-                case .relay: AppNavigation.shared.show(.automation)
+                case .relay: open(.strategyStart)
                 }
             }
             .buttonStyle(.pill(.primary, height: 24))
@@ -119,7 +119,7 @@ private struct StarterCard<Steps: View>: View {
             steps.padding(.top, 19)
             HStack(spacing: 6) {
                 Icon(.relay, size: 12, color: Palette.brand)
-                Text("加好两个以上账号后，可去「换号与重置」开启额度见底自动接力（默认关闭）。")
+                Text("加好两个以上账号后，可以开启额度见底时的自动接力（默认关闭）。")
                     .font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 12)

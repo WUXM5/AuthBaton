@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Page: Hashable {
-    case accounts, codex, claude, automation, clients, cloud, network
+    case accounts, codex, claude, clients, cloud, network
 }
 
 // Shared so the menu bar panel can open the window on a specific page or account.
@@ -18,6 +18,8 @@ final class AppNavigation: ObservableObject {
     @Published var claudeDetail: String?
     // The Codex page opens its Codex 桌面 connection sheet; the desktop has no page of its own.
     @Published var desktopSheet = false
+    // The relay queue on the Codex or Claude page opens this account's line (见底线, 见底时, 参与) in place.
+    @Published var ruleEditor: String?
 
     func show(_ page: Page, select: String? = nil) {
         self.page = page
@@ -33,6 +35,19 @@ final class AppNavigation: ObservableObject {
     // The page an account lives on.
     func show(account: ManagedAccount) {
         show(account.provider == "claude" ? .claude : .codex, select: account.id)
+    }
+}
+
+extension AccountDirectory {
+    // The number the sidebar and the menu bar show for Claude: the desktop's account when only Claude 桌面 is used.
+    func claudeLowest(_ use: ClaudeUse) -> Int? {
+        if use == .desktop {
+            let current = claudeDesktop?.current
+            if let account = relay("claude").first(where: { $0.id == current?.linkedAccount }) { return account.lowestPrimary }
+            // Only signed in to Claude 桌面: what its own sign-in read, when that is turned on.
+            return current?.tokenQuota?.primary.map(\.remaining).min()
+        }
+        return current("claude")?.lowestPrimary
     }
 }
 
@@ -77,7 +92,6 @@ struct DashboardView: View {
         case .accounts: AccountsView()
         case .codex: CodexPage()
         case .claude: ClaudeHomePage()
-        case .automation: AutomationPage()
         case .clients: ClientsPage()
         case .cloud: CloudPage()
         case .network: NetworkPage()
@@ -152,9 +166,6 @@ private struct Sidebar: View {
                 }
                 .accessibilityLabel(claudeDesktop?.attention.map { "Claude，\($0)" } ?? "Claude")
                 Color.clear.frame(height: 12)
-                item(.automation, "换号与重置", glyph: .relay) {
-                    if directory?.strategy?.config.enabled == true { trailingText("开") }
-                }
                 item(.clients, "客户端与服务", glyph: .clients) {
                     if !service.isConnected && !service.isConnecting {
                         Circle().fill(Palette.attentionDot).frame(width: 6, height: 6)
@@ -188,14 +199,7 @@ private struct Sidebar: View {
 
     // The account in use where this Mac uses Claude: Claude Code's, or for desktop-only the desktop's linked one.
     private func claudeLowest(_ directory: AccountDirectory?) -> Int? {
-        guard let directory else { return nil }
-        if ClaudeUse.resolve(useSetting, directory) == .desktop {
-            let current = directory.claudeDesktop?.current
-            if let account = directory.relay("claude").first(where: { $0.id == current?.linkedAccount }) { return account.lowestPrimary }
-            // Only signed in to Claude 桌面: what its own sign-in read, when that is turned on.
-            return current?.tokenQuota?.primary.map(\.remaining).min()
-        }
-        return directory.current("claude")?.lowestPrimary
+        directory.flatMap { $0.claudeLowest(ClaudeUse.resolve(useSetting, $0)) }
     }
 
     private func trailingText(_ text: String) -> some View {

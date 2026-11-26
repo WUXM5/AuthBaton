@@ -88,7 +88,8 @@ impl Accounts {
             "busy":self.automation.job.is_some(),
             "message":message,
             "last_at":store.last_at,
-            "next_claude":self.next_claude(),
+            "next_claude":self.next_target("claude"),
+            "next_codex":self.next_target("codex"),
             "account_states":store.config.accounts.iter().filter_map(|r|self.automation.account_messages.get(&r.id).map(|message|json!({"id":r.id,"message":message}))).collect::<Vec<_>>(),
             "run":store.run.as_ref().map(|r|json!({"id":r.id,"source":r.source,"target":r.target,"created_at":r.created_at,
                 "tasks":r.tasks.iter().map(|t|json!({"thread_id":t.thread_id,"state":t.state})).collect::<Vec<_>>() }))})
@@ -245,15 +246,16 @@ impl Accounts {
                 (usage.remaining > f64::from(r.below) && fable_left).then(|| account.id.clone())
             })
     }
-    /// The Claude account a switch would go to if the signed-in one reached its line now; none while
-    /// the rules are off or the signed-in account does not switch by rule.
-    fn next_claude(&self) -> Option<String> {
+    /// The account of `provider` a switch would go to if the signed-in one reached its line now; none
+    /// while the rules are off, the signed-in account does not switch by rule, or a switch is blocked
+    /// (Codex 桌面 not connected). Each page's 在用 marks it.
+    fn next_target(&self, provider: &str) -> Option<String> {
         let config = &self.db.automation.config;
         let current = self
             .db
             .accounts
             .iter()
-            .find(|a| a.provider == "claude" && a.native)?;
+            .find(|a| a.provider == provider && a.native)?;
         let rule = config
             .accounts
             .iter()

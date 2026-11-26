@@ -13,6 +13,7 @@ enum AccountSheet: Identifiable {
     case recover(String)
     case rename(String)
     case history(String?)
+    case strategyStart
     case strategyStop
     case desktopConnection
 
@@ -28,6 +29,7 @@ enum AccountSheet: Identifiable {
         case .recover(let id): "recover-\(id)"
         case .rename(let id): "rename-\(id)"
         case .history(let id): "history-\(id ?? "all")"
+        case .strategyStart: "strategy-start"
         case .strategyStop: "strategy-stop"
         case .desktopConnection: "desktop-connection"
         }
@@ -118,8 +120,13 @@ struct AccountsView: View {
         if directory.recoveryNeeded { RecoveryBanner() }
         if let notice = directory.notice { Banner(glyph: .info, text: notice) }
         if let strategy = directory.strategy, strategy.phase == "attention" {
-            Banner(glyph: .relay, title: "自动换号停下了", text: strategy.message) {
-                Button("去看看") { AppNavigation.shared.show(.automation) }.buttonStyle(.pill(.onAttention, height: 20))
+            // The relay lives on each tool's page; the run, when there is one, names the tool.
+            let target = strategy.run.flatMap { run in directory.accounts.first { $0.id == run.target } }
+            Banner(glyph: .relay, title: "自动接力停下了", text: strategy.message) {
+                Button("去看看") {
+                    if let target { AppNavigation.shared.show(account: target) } else { AppNavigation.shared.show(directory.relayRules("codex").isEmpty ? .claude : .codex) }
+                }
+                .buttonStyle(.pill(.onAttention, height: 20))
             }
         }
         if let login = service.login {
@@ -273,9 +280,6 @@ private struct Bench: View {
                             .font(.system(size: 11)).foregroundStyle(Palette.ink3)
                     }
                     Spacer()
-                    if directory.strategy != nil {
-                        Button("换号与重置 ›") { AppNavigation.shared.show(.automation) }.buttonStyle(.pill(.link))
-                    }
                 }
                 if !groups.isEmpty {
                     VStack(spacing: 0) {

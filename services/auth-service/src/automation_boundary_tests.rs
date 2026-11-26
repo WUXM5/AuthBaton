@@ -716,7 +716,12 @@ fn disconnected_desktop_does_not_block_resets_for_default_or_other_accounts() {
 fn disconnected_switch_waits_and_unknown_reset_does_not_block_other_accounts() {
     let f = Fixture::new();
     let mut m = setup(&f);
+    // The Codex page marks where a switch would go now, by the same rule the switch uses.
+    assert_eq!(m.strategy_snapshot()["next_codex"], "b");
+    assert!(m.strategy_snapshot()["next_claude"].is_null());
     m.desktop.connected = false;
+    // Without the desktop no switch can happen, so nothing is marked.
+    assert!(m.strategy_snapshot()["next_codex"].is_null());
     m.automation_tick();
     assert!(m.db.automation.run.is_none());
     assert!(m.automation.account_messages["a"].contains("桌面没连上"));

@@ -181,7 +181,9 @@ enum Glyph: Sendable {
         // Claude Code in a terminal: a prompt and a cursor, no frame, so it never reads as the desktop's screen.
         case .terminal: ["M4 5.5l4.5 4.5L4 14.5", "M11 15h5.5"]
         case .close: ["M5.5 5.5l9 9M14.5 5.5l-9 9"]
-        case .chat: ["M5 4h10a2.5 2.5 0 0 1 2.5 2.5v5.5a2.5 2.5 0 0 1-2.5 2.5h-5l-3.5 3v-3H5a2.5 2.5 0 0 1-2.5-2.5V6.5a2.5 2.5 0 0 1 2.5-2.5z"]
+        // Claude 桌面's own 对话 icon: a big round bubble tailed bottom-left that opens where a small one sits bottom-right.
+        case .chat: ["M14.71 9.64A6 6 0 1 0 3.89 12.04L3 15.4L7.4 14.43A6 6 0 0 0 9.84 14.51",
+                     "M16.79 16.8L18.1 17.85L15.19 17.55A3.4 3.4 0 1 1 16.79 16.8Z"]
         case .code: ["M7 6.5 3.5 10 7 13.5", "M13 6.5l3.5 3.5-3.5 3.5", "M11.2 4.5 8.8 15.5"]
         case .tray: ["M3 9h14v5.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "M3 9l2-4.5h10L17 9", "M7.5 12h5"]
         case .globe: [circle(10, 10, 7.2), "M2.8 10h14.4", "M10 2.8a11 11 0 0 1 0 14.4", "M10 2.8a11 11 0 0 0 0 14.4"]
