@@ -594,6 +594,70 @@ enum When {
 
     static func text(_ timestamp: Double) -> String { text(Date(timeIntervalSince1970: timestamp)) }
 
+    // When a quota window is back (11-26, Gemini 稿). Under an hour, the minutes to go; from an hour on, the clock,
+    // with the day only when it is not today: 14:47, 明天 16:00, 周四 16:00 (this week, Monday first), 下周一 08:00,
+    // 12月8日 08:00. Both round up, so the window is back by the time shown, never after it.
+    struct Due: Equatable {
+        let day: String?
+        let time: String
+        let minutes: Bool
+        // Rounded up to the minute.
+        let at: Date
+        // Beside minutes to go: 今天 11:12 or 明天 00:12.
+        let soonClock: String
+
+        // "14:47 回满", "明天 16:00 回满", "52 分钟后回满".
+        func text(_ verb: String) -> String {
+            minutes ? "\(time) 分钟后\(verb)" : [day, time, verb].compactMap { $0 }.joined(separator: " ")
+        }
+    }
+
+    static func due(_ date: Date, now: Date = Date()) -> Due? {
+        let seconds = date.timeIntervalSince(now)
+        guard seconds > 0 else { return nil }
+        let minutes = Int((seconds / 60).rounded(.up))
+        let at = Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.up) * 60)
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        let parts = calendar.dateComponents([.month, .day, .hour, .minute, .weekday], from: at)
+        let time = String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+        let today = calendar.isDate(at, inSameDayAs: now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)).map { calendar.isDate(at, inSameDayAs: $0) } ?? false
+        let soon = (today ? "今天 " : "明天 ") + time
+        if minutes < 60 { return Due(day: nil, time: "\(minutes)", minutes: true, at: at, soonClock: soon) }
+        let week = calendar.dateInterval(of: .weekOfYear, for: now)
+        let day: String?
+        if today {
+            day = nil
+        } else if tomorrow {
+            day = "明天"
+        } else if let week, week.contains(at) {
+            day = "周" + weekday(parts.weekday)
+        } else if let week, let next = calendar.dateInterval(of: .weekOfYear, for: week.end), next.contains(at) {
+            day = "下周" + weekday(parts.weekday)
+        } else {
+            day = "\(parts.month ?? 0)月\(parts.day ?? 0)日"
+        }
+        return Due(day: day, time: time, minutes: false, at: at, soonClock: soon)
+    }
+
+    // 日 一 … 六 for Calendar's weekday, where 1 is Sunday.
+    static func weekday(_ number: Int?) -> String { ["日", "一", "二", "三", "四", "五", "六"][((number ?? 1) - 1) % 7] }
+
+    // How long until then, to the minute rounded up: "1 天 5 小时 40 分", "52 分钟".
+    static func span(to date: Date, now: Date = Date()) -> String {
+        let minutes = max(1, Int((date.timeIntervalSince(now) / 60).rounded(.up)))
+        if minutes < 60 { return "\(minutes) 分钟" }
+        return [(minutes / 1440, "天"), (minutes % 1440 / 60, "小时"), (minutes % 60, "分")]
+            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " ")
+    }
+
+    // "11月26日 周四 16:00": the full day, for a tooltip beside a shorter form.
+    static func dayClock(_ date: Date) -> String {
+        let parts = Calendar.current.dateComponents([.month, .day, .hour, .minute, .weekday], from: date)
+        return "\(parts.month ?? 0)月\(parts.day ?? 0)日 周\(weekday(parts.weekday)) " + String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+    }
+
     // "3 小时后" style countdown; nil once the moment has passed.
     static func countdown(to date: Date, now: Date = Date()) -> String? {
         let seconds = date.timeIntervalSince(now)

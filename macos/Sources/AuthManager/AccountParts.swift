@@ -12,7 +12,7 @@ struct QuotaFigures<Trailing: View>: View {
     var size: CGFloat = 49
     // Codex cards put "7 天额度剩余" after the number instead of under it.
     var inlineCaption = false
-    // Detail pages add the clock time to "3 小时后回满".
+    // Detail pages add how long it is to "明天 16:00 回满".
     var exact = false
     // Claude cards: the window the account waits on below its 见底线 shows when it is back instead of what is left.
     var refillWhenLow = false
@@ -43,7 +43,7 @@ struct QuotaFigures<Trailing: View>: View {
                 let due = waiting == 0 ? RefillDue(windows[0]) : nil
                 column(windows[0], due: due)
                 extraRows
-                trailingRow(text: due != nil ? leftText(windows[0]) : windows[0].refill(compact: !exact, exact: exact))
+                trailingRow(text: due != nil ? leftText(windows[0]) : windows[0].refill(exact: exact))
             } else {
                 // On a card (caption beside the number) the two windows sit 12 apart, so two 100% fit a 384 card.
                 EqualColumns(spacing: inlineCaption ? 12 : 20) {
@@ -53,21 +53,21 @@ struct QuotaFigures<Trailing: View>: View {
                             column(window, due: due)
                             if due != nil {
                                 Text(leftText(window)).font(.system(size: 12)).foregroundStyle(Palette.ink3).lineLimit(1)
-                                    .help(window.resetDate.map(When.exact) ?? "")
+                                    .help(window.refillHelp())
                             } else {
                                 Group {
                                     if exact {
-                                        // The clock time goes first when the column is too narrow for both.
+                                        // How long to go goes first when the column is too narrow for both.
                                         ViewThatFits(in: .horizontal) {
-                                            Text(window.refill(compact: false, exact: true))
-                                            Text(window.refill(compact: false))
+                                            Text(window.refill(exact: true))
+                                            Text(window.refill())
                                         }
                                     } else {
                                         Text(window.refill())
                                     }
                                 }
-                                .font(.system(size: 12)).foregroundStyle(Palette.ink2)
-                                .help(window.resetDate.map(When.exact) ?? "")
+                                .font(.system(size: 12)).foregroundStyle(Palette.ink2).monospacedDigit()
+                                .help(window.refillHelp())
                             }
                             if index == windows.count - 1 { extraRows }
                         }
@@ -116,8 +116,8 @@ struct QuotaFigures<Trailing: View>: View {
     private func trailingRow(text: String?) -> some View {
         HStack(spacing: 7) {
             if let text {
-                Text(text).font(.system(size: 12)).foregroundStyle(Palette.ink2)
-                    .help(account.primaryWindows.first?.resetDate.map(When.exact) ?? "")
+                Text(text).font(.system(size: 12)).foregroundStyle(Palette.ink2).monospacedDigit()
+                    .help(account.primaryWindows.first?.refillHelp() ?? "")
             }
             if let caption = account.quotaCaption, !account.primaryWindows.isEmpty {
                 Text("· \(caption)").font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -143,27 +143,29 @@ extension Array where Element == AccountQuota {
     }
 }
 
-// When a window is back, split for the big figure: "2" "天" "后回满". Whole days, else hours, else
-// minutes, like the compact refill text; nil when the time is unknown or already past.
+// When a window is back, split for the big figure as the refill text says it (11-26, Gemini 稿): "明天" "13:00"
+// "回满", or "52" "分钟" "后回满"; nil when the time is unknown or already past.
 struct RefillDue {
-    let number: Int
-    let unit: String
+    let day: String?
+    let time: String
+    let unit: String?
     let caption: String
 
     init?(_ window: AccountQuota, now: Date = Date()) {
-        guard let seconds = window.resetDate?.timeIntervalSince(now), seconds > 0 else { return nil }
-        if seconds >= 86400 {
-            number = Int(seconds / 86400); unit = "天"
-        } else if seconds >= 3600 {
-            number = Int(seconds / 3600); unit = "小时"
-        } else {
-            number = max(1, Int(seconds / 60)); unit = "分钟"
-        }
-        caption = "后" + (window.expires == true ? "到期" : "回满")
+        guard let date = window.resetDate, let due = When.due(date, now: now) else { return nil }
+        day = due.day
+        time = due.time
+        unit = due.minutes ? "分钟" : nil
+        caption = (due.minutes ? "后" : "") + window.verb
     }
+
+    // Before the caption: "明天 13:00", "14:47", "52 分钟".
+    var label: String { [day, time, unit].compactMap { $0 }.joined(separator: " ") }
+    // "明天 13:00 回满", "52 分钟后回满".
+    var text: String { label + (unit == nil ? " " : "") + caption }
 }
 
-// The big figure of the window an account waits on: how long until it is back, not what is left.
+// The big figure of the window an account waits on: when it is back, not what is left.
 // The unit drops to the size of "%" and then the caption goes when the column is too narrow.
 struct DueFigure: View {
     let due: RefillDue
@@ -176,15 +178,16 @@ struct DueFigure: View {
             line(unit: size * 0.42, caption: false)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(due.number) \(due.unit)\(due.caption)")
+        .accessibilityLabel(due.text)
     }
 
     private func line(unit: CGFloat, caption: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: unit == size ? size * 0.2 : 2) {
-                Text("\(due.number)").font(.system(size: size, weight: .semibold, design: .rounded)).monospacedDigit()
+                if let day = due.day { Text(day).font(.system(size: unit, weight: .semibold, design: .rounded)) }
+                Text(due.time).font(.system(size: size, weight: .semibold, design: .rounded)).monospacedDigit()
                     .kerning(-size * 0.02)
-                Text(due.unit).font(.system(size: unit, weight: .semibold, design: .rounded))
+                if let word = due.unit { Text(word).font(.system(size: unit, weight: .semibold, design: .rounded)) }
             }
             .foregroundStyle(Palette.ink)
             if caption {
