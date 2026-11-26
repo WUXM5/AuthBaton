@@ -21,7 +21,7 @@ struct ClaudeDeskBar: View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
                 Icon(.chat, size: 15, color: Palette.ink2, weight: 1.8)
-                Text("桌面对话").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+                Text(status.codeRelay?.enabled == true ? "Claude Chat" : "桌面对话").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
                 Rectangle().fill(Palette.divider).frame(width: 1, height: 14)
                 if let current = status.current {
                     Seal(current.display, style: .inUse, size: 18)
@@ -90,12 +90,14 @@ struct ClaudeDeskPanel: View {
     let present: (ClaudeSheet) -> Void
 
     private var locked: Bool { service.accountBusy || status.busy || !status.installed || !status.switchSupported }
+    // With 无感换号 on, the desktop's login is only Chat / Cowork's, and the panel says Chat (11-26).
+    private var chat: Bool { status.codeRelay?.enabled == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 7) {
                 Icon(.chat, size: 15, color: Palette.ink2, weight: 1.8)
-                Text("桌面 · 对话 / 工作").font(.system(size: 13, weight: .semibold))
+                Text(chat ? "Claude Chat" : "桌面 · 对话 / 工作").font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 6)
                 Pill("仅手动切换", small: true).help("Claude 桌面从不自动换号；换桌面号要退出并重开它")
             }
@@ -232,7 +234,7 @@ struct ClaudeDeskPanel: View {
             }
             Spacer(minLength: 6)
             if let left = left(target) { Text(left).font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.ink3) }
-            Button("换到桌面…") { if let target { ask(target) } }
+            Button(chat ? "换到 Chat…" : "换到桌面…") { if let target { ask(target) } }
                 .buttonStyle(.pill(.secondary))
                 .disabled(target == nil || locked || !desk.canSwitch)
         }

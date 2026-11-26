@@ -376,7 +376,7 @@ struct MenuBarPanel: View {
         }
     }
 
-    // Claude desktop: who it is signed in as, whether every account's sessions match, and 下一个.
+    // Claude desktop: who it is signed in as, whether every account's sessions match, and ▶| to the next one.
     private func claudeDesktop(_ desktop: ClaudeDesktopStatus) -> some View {
         let current = desktop.current
         let next = desktop.picks?.next.flatMap { handle in desktop.accounts.first { $0.handle == handle } }
@@ -384,12 +384,13 @@ struct MenuBarPanel: View {
         let state: String = desktop.busy ? (desktop.operation?.kind == "add" ? "正在添加账号…" : "正在换号…")
             : desktop.restartNeeded ? "要重启一次 Claude" : desktop.pending > 0 ? "\(desktop.pending) 处待同步"
             : desktop.background ? "会话一致" : "后台同步关着"
-        // Named as the window's desktop slot: with 无感换号 on, this is the desktop's chat / work only.
+        // Named as the window's desktop slot: with 无感换号 on, this is the desktop's chat / work only (Claude Chat).
         let relayOn = desktop.codeRelay?.enabled == true
+        let locked = desktop.busy || service.accountBusy
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
                 Icon(.chat, size: 10, color: Palette.ink3)
-                Text(relayOn ? "桌面 · 对话 / 工作" : "Claude 桌面").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
+                Text(relayOn ? "Claude Chat" : "Claude 桌面").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink3)
             }
             .padding(.horizontal, 7).padding(.top, 9).padding(.bottom, 3.5)
             HStack(spacing: 9) {
@@ -402,10 +403,18 @@ struct MenuBarPanel: View {
                 }
                 Spacer(minLength: 3.5)
                 if let next, desktop.switchSupported {
-                    Button("下一个") { expanded = confirming ? nil : "claude_desktop" }
-                        .buttonStyle(.pill(.secondary, height: 20))
-                        .disabled(desktop.busy || service.accountBusy)
-                        .help("换上 \(next.title)")
+                    // ▶| as on 提前换, with the seal of the account it switches to (11-26); what it does is in the help.
+                    let who = relayOn ? "Chat" : "Claude 桌面"
+                    Button { expanded = confirming ? nil : "claude_desktop" } label: {
+                        HStack(spacing: 4) {
+                            SkipAheadMark()
+                            Seal(next.display, style: .standby, size: 16).opacity(locked ? 0.45 : 1)
+                        }
+                    }
+                    .buttonStyle(.pill(.soft, height: 22))
+                    .disabled(locked)
+                    .help("现在把 \(who) 换到 \(next.title)\nClaude 桌面会退出并重开，点了先确认")
+                    .accessibilityLabel("现在把 \(who) 换到 \(next.title)")
                 }
             }
             .padding(.horizontal, 7).frame(minHeight: 32)
@@ -428,7 +437,7 @@ struct MenuBarPanel: View {
                                 if service.accountError == nil { expanded = nil }
                             }
                         }
-                        .buttonStyle(.pill(.primary, height: 20)).disabled(desktop.busy || service.accountBusy)
+                        .buttonStyle(.pill(.primary, height: 20)).disabled(locked)
                     }
                 }
                 .padding(10)
