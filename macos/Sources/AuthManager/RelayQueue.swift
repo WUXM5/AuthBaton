@@ -531,7 +531,8 @@ struct RelayNextCard: View {
                             Text(window.shortLabel).font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.leading, 3)
                         }
                         MiniBar(remaining: window.remaining)
-                        Text(window.remaining >= 100 ? "未使用" : window.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                        Text(window.remaining >= 100 ? "未使用" : window.refill()).font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.ink3).lineLimit(1)
+                            .help(window.refillHelp())
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

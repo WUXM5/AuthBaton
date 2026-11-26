@@ -178,9 +178,9 @@ private struct ClaudeMain: View {
                     QuotaBar(remaining: window.remaining, height: 4.5).frame(minWidth: 68, maxWidth: 136)
                     Text("\(window.remaining)%").font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
                         .lineLimit(1).frame(width: 40, alignment: .trailing)
-                    Text(window.refill(compact: false)).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    Text(window.refill()).font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.ink3).lineLimit(1)
                         .frame(width: 99, alignment: .leading)
-                        .help(window.resetDate.map(When.exact) ?? "")
+                        .help(window.refillHelp())
                 }
                 .frame(minHeight: 37)
                 .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.divider).frame(height: 1) } }

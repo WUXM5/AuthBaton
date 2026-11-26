@@ -827,7 +827,9 @@ extension NSWindow {
                            ("·", "."), ("・", "."), ("•", "."), ("；", ";"), ("？", "?"), ("！", "!"),
                            // OCR sometimes reads 换 as its traditional form, and in small text 底 as 厎, 未 as 末, 撤 as 撒,
                            // … as ⋯ (the app never writes 厎, 末, 撒 or ⋯).
-                           ("換", "换"), ("厎", "底"), ("末", "未"), ("撒", "撤")] {
+                           ("換", "换"), ("厎", "底"), ("末", "未"), ("撒", "撤"),
+                           // 桌 in a tinted button reads as 泉 (11-26); the app never writes 泉.
+                           ("泉", "桌")] {
             result = result.replacingOccurrences(of: from, with: to)
         }
         return result
@@ -1171,7 +1173,9 @@ extension NSWindow {
 
     section(1, "Claude 续期备份没同步 → 恢复同步（确认后才调用 retry_save）") {
         select(.accounts)
-        check.expect(Driver.visible("续期备份没同步"), "Claude 卡片底部写明「续期备份没同步」")
+        // OCR reads this line as noise now and then, depending on the clock times elsewhere on the page (11-26);
+        // the 恢复同步 button is in this strip only.
+        check.expect(Driver.visible("续期备份没同步") || !Driver.hits("恢复同步", .exact).isEmpty, "Claude 卡片底部写明「续期备份没同步」")
         check.expect(!Driver.visible("2.1.278"), "过时的版本文案不再作为主要说明出现")
         let count = state.directory!.issues(dismissed: []).count
         check.expect(Driver.visible("\(count)件事要处理"), "页头写明 \(count) 件事要处理")
@@ -1571,7 +1575,13 @@ extension NSWindow {
         select(.codex)
         check.expect(Driver.visible("不参与自动接力") && Driver.visible("未加入接力"), "别的 Mac 新来的号放在不参与抽屉，写「未加入接力」")
         state.calls.removeAll()
-        if !Driver.press("加入接力") { check.expect(false, "找到「加入接力」") }
+        // The button reads as one line with the 「N 张」 beside it (11-26), and 「未加入接力」 contains it too: take the
+        // line that starts with it and aim at the button's part.
+        if let line = Driver.hits("加入接力", .prefix).first, let button = Driver.narrow(line, to: Driver.normalize("加入接力")) {
+            Driver.click(button.window, button.center)
+        } else {
+            check.expect(false, "找到「加入接力」")
+        }
         for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
         let rules = sentRules(check.lastCall("accounts.strategy"))
         check.expect(rules.contains { $0["id"] as? String == "synthetic-nova" && $0["participate"] as? Bool == true } && main.attachedSheet == nil,
@@ -1585,7 +1595,16 @@ extension NSWindow {
         check.visible("32/32个账号", "规则满了时抽屉写 32 / 32 个账号")
         state.calls.removeAll()
         // OCR does not read a disabled button's pale text. The rows line their buttons up in one column: click that
-        // column level with extra 29, between its name and its address.
+        // column level with extra 29 (the first account without a rule), between its name and its address. Drawer rows
+        // grew a line under the bar on 11-26, so extra 29 is below the window now: scroll to the end first (a taller
+        // window reads worse).
+        for scroll in Driver.views(NSScrollView.self) {
+            guard let document = scroll.documentView, document.frame.height > scroll.contentView.bounds.height + 1 else { continue }
+            let end = document.isFlipped ? document.frame.height - scroll.contentView.bounds.height : 0
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: end))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        Driver.settle(0.4)
         if let name = Driver.hits("extra 29").first, let address = Driver.hits("x29***@example").first, let column = Driver.hits("加入接力").first {
             Driver.click(name.window, NSPoint(x: column.rect.midX, y: (name.rect.midY + address.rect.midY) / 2))
         } else {
@@ -1982,7 +2001,11 @@ extension NSWindow {
         Fixture.load("claudelow", into: state)
         select(.claude)
         check.visible("已见底", "7 天见底的账号名字旁写「已见底」")
-        check.visible("后回满", "见底那栏的大数字换成多久后回满")
+        // The big figure is when the week is back (11-26): the clock time the account's own window gives.
+        let lowWeek = state.directory?.accounts.lazy.compactMap { account in
+            account.primaryWindows.indexRefillingLast(below: 4).flatMap { RefillDue(account.primaryWindows[$0]) }
+        }.first
+        check.expect(lowWeek.map { Driver.visible($0.time) } == true, "见底那栏的大数字换成回满的钟点（\(lowWeek?.text ?? "没有")）")
         check.visible("剩2%·见底线4%", "条下面写剩余和见底线")
         // The amber tick at the start of a low Fable bar sometimes reads as a letter after the label.
         check.expect(Driver.hits("Fable", .prefix).count == 2 && Driver.visible("88%"), "两张卡的 Fable 都是一行小进度条，带百分比")
@@ -1990,12 +2013,15 @@ extension NSWindow {
         Fixture.load("claudelow5", into: state)
         select(.claude)
         check.visible("剩0%·见底线4%", "只有 5 小时见底时换的是 5 小时那栏")
-        check.visible("4天后回满", "7 天那栏照常写回满时间")
+        let weekText = state.directory?.accounts.first { $0.primaryWindows.first?.remaining == 0 }?.primaryWindows.first(where: \.isWeek)?.refill()
+        check.expect(weekText.map { Driver.visible($0) } == true, "7 天那栏照常写回满时间（\(weekText ?? "没有")）")
         Fixture.load("claudelowboth", into: state)
         select(.claude)
         // OCR reads this grey 1 as 7 now and then; the 5-hour column would say 剩0%.
         check.expect(Driver.visible("剩1%·见底线4%") || Driver.visible("剩7%·见底线4%"), "两个都见底：放大的是回满最晚的 7 天")
-        check.visible("2小时后回满", "两个都见底：5 小时那栏照常小字写回满时间")
+        let fiveText = state.directory?.accounts.first { $0.primaryWindows.count >= 2 && $0.primaryWindows.allSatisfy { $0.remaining <= 4 } }?
+            .primaryWindows.first { !$0.isWeek }?.refill()
+        check.expect(fiveText.map { Driver.visible($0) } == true, "两个都见底：5 小时那栏照常小字写回满时间（\(fiveText ?? "没有")）")
         Fixture.load("default", into: state)
         select(.claude)
         check.expect(Driver.hits("已见底").isEmpty, "没有规则盯着的账号不写「已见底」")
@@ -2305,6 +2331,47 @@ extension NSWindow {
             check.expect(check.lastCall("accounts.cloud").map { $0.contains("\"cloud_action\":\"\(action)\"") && $0.contains(id) } == true,
                          "\(name)：「放弃」发送 \(action)")
         }
+    }
+    section(40, "回满时间（11-26 Gemini 稿）：不到 1 小时写分钟倒计时，1 小时起写钟点；今天不写日期，明天、本周周X、下周X、更远写日期；都向上取整") {
+        let now = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 25, hour: 10, minute: 20))!  // a Wednesday
+        func window(_ seconds: Double, label: String = "7 天窗口", expires: Bool = false, from: Date) -> AccountQuota {
+            AccountQuota(label: label, usedPercent: 20, resetsAt: from.timeIntervalSince1970 + seconds, resetsAtIso: nil, scope: nil, kind: nil, expires: expires)
+        }
+        func text(_ seconds: Double, expires: Bool = false, from: Date? = nil) -> String {
+            window(seconds, expires: expires, from: from ?? now).refill(now: from ?? now)
+        }
+        let cases: [(Double, String, String)] = [
+            (52 * 60, "52 分钟后回满", "不到 1 小时写分钟倒计时"),
+            (30, "1 分钟后回满", "最少写 1 分钟"),
+            (59 * 60 + 30, "11:20 回满", "差 59 分 30 秒：进位到 60 分钟就写钟点"),
+            (4 * 3600 + 26 * 60 + 10, "14:47 回满", "今天的只写钟点，秒向上进到分"),
+            (23 * 3600 + 30 * 60, "明天 09:50 回满", "跨午夜写明天"),
+            (86400 + 5 * 3600 + 40 * 60, "明天 16:00 回满", "整点保留 :00"),
+            (2 * 86400 + 23 * 3600 + 10 * 60, "周六 09:30 回满", "本周写周X"),
+            (4 * 86400 + 13 * 3600 + 39 * 60, "周日 23:59 回满", "周一算一周开始：周日还在本周"),
+            (4 * 86400 + 21 * 3600 + 40 * 60, "下周一 08:00 回满", "跨周写下周X"),
+            (13 * 86400, "12月8日 10:20 回满", "下周以后写日期"),
+            (-60, "回满时间已过，等下次查询", "过了的时间照旧"),
+        ]
+        for (seconds, expected, what) in cases {
+            let got = text(seconds)
+            check.expect(got == expected, "\(what)：\(got)")
+        }
+        check.expect(text(4 * 86400 + 21 * 3600 + 40 * 60, expires: true) == "下周一 08:00 到期", "到期类窗口只换动词")
+        // Sunday 22:00: Monday 01:00 is 明天, not 下周一.
+        let sunday = now.addingTimeInterval(4 * 86400 + 11 * 3600 + 40 * 60)
+        check.expect(text(3 * 3600, from: sunday) == "明天 01:00 回满", "周日晚上回满在周一：写明天（\(text(3 * 3600, from: sunday))）")
+        let week = window(86400 + 5 * 3600 + 40 * 60, from: now)
+        check.expect(week.refill(exact: true, now: now) == "明天 16:00 回满 · 还剩 1 天 5 小时 40 分", "详情页补上还剩多久（\(week.refill(exact: true, now: now))）")
+        check.expect(week.refillHelp(now: now) == "7 天额度 · 1 天 5 小时 40 分后回满 · 11月26日 周四 16:00", "悬停补上还剩多久和完整日期（\(week.refillHelp(now: now))）")
+        let soon = window(52 * 60, label: "5 小时窗口", from: now)
+        check.expect(soon.refill(exact: true, now: now) == "52 分钟后回满 · 今天 11:12", "详情页分钟倒计时补上钟点（\(soon.refill(exact: true, now: now))）")
+        check.expect(soon.refillHelp(now: now) == "5 小时额度 · 今天 11:12 回满 · 还剩 52 分钟", "分钟倒计时的悬停补上钟点（\(soon.refillHelp(now: now))）")
+        check.expect(week.refillBrief(now: now) == "明天 16:00" && soon.refillBrief(now: now) == "52 分钟后"
+                     && window(4 * 86400 + 21 * 3600 + 40 * 60, expires: true, from: now).refillBrief(now: now) == "下周一 08:00 到期", "窄处省掉「回满」，「到期」不省")
+        let due = RefillDue(week, now: now), dueSoon = RefillDue(soon, now: now)
+        check.expect(due?.label == "明天 16:00" && due?.caption == "回满" && due?.text == "明天 16:00 回满", "见底大字：明天 16:00 + 回满")
+        check.expect(dueSoon?.label == "52 分钟" && dueSoon?.caption == "后回满" && dueSoon?.text == "52 分钟后回满", "见底大字不到 1 小时：52 分钟 + 后回满")
     }
     section(39, "菜单栏：在用云端续期的号时「退出」下一行写后果，点退出先确认，默认保持运行；没有时直接退出") {
         Fixture.load("cloudmix", into: state)

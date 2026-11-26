@@ -228,14 +228,30 @@ extension AccountQuota {
     // "7 天额度剩余" under the big number.
     var remainingCaption: String { "\(shortLabel)额度剩余" }
 
-    // When the window fills back up. Compact keeps whole days only, for cards and rows.
-    func refill(compact: Bool = true, exact: Bool = false) -> String {
+    var verb: String { expires == true ? "到期" : "回满" }
+
+    // When the window is back (11-26, Gemini 稿): "14:47 回满", "明天 16:00 回满", "52 分钟后回满". Detail pages add
+    // how long that is, or the clock beside minutes to go.
+    func refill(exact: Bool = false, now: Date = Date()) -> String {
         guard let date = resetDate else { return "官方没给回满时间" }
-        let verb = expires == true ? "到期" : "回满"
-        guard let countdown = When.countdown(to: date) else { return "\(verb)时间已过，等下次查询" }
-        let seconds = date.timeIntervalSinceNow
-        let short = compact && seconds >= 86400 ? "\(Int(seconds / 86400)) 天后" : countdown
-        return short + verb + (exact ? " · \(When.clock(date))" : "")
+        guard let due = When.due(date, now: now) else { return "\(verb)时间已过，等下次查询" }
+        guard exact else { return due.text(verb) }
+        return due.text(verb) + " · " + (due.minutes ? due.soonClock : "还剩 " + When.span(to: date, now: now))
+    }
+
+    // Where even that is too wide (11-26, Gemini 稿): 回满 goes, 到期 stays. "下周二 17:00", "52 分钟后".
+    func refillBrief(now: Date = Date()) -> String {
+        guard verb == "回满", let date = resetDate, let due = When.due(date, now: now) else { return refill(now: now) }
+        return due.minutes ? "\(due.time) 分钟后" : [due.day, due.time].compactMap { $0 }.joined(separator: " ")
+    }
+
+    // The tooltip says what the text leaves out: how long to go and the full day beside a clock time, the clock
+    // beside minutes to go.
+    func refillHelp(now: Date = Date()) -> String {
+        guard let date = resetDate, let due = When.due(date, now: now) else { return "" }
+        let name = shortLabel.trimmingCharacters(in: .whitespaces) + "额度"
+        if due.minutes { return "\(name) · \(due.soonClock) \(verb) · 还剩 \(due.time) 分钟" }
+        return "\(name) · \(When.span(to: date, now: now))后\(verb) · \(When.dayClock(due.at))"
     }
 }
 

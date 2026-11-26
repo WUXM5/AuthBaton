@@ -342,9 +342,14 @@ private struct BenchRow: View {
                 }
             }
             .frame(minWidth: 77, maxWidth: 170)
-            Text(account.primaryWindows.min { $0.remaining < $1.remaining }?.refill() ?? "")
-                .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                .frame(width: 68, alignment: .leading)
+            let lowest = account.primaryWindows.min { $0.remaining < $1.remaining }
+            ViewThatFits(in: .horizontal) {
+                Text(lowest?.refill() ?? "")
+                Text(lowest?.refillBrief() ?? "")
+            }
+            .font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.ink3).lineLimit(1)
+            .frame(width: 96, alignment: .leading)
+            .help(lowest?.refillHelp() ?? "")
             let locked = service.accountBusy || directory.busy || directory.recoveryNeeded
             HStack(spacing: 5) {
                 switch action {

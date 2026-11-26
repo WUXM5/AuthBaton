@@ -706,7 +706,7 @@ struct ClaudeMiniQuota: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     if let due = RefillDue(week) {
-                        Text("\(due.number) \(due.unit)").font(.system(size: 15, weight: .semibold, design: .rounded)).foregroundStyle(Palette.ink)
+                        Text(due.label).font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.ink)
                         Text(due.caption).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.attentionText)
                     } else {
                         Text(week.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3)
@@ -718,7 +718,8 @@ struct ClaudeMiniQuota: View {
                 MiniBar(remaining: 0, amber: true)
             }
         } else {
-            HStack(spacing: 10) {
+            // Top-aligned: the windows have a third line, Fable has not, and the bars line up.
+            HStack(alignment: .top, spacing: 10) {
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     mini(window).frame(width: window.isWeek ? (wide ? 220 : 140) : (wide ? 124 : 80), alignment: .leading)
                 }
@@ -745,18 +746,37 @@ struct ClaudeMiniQuota: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if low(window), let due = RefillDue(window) {
-                    Text("\(due.number) \(due.unit)").font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundStyle(Palette.ink)
-                    Text("回满").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                    // A narrow column keeps the time and lets the amber bar say the rest.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            dueLabel(due)
+                            Text(due.caption).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.attentionText)
+                        }
+                        dueLabel(due)
+                    }
                 } else {
                     Text("\(window.remaining)%").font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.ink)
                     Spacer(minLength: 3)
-                    Text(window.isWeek ? "7 天 · " + window.refill() : window.shortLabel.trimmingCharacters(in: .whitespaces))
+                    Text(window.shortLabel.trimmingCharacters(in: .whitespaces))
                         .font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
                 }
             }
             MiniBar(remaining: window.remaining, amber: low(window))
+            // When it is back sits under the bar (11-26, Gemini 稿): beside the label there is no room for a day and a time.
+            Text(refillLine(window)).font(.system(size: 10.5)).monospacedDigit().foregroundStyle(Palette.ink3).lineLimit(1)
         }
-        .help(window.resetDate.map(When.exact) ?? "")
+        .help(window.refillHelp())
+    }
+
+    private func dueLabel(_ due: RefillDue) -> some View {
+        Text(due.label).font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.ink).lineLimit(1)
+    }
+
+    // The 7-day window always says when it is back, the 5-hour one once it is used; a low one says it above the bar.
+    // A blank line keeps the bars level.
+    private func refillLine(_ window: AccountQuota) -> String {
+        guard !low(window), window.resetDate != nil, window.isWeek || window.remaining < 100 else { return " " }
+        return window.refill()
     }
 }
 
