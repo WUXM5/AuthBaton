@@ -29,6 +29,9 @@ enum Palette {
     static let panel = dynamic(0xF6F7F9, 0x25272C)
     static let field = dynamic(0xF4F5F7, 0x2A2C31)
     static let hover = dynamic(0xF8F9FA, 0x23252A)
+    // 在用's wing: the slot the next account sits in, and the light along its frosted sleeve's top.
+    static let slot = dynamic(0xEFF1F5, 0x17181B)
+    static let sheen = dynamic(0xFFFFFF, 0xFFFFFF, alpha: (0.96, 0.10))
 
     static let attention = dynamic(0xB56200, 0xF0A632)
     static let attentionText = dynamic(0x8F4C00, 0xF4B860)
@@ -77,6 +80,26 @@ extension View {
                 .shadow(color: .black.opacity(raised ? 0.06 : 0), radius: raised ? 12 : 0, y: raised ? 9 : 0)
         }
         .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+    }
+
+    // 在用 with a wing on its right: square on that side, and when joined its shadow is the pair's (joinedShadow).
+    func loopCard(radius: CGFloat, joined: Bool, raised: Bool) -> some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius, bottomTrailingRadius: joined ? 0 : radius,
+                                           topTrailingRadius: joined ? 0 : radius, style: .continuous)
+        return self.background {
+            shape.fill(Palette.card)
+                .shadow(color: .black.opacity(raised && !joined ? 0.06 : 0), radius: raised && !joined ? 12 : 0, y: raised && !joined ? 9 : 0)
+        }
+        .overlay(shape.strokeBorder(Palette.ring, lineWidth: 1))
+    }
+
+    // One raised card's shadow under 在用 and its wing together.
+    func joinedShadow(_ joined: Bool, radius: CGFloat) -> some View {
+        self.background {
+            if joined {
+                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.card).shadow(color: .black.opacity(0.06), radius: 12, y: 9)
+            }
+        }
     }
 
     func loopPanel(radius: CGFloat = 12) -> some View {

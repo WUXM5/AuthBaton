@@ -317,58 +317,152 @@ extension CodexStrategyOrder {
 
 // MARK: 下一个
 
-// The account the rules would switch to now, beside 在用: ▶ 第 N 位 says what it is, no words around it.
+// What sits beside 在用: the account the rules would switch to, or word that none in the queue can.
+enum RelayWingKind {
+    case next(ManagedAccount, rank: Int)
+    case empty
+}
+
+// The wing that is open, so its queue row is outlined with it.
+@MainActor final class RelayWing: ObservableObject {
+    static let shared = RelayWing()
+    @Published var open: String?
+    // Preview renders and checks only: every wing drawn open.
+    @Published var previewOpen = false
+}
+
+// The account the rules would switch Code to now, as 在用's wing (11-26, Gemini 方案 B). At rest it is a frosted
+// sleeve with ▶ and its place, the account tucked in blurred, so it does not pull the eye from 在用. The pointer on
+// it, or Tab, lifts the card out over the sleeve with its numbers and 提前换; nothing beside or below it moves.
 struct RelayNextCard: View {
+    static let width: CGFloat = 306
     @EnvironmentObject private var service: ServiceController
+    @ObservedObject private var wing = RelayWing.shared
     let account: ManagedAccount
     let rank: Int
     let directory: AccountDirectory
+    // 在用's corner, which the wing closes on the right.
+    var radius: CGFloat = 17
     // 提前换: what switching to it by hand does on this page.
     let switchNow: () -> Void
+    @State private var hovering = false
+    @State private var leaving: Task<Void, Never>?
+    // Esc folds the card back while the keyboard is still on it.
+    @State private var dismissed = false
+    @FocusState private var focus: Part?
+
+    private enum Part: Hashable { case wing, button }
+
+    private var open: Bool { wing.previewOpen || ((hovering || focus != nil) && !dismissed) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let shape = UnevenRoundedRectangle(bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous)
+        sleeve
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(shape.fill(Palette.slot))
+            .overlay(shape.strokeBorder(Palette.ring, lineWidth: 1))
+            .background(alignment: .bottom) { deck }
+            .overlay { card }
+            .contentShape(shape)
+            .onHover(perform: hover)
+            .focusable(interactions: .activate)
+            .focused($focus, equals: .wing)
+            .onKeyPress(.escape) {
+                guard open else { return .ignored }
+                dismissed = true
+                return .handled
+            }
+            .onChange(of: focus) { dismissed = false }
+            .onChange(of: open, initial: true) { _, now in mark(now) }
+            .onChange(of: account.id) { mark(open) }
+            .onDisappear { if wing.open == account.id { wing.open = nil } }
+            .animation(.snappy(duration: 0.18, extraBounce: 0), value: open)
+    }
+
+    private func mark(_ now: Bool) {
+        if now { wing.open = account.id } else if wing.open == account.id { wing.open = nil }
+    }
+
+    // A short grace on the way out, so crossing the lifted card's edge or reaching 提前换 does not shut it.
+    private func hover(_ inside: Bool) {
+        leaving?.cancel()
+        if inside {
+            hovering = true
+            dismissed = false
+            return
+        }
+        leaving = Task {
+            try? await Task.sleep(for: .milliseconds(75))
+            if !Task.isCancelled { hovering = false }
+        }
+    }
+
+    // At rest: the pointer and the place on top, the account blurred in a frosted sleeve below.
+    private var sleeve: some View {
+        VStack(spacing: 0) {
             HStack(spacing: 8) {
-                PointerRank(text: "第 \(rank) 位", small: false)
+                PointerBadge()
+                Spacer(minLength: 6)
+                Text("第 \(rank) 位").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(Palette.ink2)
+                    .padding(.horizontal, 8).frame(height: 21)
+                    .background(Palette.card.opacity(0.88), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+            }
+            .padding(.horizontal, 14).frame(height: 42)
+            .opacity(open ? 0 : 1)
+            ZStack(alignment: .top) {
+                tucked.padding(.horizontal, 12).padding(.top, 2).padding(.bottom, -8)
+                glass.padding(.top, 15).opacity(open ? 0.25 : 1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: radius - 1, style: .continuous))
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var tucked: some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 12, topTrailingRadius: 12, style: .continuous)
+        return VStack(alignment: .leading, spacing: 13) {
+            identity(pip: false)
+            quotas
+        }
+        .padding(.horizontal, 13).padding(.top, 15)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .blur(radius: 4.5)
+        .background(shape.fill(Palette.card).shadow(color: .black.opacity(0.055), radius: 4, y: -2))
+        .overlay(shape.strokeBorder(Palette.edge.opacity(0.85), lineWidth: 1))
+        .allowsHitTesting(false)
+    }
+
+    private var glass: some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 11, bottomTrailingRadius: radius - 1, topTrailingRadius: 11, style: .continuous)
+        return shape
+            .fill(LinearGradient(stops: [.init(color: Palette.card.opacity(0.36), location: 0),
+                                         .init(color: Palette.panel.opacity(0.5), location: 0.44),
+                                         .init(color: Palette.slot.opacity(0.74), location: 1)],
+                                 startPoint: .top, endPoint: .bottom))
+            .overlay(shape.fill(RadialGradient(colors: [Palette.card.opacity(0.5), Palette.card.opacity(0)],
+                                               center: UnitPoint(x: 0.2, y: 0), startRadius: 0, endRadius: 170)))
+            .overlay(alignment: .top) { Rectangle().fill(Palette.sheen).frame(height: 1).padding(.horizontal, 10) }
+            .shadow(color: .black.opacity(0.055), radius: 5, y: -3)
+    }
+
+    // Lifted: who it is, its numbers and 提前换, over the sleeve.
+    private var card: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                PointerBadge(lit: true)
                 Spacer(minLength: 6)
                 if let plan = account.plan { Pill(plan.uppercased(), small: true) }
             }
             .padding(.horizontal, 14).frame(height: 42)
-            .background(Palette.wash.opacity(0.55))
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.divider).frame(height: 1) }
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 9) {
-                    Seal(account.displayName, style: .standby, size: 28)
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 5) {
-                            Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                            CloudBadge(account: account, size: 11)
-                        }
-                        if !account.subtitle.isEmpty {
-                            Text(account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                        }
-                    }
-                }
-                if let week = account.weekSpent {
-                    Text(week.refill()).font(.system(size: 12)).foregroundStyle(Palette.attentionText)
-                } else {
-                    HStack(alignment: .top, spacing: 14) {
-                        ForEach(Array(account.primaryWindows.prefix(2).enumerated()), id: \.offset) { _, window in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                    Text("\(window.remaining)").font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
-                                    Text("%").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink2)
-                                    Text(window.shortLabel).font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.leading, 4)
-                                }
-                                MiniBar(remaining: window.remaining)
-                                Text(window.remaining >= 100 ? "未使用" : window.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
+            VStack(alignment: .leading, spacing: 15) {
+                identity(pip: true)
+                quotas
             }
-            .padding(14)
+            .padding(.horizontal, 15).padding(.top, 13).padding(.bottom, 12)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Pill((account.creditCount ?? 0) > 0 ? "\(account.creditCount ?? 0) 张重置卡" : "没有重置卡", small: true)
@@ -383,13 +477,104 @@ struct RelayNextCard: View {
                 .disabled(service.accountBusy || directory.primaryAction(for: account) != .switchTo || directory.switchDisabled(for: account))
                 .help("现在就换到第 \(rank) 位 \(account.displayName)，不等见底")
                 .accessibilityLabel("提前换到 \(account.displayName)")
+                .focused($focus, equals: .button)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(.horizontal, 14).frame(height: 42)
             .overlay(alignment: .top) { Rectangle().fill(Palette.divider).frame(height: 1) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .loopCard(radius: 17, raised: true)
+        .background(shape.fill(Palette.card).shadow(color: .black.opacity(0.13), radius: 16, y: 8))
+        .overlay(shape.strokeBorder(Palette.brand.opacity(0.34), lineWidth: 1))
+        .scaleEffect(open ? 1.016 : 0.97)
+        .offset(y: open ? -5 : 4)
+        .blur(radius: open ? 0 : 4)
+        .opacity(open ? 1 : 0)
+        .allowsHitTesting(open)
     }
+
+    private func identity(pip: Bool) -> some View {
+        HStack(spacing: 9) {
+            Seal(account.displayName, style: .standby, size: 28)
+                .overlay(alignment: .bottomTrailing) {
+                    // Its place rides on the seal once the card is out; the sleeve says it in words.
+                    if pip {
+                        Text("\(rank)").font(.system(size: 9.5, weight: .bold)).monospacedDigit().foregroundStyle(Palette.ink)
+                            .frame(minWidth: 15, minHeight: 15).padding(.horizontal, rank > 9 ? 2 : 0)
+                            .background(Palette.card, in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(Palette.edge, lineWidth: 1))
+                            .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                            .offset(x: 4, y: 3)
+                    }
+                }
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    CloudBadge(account: account, size: 11)
+                }
+                if !account.subtitle.isEmpty {
+                    Text(account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var quotas: some View {
+        if let week = account.weekSpent {
+            Text(week.refill()).font(.system(size: 12)).foregroundStyle(Palette.attentionText)
+        } else {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(Array(account.primaryWindows.prefix(2).enumerated()), id: \.offset) { _, window in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            Text("\(window.remaining)").font(.system(size: 18, weight: .bold, design: .rounded)).monospacedDigit()
+                            Text("%").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.ink2)
+                            Text(window.shortLabel).font(.system(size: 11)).foregroundStyle(Palette.ink3).padding(.leading, 3)
+                        }
+                        MiniBar(remaining: window.remaining)
+                        Text(window.remaining >= 100 ? "未使用" : window.refill()).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    // Two card edges under the wing: more accounts wait behind this one.
+    private var deck: some View {
+        let first = UnevenRoundedRectangle(bottomLeadingRadius: 11, bottomTrailingRadius: 11, style: .continuous)
+        let second = UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10, style: .continuous)
+        return ZStack(alignment: .top) {
+            second.fill(Palette.rail).overlay(second.strokeBorder(Palette.ring, lineWidth: 1))
+                .frame(height: 7).padding(.horizontal, 24).offset(y: 4)
+            first.fill(Palette.panel).overlay(first.strokeBorder(Palette.ring, lineWidth: 1))
+                .frame(height: 7).padding(.horizontal, 12).offset(y: -2)
+        }
+        .frame(height: 11, alignment: .top)
+        .offset(y: 11)
+        .accessibilityHidden(true)
+    }
+}
+
+// The open wing's account: its queue row is outlined with it, so the two read as one.
+private struct RelayLinked: ViewModifier {
+    @ObservedObject private var wing = RelayWing.shared
+    let id: String?
+    var radius: CGFloat = 12
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if let id, wing.open == id {
+                let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+                shape.strokeBorder(Palette.brand, lineWidth: 1.5)
+                    .background(shape.stroke(Palette.brand.opacity(0.12), lineWidth: 3).padding(-1.5))
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+extension View {
+    func relayLinked(_ id: String?) -> some View { modifier(RelayLinked(id: id)) }
 }
 
 // No account in the queue can take over: say so, when the first one is back, and the best one outside it.
@@ -399,6 +584,8 @@ struct RelayNoneCard: View {
     let provider: String
     // Outside the relay, switchable and with the most left; the page knows how to switch to it.
     let spare: ManagedAccount?
+    // 在用's corner, which the wing closes on the right.
+    var radius: CGFloat = 17
     let switchTo: (ManagedAccount) -> Void
 
     var body: some View {
@@ -430,8 +617,9 @@ struct RelayNoneCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Palette.attentionWash, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(Palette.attentionDash.opacity(0.45), lineWidth: 1))
+        .background(Palette.attentionWash, in: UnevenRoundedRectangle(bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous))
+        .overlay(UnevenRoundedRectangle(bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous)
+            .strokeBorder(Palette.attentionDash.opacity(0.45), lineWidth: 1))
     }
 
     // The queue account whose lowest window comes back first.

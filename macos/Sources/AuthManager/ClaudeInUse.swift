@@ -65,37 +65,45 @@ struct ClaudeStage: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("在用").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).padding(.horizontal, 3.5)
             if sides.code {
-                HStack(alignment: .top, spacing: 12) {
-                    slot(entries.first { $0.inCode }, [.code]).frame(maxWidth: .infinity)
-                    beside
+                let wing = self.wing
+                // One card: the Code slot, and the wing it closes on the right.
+                HStack(alignment: .top, spacing: -1) {
+                    slot(entries.first { $0.inCode }, [.code], joined: wing != nil).frame(maxWidth: .infinity)
+                    if let wing { wingView(wing).frame(width: RelayNextCard.width) }
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .joinedShadow(wing != nil, radius: 17)
             } else {
-                slot(entries.first { $0.inDesk }, [.desk])
+                slot(entries.first { $0.inDesk }, [.desk], joined: false)
             }
         }
     }
 
-    private func slot(_ entry: ClaudeEntry?, _ sides: [SlotSide]) -> some View {
+    private func slot(_ entry: ClaudeEntry?, _ sides: [SlotSide], joined: Bool) -> some View {
         ClaudeSlotCard(entry: entry, sides: sides, use: use, directory: directory, entries: entries,
-                       present: present, switchTo: switchTo)
+                       present: present, switchTo: switchTo, joined: joined)
     }
 
     // The next account while the rules are on and Code's account takes part and switches; when none in the
     // queue can take over, that, with the best account outside it.
-    @ViewBuilder private var beside: some View {
-        if let code = entries.first(where: { $0.inCode })?.cli, let rule = directory.rule(for: code.id),
-           directory.strategy?.config.enabled == true, rule.participate, rule.order.switches {
-            if let id = directory.relayNext("claude"), let account = directory.accounts.first(where: { $0.id == id }) {
-                RelayNextCard(account: account, rank: (directory.claudeRules.firstIndex { $0.id == id } ?? 0) + 1, directory: directory) {
-                    Task { await service.accountOperation("accounts.activate", params: LoginParams(id: account.id, confirm: true)) }
-                }
-                .frame(width: 300)
-            } else if directory.claudeRules.contains(where: { $0.participate && $0.id != code.id }) {
-                RelayNoneCard(directory: directory, provider: "claude", spare: spare?.cli) { _ in
-                    if let spare { switchTo(spare, .code) }
-                }
-                .frame(width: 300)
+    private var wing: RelayWingKind? {
+        guard let code = entries.first(where: { $0.inCode })?.cli, let rule = directory.rule(for: code.id),
+              directory.strategy?.config.enabled == true, rule.participate, rule.order.switches else { return nil }
+        if let id = directory.relayNext("claude"), let account = directory.accounts.first(where: { $0.id == id }) {
+            return .next(account, rank: (directory.claudeRules.firstIndex { $0.id == id } ?? 0) + 1)
+        }
+        return directory.claudeRules.contains(where: { $0.participate && $0.id != code.id }) ? .empty : nil
+    }
+
+    @ViewBuilder private func wingView(_ wing: RelayWingKind) -> some View {
+        switch wing {
+        case .next(let account, let rank):
+            RelayNextCard(account: account, rank: rank, directory: directory, radius: 17) {
+                Task { await service.accountOperation("accounts.activate", params: LoginParams(id: account.id, confirm: true)) }
+            }
+        case .empty:
+            RelayNoneCard(directory: directory, provider: "claude", spare: spare?.cli, radius: 17) { _ in
+                if let spare { switchTo(spare, .code) }
             }
         }
     }
@@ -143,6 +151,8 @@ struct ClaudeSlotCard: View {
     let entries: [ClaudeEntry]
     let present: (ClaudeSheet) -> Void
     let switchTo: (ClaudeEntry, SwitchScope?) -> Void
+    // The relay's wing closes this card on the right.
+    var joined = false
 
     private var status: ClaudeDesktopStatus? { directory.claudeDesktop }
     private var relayOn: Bool { status?.codeRelay?.enabled == true }
@@ -174,7 +184,7 @@ struct ClaudeSlotCard: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .loopCard(radius: 17, raised: true)
+        .loopCard(radius: 17, joined: joined, raised: true)
     }
 
     private var head: some View {
@@ -470,6 +480,7 @@ struct ClaudeAnchorRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(next ? Palette.brand.opacity(0.35) : Palette.dash, style: StrokeStyle(lineWidth: 1, dash: next ? [] : [4, 3])))
+        .relayLinked(next ? entry.cli?.id : nil)
         .contentShape(Rectangle())
     }
 }
@@ -519,6 +530,7 @@ struct ClaudeRelayRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(spent ? Palette.attentionDash.opacity(0.55) : tag != nil || next ? Palette.brand.opacity(0.35) : Palette.ring, lineWidth: 1))
+        .relayLinked(next ? cli?.id : nil)
     }
 
     private func line(wide: Bool) -> some View {

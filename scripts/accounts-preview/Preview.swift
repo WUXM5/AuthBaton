@@ -904,6 +904,12 @@ extension NSWindow {
 
     static func text() -> [String] { windows().flatMap { read($0).map(\.text) } }
 
+    // Lines that contain the text, exact or not: hits() keeps only exact ones when there are any.
+    static func count(_ wanted: String) -> Int {
+        let key = normalize(wanted)
+        return text().filter { normalize($0).contains(key) }.count
+    }
+
     static func click(_ window: NSWindow, _ point: NSPoint) {
         func event(_ type: NSEvent.EventType) -> NSEvent {
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -1294,11 +1300,16 @@ extension NSWindow {
         select(.codex)
         check.expect(Driver.visible("自动接力队列") && Driver.visible("4个参与"), "Codex 页有自动接力队列，写参与个数")
         check.expect(!Driver.visible("下一棒", wait: 0.3) && !Driver.visible("拖动", wait: 0.3), "不写「下一棒」，也不写拖动说明")
-        check.expect(Driver.hits("第2位").count >= 2, "指位标在在用旁的卡和队列的第 2 位上（服务给的 12345678）")
+        check.expect(Driver.count("第2位") >= 2, "在用旁的卡套和队列都写第 2 位（服务给的 12345678）")
+        check.expect(!Driver.visible("提前换", wait: 0.3), "下一个号平时收在磨砂卡套里，不露「提前换」")
+        RelayWing.shared.previewOpen = true
+        Driver.settle(0.4)
+        check.expect(RelayWing.shared.open != nil && RelayWing.shared.open == state.directory?.relayNext("codex"), "卡浮起时队列里它那一行跟着描边")
         state.calls.removeAll()
         if !Driver.press("提前换", .suffix) { check.expect(false, "找到「提前换」") }
         check.expect(main.attachedSheet != nil && check.lastCall("accounts.activate") == nil, "「提前换」打开换号确认，确认前不发请求")
         if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        RelayWing.shared.previewOpen = false
         if !Driver.press("先重置") { check.expect(false, "找到 12345678 的规则「≤2% · 先重置」") }
         // OCR reads the small grey 见底线 as other glyphs and merges the last two segments into one line.
         check.expect(Driver.visible("剩余2%") && Driver.visible("只重置") && Driver.visible("参与"), "规则在行内打开：见底线、见底时四段、参与")
@@ -2148,15 +2159,19 @@ extension NSWindow {
         // OCR turns the middle dot and slash into other glyphs; match the words.
         check.expect(Driver.visible("桌面对话") && Driver.visible("换号与设置") && Driver.visible("桌面与CLI"), "桌面对话是页头下一条，在用只放 Code · 桌面与 CLI")
         check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不写「Code 见底后接…」和「下一棒」")
-        check.expect(Driver.hits("第1位").count >= 2, "指位标在在用旁的卡和队列的第 1 位上（桌面在用的那个号）")
+        check.expect(Driver.count("第1位") >= 2, "在用旁的卡套和队列都写第 1 位（桌面在用的那个号）")
         // 方 reads as 万 now and then.
         check.expect(Driver.hits("在上").count == 2, "在用的两个号在队列里留顺位锚点")
         // OCR reads 自 as 目 in this small amber line.
         check.expect(Driver.visible("7天剩0%") && Driver.visible("动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
         check.expect(Driver.visible("不参与自动接力") && Driver.visible("desk-only") && Driver.visible("补登Code"), "只在桌面登录过的号放进不参与抽屉，给「补登 Code」")
+        check.expect(!Driver.visible("提前换", wait: 0.3), "下一个号平时收在磨砂卡套里，不露「提前换」")
+        RelayWing.shared.previewOpen = true
+        Driver.settle(0.4)
         state.calls.removeAll()
         Driver.press("提前换", .suffix)
         check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-a\""), "「提前换」把 Code 换到第 1 位 a***")
+        RelayWing.shared.previewOpen = false
         check.expect(main.attachedSheet == nil, "换 Code 不弹框")
         state.calls.removeAll()
         if !Driver.press("加入接力") { check.expect(false, "找到 lab 那行的「加入接力」") }
@@ -2172,7 +2187,7 @@ extension NSWindow {
         Fixture.load("inuselow", into: state)
         select(.claude)
         check.expect(!Driver.visible("59分钟后回满", wait: 0.3), "桌面在用号周额度用完：不再写 5 小时额度")
-        check.expect(Driver.hits("第3位").count >= 2 && Driver.visible("beta-2"), "Code 到了见底线：在用旁换成第 3 位 beta-2（第 1 位周额度用完，被跳过）")
+        check.expect(Driver.count("第3位") >= 2 && Driver.visible("beta-2"), "Code 到了见底线：在用旁换成第 3 位 beta-2（第 1 位周额度用完，被跳过）")
         print("  → 队列里没有能接力的号")
         Fixture.load("inusenone", into: state)
         select(.claude)
@@ -2183,7 +2198,7 @@ extension NSWindow {
         print("  → 同号")
         Fixture.load("inusesame", into: state)
         select(.claude)
-        check.expect(Driver.visible("Code在用") && Driver.hits("第3位").count >= 2, "桌面和 Code 同号时锚点写「桌面 + Code 在用」，指位标在第 3 位")
+        check.expect(Driver.visible("Code在用") && Driver.count("第3位") >= 2, "桌面和 Code 同号时锚点写「桌面 + Code 在用」，在用旁和队列都是第 3 位")
         print("  → 只用桌面")
         Fixture.load("inusedesk", into: state)
         select(.claude)
@@ -2469,6 +2484,29 @@ extension NSWindow {
             try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[2]))
             exit(0)
         }
+        if args.count == 3 && args[1] == "wingrender" {
+            // 在用 with its wing at rest and lifted, drawn by SwiftUI's own renderer: window capture drops blur.
+            app.setActivationPolicy(.accessory)
+            let state = ServiceController.shared
+            let output = URL(fileURLWithPath: args[2], isDirectory: true)
+            try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            for (scenario, page) in [("inuse", "claude"), ("connected", "codex")] {
+                Fixture.load(scenario, into: state)
+                let directory = state.directory!
+                for open in [false, true] {
+                    RelayWing.shared.previewOpen = open
+                    let stage: AnyView = page == "claude"
+                        ? AnyView(ClaudeStage(entries: ClaudeEntry.all(directory, use: .both), use: .both, directory: directory, present: { _ in }, switchTo: { _, _ in }))
+                        : AnyView(CodexStage(directory: directory, selection: nil, open: { _ in }))
+                    let renderer = ImageRenderer(content: stage.frame(width: 790).padding(24).background(Palette.ground).environmentObject(state))
+                    renderer.scale = 2
+                    let rep = NSBitmapImageRep(cgImage: renderer.cgImage!)
+                    try! rep.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("\(page)-\(open ? "open" : "rest").png"))
+                }
+            }
+            RelayWing.shared.previewOpen = false
+            exit(0)
+        }
         if args.count == 5 && args[1] == "live" {
             // Renders a masked directory saved from the running service; nothing is sent back to it.
             app.setActivationPolicy(.accessory)
@@ -2516,6 +2554,8 @@ extension NSWindow {
                 ("codex-expanded", "connected", .codex, nil), ("codex-many", "many", .codex, nil),
                 ("claude-inuse", "inuse", .claude, nil), ("claude-rule", "inuse", .claude, nil), ("claude-inusecode", "inusecode", .claude, nil),
                 ("claude-inuselow", "inuselow", .claude, nil), ("claude-inusenone", "inusenone", .claude, nil),
+                // 在用's wing lifted, as the pointer on it shows it (11-26).
+                ("claude-wing", "inuse", .claude, nil), ("codex-wing", "connected", .codex, nil),
                 ("codex-connected", "connected", .codex, nil), ("codex-plain", "hotoff", .codex, nil), ("codex-cli", "hotoff", .codex, nil),
                 ("codex-onboard", "fresh", .codex, nil), ("claude-onboard", "fresh", .claude, nil), ("codex-next", "codexone", .codex, nil),
                 ("claude-desktop-behind", "desktopbehind", .claude, nil), ("claude-deskquota", "deskquota", .claude, nil),
@@ -2533,6 +2573,7 @@ extension NSWindow {
                                            "claude-full-1300": NSSize(width: 1300, height: 830), "claude-full-1600": NSSize(width: 1600, height: 900),
                                            "codex-1300": NSSize(width: 1300, height: 830), "codex-relay-1300": NSSize(width: 1300, height: 830),
                                            "codex-many": NSSize(width: 1020, height: 2300), "claude-inuse": NSSize(width: 1020, height: 1300),
+                                           "claude-wing": NSSize(width: 1020, height: 1300),
                                            "claude-rule": NSSize(width: 1020, height: 1300),
                                            "accounts-1300": NSSize(width: 1300, height: 830), "clients-1300": NSSize(width: 1300, height: 830)]
             // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
@@ -2548,6 +2589,7 @@ extension NSWindow {
                 // A rule line drawn open, the queue drawn as cards, only where named so.
                 CodexRelayDeck.previewEditing = name == "codex-rule" ? "synthetic-p" : nil
                 ClaudeRelayDeck.previewEditing = name == "claude-rule" ? "c-b3" : nil
+                RelayWing.shared.previewOpen = name.hasSuffix("-wing")
                 UserDefaults.standard.set(name == "codex-expanded", forKey: CodexRelayDeck.expandedKey)
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }

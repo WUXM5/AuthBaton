@@ -396,6 +396,21 @@ struct PointerRank: View {
     static let meaning = "Code 见底后换到这个号"
 }
 
+// ▶ alone in the pointer's box: the wing beside 在用 marks with it the account Code moves to; its place is beside it.
+struct PointerBadge: View {
+    var lit = false
+
+    var body: some View {
+        PointerMark().fill(Palette.brand).frame(width: 6.5, height: 8)
+            .frame(width: 24, height: 22)
+            .background(lit ? Palette.wash : Palette.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Palette.brand, lineWidth: 1.5))
+            .help(PointerRank.meaning)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(PointerRank.meaning)
+    }
+}
+
 extension Text {
     // An account's name. A login email reads as its user part, with the domain (often the same for every account)
     // a shade lighter in regular weight; cut short at the end, it loses the domain first.

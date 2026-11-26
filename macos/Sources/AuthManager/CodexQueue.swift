@@ -15,35 +15,42 @@ struct CodexStage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("在用").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).padding(.horizontal, 3.5)
-            HStack(alignment: .top, spacing: 12) {
+            let wing = self.wing
+            // One card: the account in use, and the wing it closes on the right.
+            HStack(alignment: .top, spacing: -1) {
                 if let current = directory.current("codex") {
-                    CodexCard(account: current, directory: directory, selected: selection == current.id, open: open)
+                    CodexCard(account: current, directory: directory, selected: selection == current.id, open: open, joined: wing != nil)
                         .frame(maxWidth: .infinity)
                 } else {
                     Text("还没有在用的 Codex 账号").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                         .frame(maxWidth: .infinity, minHeight: 96).loopCard(radius: 19)
                 }
-                beside
+                if let wing { wingView(wing).frame(width: RelayNextCard.width) }
             }
             .fixedSize(horizontal: false, vertical: true)
+            .joinedShadow(wing != nil, radius: 19)
         }
     }
 
     // The account the rules would switch to now. Where no switch can happen (Codex 桌面 not connected, only the CLI)
     // the page's band says why; the card only says that the queue has nobody left.
-    @ViewBuilder private var beside: some View {
-        if let current = directory.current("codex"), let rule = directory.rule(for: current.id),
-           directory.strategy?.config.enabled == true, rule.participate, rule.order.switches {
-            let rules = directory.relayRules("codex")
-            if let id = directory.relayNext("codex"), let account = directory.accounts.first(where: { $0.id == id }) {
-                RelayNextCard(account: account, rank: (rules.firstIndex { $0.id == id } ?? 0) + 1, directory: directory) {
-                    open(.switchTo(account.id))
-                }
-                .frame(width: 300)
-            } else if directory.desktop.map({ $0.enabled && $0.connected }) == true, rules.contains(where: { $0.participate && $0.id != current.id }) {
-                RelayNoneCard(directory: directory, provider: "codex", spare: spare) { open(.switchTo($0.id)) }
-                    .frame(width: 300)
-            }
+    private var wing: RelayWingKind? {
+        guard let current = directory.current("codex"), let rule = directory.rule(for: current.id),
+              directory.strategy?.config.enabled == true, rule.participate, rule.order.switches else { return nil }
+        let rules = directory.relayRules("codex")
+        if let id = directory.relayNext("codex"), let account = directory.accounts.first(where: { $0.id == id }) {
+            return .next(account, rank: (rules.firstIndex { $0.id == id } ?? 0) + 1)
+        }
+        return directory.desktop.map({ $0.enabled && $0.connected }) == true && rules.contains(where: { $0.participate && $0.id != current.id })
+            ? .empty : nil
+    }
+
+    @ViewBuilder private func wingView(_ wing: RelayWingKind) -> some View {
+        switch wing {
+        case .next(let account, let rank):
+            RelayNextCard(account: account, rank: rank, directory: directory, radius: 19) { open(.switchTo(account.id)) }
+        case .empty:
+            RelayNoneCard(directory: directory, provider: "codex", spare: spare, radius: 19) { open(.switchTo($0.id)) }
         }
     }
 
@@ -200,6 +207,7 @@ struct CodexRelayRow: View {
                 shape.strokeBorder(next ? Palette.brand.opacity(0.35) : Palette.ring, lineWidth: 1)
             }
         }
+        .relayLinked(next ? account.id : nil)
         .contentShape(Rectangle())
     }
 

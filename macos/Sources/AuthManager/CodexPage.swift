@@ -272,6 +272,8 @@ struct CodexCard: View {
     let open: (AccountSheet) -> Void
     // A queue row opened in place: the card folds back into its row.
     var collapse: (() -> Void)? = nil
+    // 在用 with the relay's wing closing it on the right.
+    var joined = false
 
     var body: some View {
         let rule = directory.rule(for: account.id)
@@ -343,9 +345,10 @@ struct CodexCard: View {
             AccountStrips(account: account, directory: directory, open: open).padding(.horizontal, 14)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .loopCard(radius: 19, raised: account.native)
+        .loopCard(radius: 19, joined: joined, raised: account.native)
         .overlay {
-            let shape = RoundedRectangle(cornerRadius: 19, style: .continuous)
+            let shape = UnevenRoundedRectangle(topLeadingRadius: 19, bottomLeadingRadius: 19, bottomTrailingRadius: joined ? 0 : 19,
+                                               topTrailingRadius: joined ? 0 : 19, style: .continuous)
             if selected {
                 shape.strokeBorder(Palette.brand, lineWidth: 1.5)
             } else if account.transferFailed != nil {
