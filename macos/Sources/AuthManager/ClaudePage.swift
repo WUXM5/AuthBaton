@@ -466,7 +466,7 @@ private struct ClaudeSide: View {
         Task { await service.accountOperation("accounts.check", params: LoginParams(id: account.id, online: online)) }
     }
 
-    // MARK: 换号与重置
+    // MARK: 自动接力
 
     @ViewBuilder private var rules: some View {
         let desk = use.desk ? entry.desk : nil
@@ -474,9 +474,16 @@ private struct ClaudeSide: View {
             let rule = directory.rule(for: account.id)
             VStack(alignment: .leading, spacing: 9) {
                 HStack {
-                    Text("换号与重置").font(.system(size: 13, weight: .semibold))
+                    Text("自动接力").font(.system(size: 13, weight: .semibold))
                     Spacer()
-                    Button("编辑规则 ›") { AppNavigation.shared.show(.automation, select: account.id) }.buttonStyle(.pill(.link))
+                    if rule != nil {
+                        // Back to the queue with this account's line open.
+                        Button("编辑规则 ›") {
+                            AppNavigation.shared.show(.claude)
+                            AppNavigation.shared.ruleEditor = account.id
+                        }
+                        .buttonStyle(.pill(.link))
+                    }
                 }
                 if let rule {
                     HStack(spacing: 5) {
@@ -490,10 +497,18 @@ private struct ClaudeSide: View {
                         Text(message).font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
-                    Text("这个账号还没有规则，到「换号与重置」保存一次就会加入。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    HStack(spacing: 6) {
+                        Text("这个账号还没加入接力。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                        Button("加入接力") {
+                            service.clearAccountError()
+                            Task { await RelayRules.save(directory.relayConfig(account.id, participate: true), service) }
+                        }
+                        .buttonStyle(.pill(.link))
+                        .disabled(service.accountBusy || strategy.config.accounts.count >= RelayRules.limit)
+                    }
                 }
                 if !strategy.config.enabled {
-                    Text("自动换号与重置现在关着。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Text("自动接力现在关着。").font(.system(size: 11)).foregroundStyle(Palette.ink3)
                 }
                 if let desk {
                     Rectangle().fill(Palette.divider).frame(height: 1).padding(.vertical, 2)

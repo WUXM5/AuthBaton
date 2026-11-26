@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The service runs with the app, not with the window: closing the window must not cut its start short.
         Task { await ServiceController.shared.start() }
         AppUpdater.shared.start()
+        MenuBarController.shared.start { [weak self] in self?.reopenWindow?() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -51,24 +52,6 @@ struct AuthManagerApp: App {
                     .disabled(service.isRefreshing)
             }
         }
-
-        MenuBarExtra {
-            MenuBarContent().environmentObject(service)
-        } label: {
-            MenuBarLabel().environmentObject(service)
-        }
-        .menuBarExtraStyle(.window)
-    }
-}
-
-private struct MenuBarContent: View {
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        MenuBarPanel(openWindow: {
-            openWindow(id: "main")
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        })
     }
 }
 

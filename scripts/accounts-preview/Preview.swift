@@ -334,8 +334,11 @@ enum Fixture {
         case "hotoff":
             // Hot switch turned off by the user; the strategy stays on and can only reset Codex.
             data["desktop"] = ["enabled": false, "port": 9522, "connected": false, "managed": false, "busy": false, "message": ""]
-        case "off":
-            // Rules saved, strategy switched off.
+        case "off", "offconnected":
+            // Rules saved, strategy switched off; offconnected has Codex 桌面 connected, so no band speaks first.
+            if scenario == "offconnected" {
+                data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+            }
             var strategy = data["strategy"] as! [String: Any]
             var config = strategy["config"] as! [String: Any]
             config["enabled"] = false
@@ -559,7 +562,20 @@ enum Fixture {
                                   plan: "plus", native: false, state: "healthy", used: 10, resetDays: 3, credits: []))
             }
             data["accounts"] = list
+            // Rules for 01–28, left out of the relay: with the 4 above that is the 32 the service takes.
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            config["accounts"] = (config["accounts"] as! [[String: Any]])
+                + (1...28).map { ["id": String(format: "synthetic-extra-%02d", $0), "order": "switch_only", "participate": false, "below": 3] }
+            strategy["config"] = config
+            data["strategy"] = strategy
         default: break
+        }
+        // What the service's relay_target gives Codex: an account only while Codex 桌面 is connected (11-25).
+        if var strategy = data["strategy"] as? [String: Any], let config = strategy["config"] as? [String: Any], config["enabled"] as? Bool == true,
+           let desktop = data["desktop"] as? [String: Any], desktop["connected"] as? Bool == true, strategy["next_codex"] == nil {
+            strategy["next_codex"] = "synthetic-p"
+            data["strategy"] = strategy
         }
         return data
     }
@@ -1094,16 +1110,23 @@ extension NSWindow {
             check.expect(false, "找到「\(name)」的更多操作菜单")
         }
     }
-    // Saving with the strategy on asks first; the confirmation names what it saves.
-    func saveRules() {
-        Driver.press("保存规则")
-        Driver.press("确认保存", .exact)
+    // SNAP=1 keeps a picture of every window at this point, for reading what OCR could not.
+    func snap(_ name: String) {
+        guard ProcessInfo.processInfo.environment["SNAP"] != nil else { return }
+        for (index, window) in Driver.windows().enumerated() {
+            try? capture(window).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: NSTemporaryDirectory() + "snap-\(name)-\(index).png"))
+        }
     }
-    // The picked station's order, changed through the 见底时 menu in its rule panel.
-    func setOrder(from current: String, to order: String) {
-        Driver.menuChoice = order
-        if !Driver.pressBeside("见底时", current) { check.expect(false, "找到规则面板的「见底时」菜单") }
-        Driver.settle()
+    // The bar's 换号与设置 opens a popover; Escape closes it, as a click outside would.
+    func closePopovers() {
+        for window in NSApp.windows where window.isVisible && String(describing: type(of: window)).contains("Popover") { Driver.escape(window) }
+    }
+    // The rules a change sent, read back from the recorded call; key order in the JSON varies from run to run.
+    func sentRules(_ call: String?) -> [[String: Any]] {
+        guard let call, let brace = call.firstIndex(of: "{"),
+              let json = try? JSONSerialization.jsonObject(with: Data(call[brace...].utf8)) as? [String: Any],
+              let strategy = json["strategy"] as? [String: Any] else { return [] }
+        return strategy["accounts"] as? [[String: Any]] ?? []
     }
 
     let only = Set((ProcessInfo.processInfo.environment["PREVIEW_ONLY"] ?? "").split(separator: ",").compactMap { Int($0) })
@@ -1121,12 +1144,9 @@ extension NSWindow {
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
         for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey, CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey,
-                    ClaudeRelayDeck.expandedKey, ClaudeDrawer.openKey] {
+                    ClaudeRelayDeck.expandedKey, ClaudeDrawer.openKey, CodexRelayDeck.expandedKey, CodexDrawer.openKey] {
             UserDefaults.standard.removeObject(forKey: key)
         }
-        // Sections that are not about the first-time relay card start past it.
-        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
-        UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey)
         ReminderModel.shared.reload()
         AppNavigation.shared.selection = nil
         AppNavigation.shared.desktopSheet = false
@@ -1158,6 +1178,10 @@ extension NSWindow {
         check.expect(main.attachedSheet == nil, "成功后确认框关闭")
     }
     section(2, "热切换开着但没连上 → 以调试模式重启并换上；连上后同一个框接着换上") {
+        // The Codex queue drawn as cards: this section is about what a card shows. They sit below 在用 and the queue's header.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1500))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         openSwitch("synthetic-nova")
         state.calls.removeAll()
         check.expect(Driver.visible("现在还换不到"), "出现「现在还换不到」说明")
@@ -1210,6 +1234,10 @@ extension NSWindow {
         Driver.press("取消", .exact)
     }
     section(3, "用重置卡：额度还多时额外提醒，确认后才用最早到期的一张") {
+        // The Codex queue drawn as cards: this section is about what a card shows. They sit below 在用 and the queue's header.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1500))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         select(.codex)
         state.calls.removeAll()
         if !Driver.pressNear("nova", "用 1 张重置卡") { check.expect(false, "找到 nova 卡片上的「用 1 张重置卡」") }
@@ -1221,6 +1249,10 @@ extension NSWindow {
         check.expect(reset.contains("credit-l1") && reset.contains("\"confirm\":true"), "确认后用最早到期的卡调用 reset_quota")
     }
     section(4, "更多菜单：重命名失败时错误留在框内，再开别的框不串错；续期待保存时不能认证检查") {
+        // The Codex queue drawn as cards: this section is about what a card shows. They sit below 在用 and the queue's header.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1500))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         select(.codex)
         more("lab team", choose: "重命名…")
         check.expect(Driver.lastMenu.contains { $0.title.contains("移除") } && Driver.lastMenu.contains { $0.title.contains("本地检查") }
@@ -1243,6 +1275,10 @@ extension NSWindow {
         if Driver.lastMenu.isEmpty || Driver.lastMenu.contains(where: { $0.title.contains("认证检查") && $0.enabled }) { print("    菜单：\(Driver.lastMenu)") }
     }
     section(5, "重置卡到期提醒：同一账号的多张合在一张票上，知道了之后不再标橙") {
+        // The Codex queue drawn as cards: this section is about what a card shows. They sit below 在用 and the queue's header.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1500))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         select(.codex)
         check.visible("3张重置卡.2张", "nova 的票写明 3 张重置卡、其中 2 张快到期")
         Driver.press("3张重置卡.2张")
@@ -1253,24 +1289,26 @@ extension NSWindow {
         check.expect(Driver.visible("2张重置卡.1张"), "orbit 的提醒还在")
         check.expect(ReminderModel.shared.dismissed.isSuperset(of: ["credit-l1", "credit-l2"]), "按卡记下已知道，新卡会再提醒")
     }
-    section(6, "换号与重置：改规则后保存需确认，发送完整规则") {
-        select(.automation)
-        check.visible("桌面没连上：现在只会重置，不会换号", "桌面没连上时写明 Codex 只会重置")
-        check.expect(Driver.visible("从左往右接力") && Driver.visible("只换 Claude Code"), "Codex 和 Claude 分成两条接力线")
-        check.expect(Driver.visible("见底线") && Driver.visible("见底时") && Driver.visible("参与"), "规则面板有见底线、见底时、参与")
+    section(6, "Codex 自动接力队列：在用旁是服务给的下一个号，指位标在「第 N 位」上；规则在行内打开，改「见底时」点了就发完整规则") {
+        Fixture.load("connected", into: state)
+        select(.codex)
+        check.expect(Driver.visible("自动接力队列") && Driver.visible("4个参与"), "Codex 页有自动接力队列，写参与个数")
+        check.expect(!Driver.visible("下一棒", wait: 0.3) && !Driver.visible("拖动", wait: 0.3), "不写「下一棒」，也不写拖动说明")
+        check.expect(Driver.hits("第2位").count >= 2, "指位标在在用旁的卡和队列的第 2 位上（服务给的 12345678）")
         state.calls.removeAll()
-        setOrder(from: "先换号", to: "先重置")
-        check.visible("未保存", "修改后出现保存条「有未保存的修改」")
-        check.expect(state.calls.isEmpty, "修改不立即发送")
-        Driver.press("保存规则")
-        check.expect(Driver.visible("按改过的规则自动执行"), "开启状态下保存先弹确认")
-        Driver.press("确认保存", .exact)
-        let strategy = check.lastCall("accounts.strategy") ?? ""
-        check.expect(strategy.contains("\"confirm\":true") && strategy.contains("\"below\":3") && !strategy.contains("switch_below")
-                     && strategy.contains("\"order\":\"reset_first\""), "确认后发送 accounts.strategy 完整规则（逐账号见底线）")
-        check.expect(strategy.contains("synthetic-claude") && strategy.contains("\"order\":\"reset_only\"") && strategy.contains("\"participate\":false"),
-                     "新 Claude 账号随规则发送：只重置，默认不参与")
-        print("    \(strategy.prefix(400))")
+        if !Driver.press("提前换", .suffix) { check.expect(false, "找到「提前换」") }
+        check.expect(main.attachedSheet != nil && check.lastCall("accounts.activate") == nil, "「提前换」打开换号确认，确认前不发请求")
+        if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        if !Driver.press("先重置") { check.expect(false, "找到 12345678 的规则「≤2% · 先重置」") }
+        // OCR reads the small grey 见底线 as other glyphs and merges the last two segments into one line.
+        check.expect(Driver.visible("剩余2%") && Driver.visible("只重置") && Driver.visible("参与"), "规则在行内打开：见底线、见底时四段、参与")
+        state.calls.removeAll()
+        Driver.press("只重置", .suffix)
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+        let rules = sentRules(check.lastCall("accounts.strategy"))
+        check.expect(rules.count == 4 && rules.first { $0["id"] as? String == "synthetic-p" }?["order"] as? String == "reset_only"
+                     && (check.lastCall("accounts.strategy") ?? "").contains("\"confirm\":true"), "点了就发：完整的 4 条规则、confirm:true，12345678 改成只重置")
+        check.expect(main.attachedSheet == nil, "改规则不弹确认框")
     }
     section(7, "Codex 桌面并进 Codex 页：页头胶囊写连接状态，连接详情里重开、端口和热切换；没接管时页面上方写明并给出接管") {
         Fixture.load("unmanaged", into: state)
@@ -1479,6 +1517,10 @@ extension NSWindow {
         check.expect(Driver.visible("待重新确认"), "写明在等什么")
     }
     section(15, "按账号选续期方：转换中锁住、失败算要处理且「换上」照常可用；云端续期的号能换上、不算要处理；不认识的状态不算正常") {
+        // The Codex queue drawn as cards: this section is about what a card shows. They sit below 在用 and the queue's header.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
+        main.setContentSize(NSSize(width: 1020, height: 1500))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("cloudtransfer", into: state)
         select(.codex)
         check.visible("正在转到云端", "转到云端进行中：底栏写「正在转到云端…」")
@@ -1507,43 +1549,38 @@ extension NSWindow {
         check.expect(state.directory!.primaryAction(for: trouble) == .relogin && state.directory!.issues(dismissed: []).contains { $0.account == "synthetic-claude" },
                      "云端续期出错算要处理，出路是重新登录")
     }
-    section(16, "换号与重置：规则含云端续期的号；别的 Mac 新来的号默认不参与；超过 32 个账号时说明并只发 32 条") {
-        // The rules a save sent, read back from the recorded call.
-        func rules(_ call: String?) -> [[String: Any]] {
-            guard let call, let brace = call.firstIndex(of: "{"),
-                  let json = try? JSONSerialization.jsonObject(with: Data(call[brace...].utf8)) as? [String: Any],
-                  let strategy = json["strategy"] as? [String: Any] else { return [] }
-            return strategy["accounts"] as? [[String: Any]] ?? []
-        }
+    section(16, "自动接力与云端：队列列出云端续期的号；别的 Mac 新来的号在不参与抽屉，「加入接力」点了就发；规则满 32 个时写明、不能再加") {
         Fixture.load("cloudmix", into: state)
-        select(.automation)
-        check.expect(Driver.visible("nova"), "接力线列出云端续期的号")
-        setOrder(from: "先换号", to: "先重置")
-        saveRules()
-        var saved = rules(check.lastCall("accounts.strategy"))
-        check.expect(saved.contains { $0["id"] as? String == "synthetic-nova" } && saved.contains { $0["id"] as? String == "c-b3" },
-                     "保存的规则含云端续期的号")
+        select(.codex)
+        check.expect(Driver.visible("自动接力队列") && Driver.visible("nova"), "队列列出云端续期的号")
         print("  → 别的 Mac 新来的号")
         Fixture.load("cloudother", into: state)
         select(.accounts)
-        select(.automation)
+        select(.codex)
+        check.expect(Driver.visible("不参与自动接力") && Driver.visible("未加入接力"), "别的 Mac 新来的号放在不参与抽屉，写「未加入接力」")
         state.calls.removeAll()
-        setOrder(from: "先换号", to: "先重置")
-        saveRules()
-        saved = rules(check.lastCall("accounts.strategy"))
-        check.expect(saved.contains { $0["id"] as? String == "synthetic-nova" && $0["participate"] as? Bool == false }, "别的 Mac 新来的号默认不参与接力")
-        var strategy = ""
-        print("  → 36 个账号")
+        if !Driver.press("加入接力") { check.expect(false, "找到「加入接力」") }
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+        let rules = sentRules(check.lastCall("accounts.strategy"))
+        check.expect(rules.contains { $0["id"] as? String == "synthetic-nova" && $0["participate"] as? Bool == true } && main.attachedSheet == nil,
+                     "「加入接力」不弹框，发送 nova 参与的完整规则")
+        print("  → 规则满 32 个")
+        main.setContentSize(NSSize(width: 1020, height: 2300))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("many", into: state)
         select(.accounts)
-        select(.automation)
-        check.visible("规则最多32个账号", "超过上限时说明规则最多 32 个账号")
-        check.visible("extra 31", "说明里点名没加入的账号")
+        select(.codex)
+        check.visible("32/32个账号", "规则满了时抽屉写 32 / 32 个账号")
         state.calls.removeAll()
-        setOrder(from: "先换号", to: "先重置")
-        saveRules()
-        strategy = check.lastCall("accounts.strategy") ?? ""
-        check.expect(strategy.components(separatedBy: "\"id\":\"").count - 1 == 32 && !strategy.contains("synthetic-extra-31"), "只发送 32 条规则")
+        // OCR does not read a disabled button's pale text. The rows line their buttons up in one column: click that
+        // column level with extra 29, between its name and its address.
+        if let name = Driver.hits("extra 29").first, let address = Driver.hits("x29***@example").first, let column = Driver.hits("加入接力").first {
+            Driver.click(name.window, NSPoint(x: column.rect.midX, y: (name.rect.midY + address.rect.midY) / 2))
+        } else {
+            check.expect(false, "找到 extra 29 那行")
+        }
+        Driver.settle(0.5)
+        check.expect(check.lastCall("accounts.strategy") == nil, "满了以后没有规则的号不能加入")
     }
     section(17, "后台服务断开：窗口和菜单栏都写明没连上，不再显示旧账号，可直接重新连接") {
         state.isConnected = false
@@ -1590,48 +1627,56 @@ extension NSWindow {
         check.expect(Driver.lastMenu.contains { $0.title.hasPrefix("换上 nova") && !$0.enabled }, "普通切换在检查进行中不可点")
         check.expect(main.attachedSheet == nil && check.lastCall("accounts.activate") == nil, "没有打开换号框，也没发请求")
     }
-    section(20, "换号与重置总开关：关闭和打开都先确认") {
-        select(.automation)
+    section(20, "自动接力开关（Codex 和 Claude 共用）：关闭和打开都先确认") {
+        select(.codex)
+        check.visible("共用", "开关旁写「共用」")
         state.calls.removeAll()
         if let master = Driver.views(NSSwitch.self).max(by: { $0.convert($0.bounds, to: nil).midY < $1.convert($1.bounds, to: nil).midY }) {
             Driver.click(master)
-            check.expect(Driver.visible("关闭自动换号与重置"), "关闭前先弹确认")
+            check.expect(Driver.visible("关闭自动接力"), "关闭前先弹确认")
             check.expect(state.calls.isEmpty, "确认前不发请求")
             Driver.press("关闭", .exact)
             let stop = check.lastCall("accounts.strategy_stop") ?? ""
             check.expect(stop.contains("\"confirm\":true"), "确认后调用 accounts.strategy_stop(confirm:true)")
         } else {
-            check.expect(false, "找到总开关")
+            check.expect(false, "找到自动接力开关")
         }
         Fixture.load("off", into: state)
-        select(.automation)
+        select(.codex)
+        check.visible("自动接力关着", "关着时队列标题写「自动接力关着」")
         state.calls.removeAll()
         if let master = Driver.views(NSSwitch.self).max(by: { $0.convert($0.bounds, to: nil).midY < $1.convert($1.bounds, to: nil).midY }) {
             Driver.click(master)
-            check.expect(Driver.visible("允许按这些规则自动执行"), "打开前先弹确认")
-            Driver.press("确认开启", .exact)
+            check.expect(Driver.visible("开启自动接力？") && Driver.visible("共用这个开关"), "打开前先弹确认，写明 Codex 和 Claude 共用")
+            check.expect(state.calls.isEmpty, "确认前不发请求")
+            Driver.press("确认并开启", .exact)
+            for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
             let strategy = check.lastCall("accounts.strategy") ?? ""
             check.expect(strategy.contains("\"enabled\":true") && strategy.contains("\"confirm\":true"), "确认后发送 enabled:true 的完整规则")
         } else {
-            check.expect(false, "找到总开关")
+            check.expect(false, "找到自动接力开关")
         }
     }
-    section(21, "换号与重置：往后移一位改接力顺序，保存后按新顺序发送") {
-        select(.accounts)
-        select(.automation)
+    section(21, "松手即生效：新顺序只换这一种工具的规则；页脚写移到第几位，撤销发回原顺序，别的页不显示") {
+        Fixture.load("inuse", into: state)
+        let directory = state.directory!
+        let codex = directory.relayRules("codex").map(\.id), claude = directory.relayRules("claude").map(\.id)
+        let ids = directory.relayConfig("codex", order: Array(codex.reversed()))?.accounts.map(\.id) ?? []
+        check.expect(ids.filter { !$0.hasPrefix("c-") } == codex.reversed() && ids.filter { $0.hasPrefix("c-") } == claude,
+                     "拖动后的顺序：Codex 规则换成新顺序，Claude 规则原样")
+        check.expect(directory.relayConfig("codex", order: Array(codex.dropLast())) == nil, "少了一个号的顺序不发")
+        Fixture.load("connected", into: state)
+        select(.claude)
+        RelayUndo.shared.offer("nova 已移到第 1 位", provider: "codex", order: codex)
+        check.expect(!Driver.visible("已移到", wait: 0.5), "Claude 页不显示 Codex 的撤销")
+        select(.codex)
+        RelayUndo.shared.offer("nova 已移到第 1 位", provider: "codex", order: codex)
+        check.visible("nova已移到第1位", "松手后页脚写移到第几位")
         state.calls.removeAll()
-        // The editor's arrows sit right of its title; orbit is first, so only "往后移一位" is enabled.
-        if let (window, point) = Driver.controls(beside: "orbit", size: 22).last {
-            Driver.click(window, point)
-            check.visible("顺位已改", "移动后这条轨的标题行写「顺位已改」")
-            check.expect(!Driver.visible("未保存", wait: 0.3), "只改了顺序时不再出现底部保存条")
-            saveRules()
-            let strategy = check.lastCall("accounts.strategy") ?? ""
-            let orbit = strategy.range(of: "synthetic-orbit")?.lowerBound, personal = strategy.range(of: "synthetic-p\"")?.lowerBound
-            check.expect(orbit != nil && personal != nil && personal! < orbit!, "orbit 排到 12345678（个人）后面")
-        } else {
-            check.expect(false, "找到规则面板的「往后移一位」")
-        }
+        if !Driver.press("撤销", .prefix) { check.expect(false, "找到「撤销」") }
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+        check.expect(sentRules(check.lastCall("accounts.strategy")).map { $0["id"] as? String ?? "" } == codex, "撤销发回原顺序")
+        check.expect(!Driver.visible("已移到", wait: 0.5), "撤销后页脚收起")
     }
     section(22, "执行记录：按账号筛选，名字用账号现在的名称") {
         select(.codex)
@@ -1689,23 +1734,29 @@ extension NSWindow {
         state.login = nil
         state.loginTarget = nil
     }
-    section(25, "Claude 页（两边都用）：同步条、桌面换号要确认并按 handle 发送，Code 在用的账号只把桌面换过来") {
-        // With the Code relay strip on the page, the third card's buttons sit below a 765-high window.
+    section(25, "Claude 页（两边都用）：桌面对话一条写会话同步；换号与设置里有同步开关和三种挑法，换桌面号都要确认并按 handle 发送，Code 在用的账号只把桌面换过来") {
         main.setContentSize(NSSize(width: 1020, height: 900))
         defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("default", into: state)
         select(.claude)
-        check.expect(Driver.visible("Code与桌面") && Driver.visible("个桌面会话") && Driver.visible("各账号一样"), "两边都用：页头写使用方式，同步条写会话数和各账号一样")
-        check.expect(Driver.visible("或补登") && !Driver.hits("补登", .exact).isEmpty && !Driver.hits("用桌面登录查", .exact).isEmpty, "只在桌面登录过的账号给出「用桌面登录查」和「补登」")
+        check.expect(Driver.visible("Code与桌面") && Driver.visible("桌面对话") && Driver.visible("个会话已同步"), "两边都用：页头写使用方式，桌面对话一条写会话已同步")
+        check.expect(Driver.visible("补登Code") && Driver.visible("用桌面登录查"), "只在桌面登录过的账号给出「用桌面登录查」和「补登 Code」")
         check.expect(Driver.visible("Claude桌面还在用work"), "Code 和桌面不在同一个账号时提示，可以把桌面也换上")
+        Driver.press("换号与设置", .prefix)
+        check.expect(Driver.visible("个桌面会话") && Driver.visible("各账号一样"), "换号与设置里的同步条写会话数和各账号一样")
+        check.expect(Driver.visible("仅手动切换") && Driver.visible("或补登"), "写明桌面只手动切换；work 只在桌面登录过，给出用桌面登录查或补登")
         state.calls.removeAll()
-        if let toggle = Driver.views(NSSwitch.self).first {
+        if let toggle = Driver.views(NSSwitch.self).first(where: { $0.window !== main }) {
             Driver.click(toggle)
             let call = check.lastCall("accounts.claude_desktop") ?? ""
             check.expect(call.contains("\"desktop_action\":\"background\"") && call.contains("\"enabled\":false"), "关掉后台同步发送 background enabled:false")
         } else {
             check.expect(false, "同步条有后台同步开关")
         }
+        Driver.press("下一个", .exact)
+        check.visible("换上 Claude 当前账号", "「下一个」按编号挑到 #1，先确认")
+        Driver.press("取消", .exact)
+        closePopovers()
         Driver.press("也换上")
         check.visible("换上 Claude 当前账号", "「桌面也换上」先弹确认")
         check.visible("这次把桌面也换过来", "Code 已在用这个账号：确认里只说把桌面换过来")
@@ -1719,9 +1770,6 @@ extension NSWindow {
         check.visible("让 Claude 退出", "确认后同一个框接着显示步骤")
         Driver.press("好", .exact)
         check.expect(check.lastCall("accounts.claude_desktop")?.contains("\"desktop_action\":\"dismiss\"") == true, "结束后点「好」清掉这次操作")
-        Driver.press("下一个桌面号", .prefix)
-        check.visible("换上 Claude 当前账号", "桌面卡上的「下一个桌面号」按编号挑到 #1，同样先确认")
-        Driver.press("取消", .exact)
         // OCR reads the short name lab as Iab; its address is steadier. A row's button sits on its line, to the right.
         if !Driver.pressBeside("lab@example", "换到桌面") { check.expect(false, "找到 lab 那行的「换到桌面…」") }
         check.visible("换上 lab", "只有桌面登录的账号也能换上桌面")
@@ -1746,7 +1794,7 @@ extension NSWindow {
         Driver.press("在后台继续", .exact)
         Fixture.load("desktopbehind", into: state)
         select(.claude)
-        check.expect(Driver.visible("要重启一次Claude才看得到新会话"), "同步条写明要重启一次 Claude")
+        check.expect(Driver.visible("要重启一次Claude"), "桌面对话一条写明要重启一次 Claude")
         check.expect(Driver.visible("12 天后") && Driver.visible("改回真文件夹"), "保留期和软链提醒都在")
         state.calls.removeAll()
         Driver.press("一直保留", .exact)
@@ -1815,7 +1863,8 @@ extension NSWindow {
         Fixture.load("default", into: state)
         select(.claude)
         state.calls.removeAll()
-        if !Driver.press("用桌面登录查", .exact) { check.expect(false, "找到「用桌面登录查」") }
+        // OCR reads the row's 「读不到额度 用桌面登录查」 as one line.
+        if !Driver.press("用桌面登录查", .suffix) { check.expect(false, "找到「用桌面登录查」") }
         check.visible("Claude Safe Storage", "确认框写明系统会问 Claude Safe Storage")
         check.expect(Driver.visible("不续期") && Driver.visible("不用重置卡"), "确认框写明只查额度、不续期、不用重置卡")
         check.expect(check.lastCall("accounts.claude_desktop") == nil, "打开确认框不发请求")
@@ -1825,11 +1874,14 @@ extension NSWindow {
                      "确认后发送 token_quota enabled:true confirm:true")
         Fixture.load("deskquota", into: state)
         select(.claude)
-        // OCR drops 的 now and then in this small grey line.
-        check.expect(Driver.visible("用Claude桌面的登录查") || Driver.visible("用Claude桌面登录查"), "work 的卡片显示用桌面登录查到的额度和来源")
         check.visible("还没在Claude桌面用过Code模式", "lab 没有 Claude Code 登录时写明原因")
         check.visible("用Code模式聊一次", "并提示去 Code 模式聊一次，之后自动刷新")
-        check.expect(Driver.hits("用桌面登录查", .exact).isEmpty, "打开以后不再给「用桌面登录查」")
+        check.expect(Driver.hits("用桌面登录查").isEmpty, "打开以后不再给「用桌面登录查」")
+        // work is the desktop's own account: its figures sit in 换号与设置.
+        Driver.press("换号与设置", .prefix)
+        // OCR drops 的 now and then in this small grey line.
+        check.expect(Driver.visible("用Claude桌面的登录查") || Driver.visible("用Claude桌面登录查"), "work 的额度和来源写在换号与设置里")
+        closePopovers()
     }
     section(32, "Codex 使用方式：只用 CLI 关掉热切换、页面不再出现桌面；换回用桌面恢复热切换；没连上的换号框选「关闭热切换」后变成普通切换") {
         select(.codex)
@@ -1934,87 +1986,37 @@ extension NSWindow {
         select(.claude)
         check.expect(Driver.hits("已见底").isEmpty, "没有规则盯着的账号不写「已见底」")
     }
-    section(30, "换号与重置第一次：从没开过时总开关卡换成两步起手卡，开启照样先确认，开启后提示一次；先不用后不再出现；没账号时先去添加") {
-        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
-        Fixture.load("off", into: state)
-        // A fresh page: a draft left by another section would show as unsaved edits.
+    section(30, "页上提示条「开启自动接力」：先确认，确认框逐条写这些规则会做的事；确认后发送 enabled:true") {
+        UserDefaults.standard.set(Onboarding.started, forKey: Onboarding.codexKey)
+        Fixture.load("offconnected", into: state)
         select(.accounts)
-        select(.automation)
-        check.visible("开启自动接力前，先核对这两件事", "从没开过时出现起手卡")
-        check.visible("Codex：桌面没连上，目前只会重置", "桌面没连上时写明 Codex 只会重置")
-        check.visible("默认未参与，暂无法接力", "写明 Claude 账号默认不参与")
-        check.expect(!Driver.visible("已关闭 · 打开后按下面的规则自动处理", wait: 0.3), "起手卡替换原来的总开关卡")
+        select(.codex)
+        check.visible("可以开启自动接力", "规则关着时提示条说可以开启自动接力")
         state.calls.removeAll()
-        Driver.press("开启自动接力", .exact)
-        check.expect(Driver.visible("允许按这些规则自动执行"), "开启照样先弹确认")
+        // OCR reads 自 as 目 in this button now and then.
+        if !Driver.press("开启", .prefix) { check.expect(false, "找到提示条的「开启自动接力」") }
+        check.expect(Driver.visible("开启自动接力？") && Driver.visible("会自动用掉重置卡"), "先弹确认，逐条写这些规则会做的事")
         check.expect(state.calls.isEmpty, "确认前不发请求")
-        Driver.press("确认开启", .exact)
+        Driver.press("确认并开启", .exact)
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
         let strategy = check.lastCall("accounts.strategy") ?? ""
         check.expect(strategy.contains("\"enabled\":true") && strategy.contains("\"confirm\":true"), "确认后发送 enabled:true 的完整规则")
-        // The service now reports the strategy on.
-        Fixture.load("default", into: state)
-        Driver.settle(0.6)
-        check.visible("自动规则已开始运行", "由起手卡开启后提示一次")
-        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "开过一次就记下，不再出现起手卡")
-        if let (window, point) = Driver.controls(beside: "改规则保存时会再请你确认", size: 22).first {
-            Driver.click(window, point)
-            check.expect(!Driver.visible("自动规则已开始运行", wait: 0.5), "点 × 关掉提示")
-            check.expect(UserDefaults.standard.string(forKey: AutomationPage.hintKey) == "done", "关掉后不再出现")
-        } else {
-            check.expect(false, "找到提示的 ×")
-        }
-        print("  → 先不用")
-        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
-        Fixture.load("off", into: state)
-        select(.accounts)
-        select(.automation)
-        Driver.press("先不用", .exact)
-        check.visible("已关闭 · 打开后按下面的规则自动处理", "先不用后回到普通的总开关卡")
-        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "先不用后记下")
-        print("  → 还没有账号")
-        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
-        Fixture.load("offempty", into: state)
-        select(.accounts)
-        select(.automation)
-        check.visible("还没有可接力的账号", "没账号时说先去添加")
-        check.expect(!Driver.visible("从左往右接力", wait: 0.3), "没账号时不画接力轨")
-        Driver.press("去添加账号", .exact)
-        check.expect(AppNavigation.shared.page == .accounts, "「去添加账号」打开账号页")
-        print("  → 已经开着的老用户")
-        UserDefaults.standard.removeObject(forKey: AutomationPage.onboardedKey)
-        UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey)
-        Fixture.load("default", into: state)
-        select(.automation)
-        check.expect(!Driver.visible("开启自动接力前", wait: 0.3) && !Driver.visible("自动规则已开始运行", wait: 0.3), "已经开着时不出现起手卡和提示")
-        check.expect(UserDefaults.standard.bool(forKey: AutomationPage.onboardedKey), "已经开着的记为看过")
     }
-    section(31, "换号与重置排序：顺位已改写在这条轨的标题行，撤销只恢复这条轨的顺序，保存规则只有一个，保存发送新顺序") {
-        select(.accounts)
-        select(.automation)
+    section(31, "行内规则：关掉「参与」发送 participate:false；在用的号在队列里只留一行锚点") {
+        Fixture.load("connected", into: state)
+        select(.codex)
+        check.visible("在上方", "在用的 orbit 在队列里留一行锚点")
+        if !Driver.press("先重置") { check.expect(false, "找到 12345678 的规则「≤2% · 先重置」") }
         state.calls.removeAll()
-        // The editor's arrow moves through the same reorder a drop does.
-        @MainActor func moveOrbitRight() -> Bool {
-            guard let (window, point) = Driver.controls(beside: "orbit", size: 22).last else { return false }
-            Driver.click(window, point)
-            return true
+        // The rule line's switch is the lowest on the page; the shared one sits in the queue's header.
+        if let toggle = Driver.views(NSSwitch.self).min(by: { $0.convert($0.bounds, to: nil).midY < $1.convert($1.bounds, to: nil).midY }) {
+            Driver.click(toggle)
+            for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+            let rule = sentRules(check.lastCall("accounts.strategy")).first { $0["id"] as? String == "synthetic-p" }
+            check.expect(rule?["participate"] as? Bool == false && main.attachedSheet == nil, "关掉「参与」点了就发 participate:false，不弹框")
+        } else {
+            check.expect(false, "找到规则行的「参与」开关")
         }
-        check.expect(moveOrbitRight(), "找到规则面板的「往后移一位」")
-        check.visible("顺位已改", "顺序变了，标题行写「顺位已改」")
-        check.expect(Driver.hits("保存规则").count == 1, "只改顺序：只有标题行一个「保存规则」")
-        setOrder(from: "先换号", to: "先重置")
-        check.visible("未保存", "顺序以外也改了：出现底部保存条")
-        check.expect(Driver.hits("保存规则").count == 1, "两样都改了：仍只有一个「保存规则」")
-        Driver.press("撤销", .exact)
-        check.expect(!Driver.visible("顺位已改", wait: 0.5), "撤销后这条轨回到原来的顺序")
-        check.visible("未保存", "撤销只动顺序，规则的改动还在")
-        Driver.press("还原", .exact)
-        check.expect(!Driver.visible("未保存", wait: 0.5), "还原后没有改动")
-        check.expect(moveOrbitRight(), "再往后移一位")
-        saveRules()
-        let strategy = check.lastCall("accounts.strategy") ?? ""
-        let orbit = strategy.range(of: "synthetic-orbit")?.lowerBound, personal = strategy.range(of: "synthetic-p\"")?.lowerBound
-        check.expect(orbit != nil && personal != nil && personal! < orbit!, "保存后 orbit 排到 12345678（个人）后面")
-        check.expect(strategy.contains("\"order\":\"switch_first\""), "只改了顺序，规则本身照旧")
     }
     section(34, "Claude 桌面 Code 无感换号：开启安装确认与托管提示说明、开启态展示、底部卸载插件闭环") {
         // The strip is the bottom line of the Code slot now, below a 765-high window.
@@ -2023,8 +2025,10 @@ extension NSWindow {
         Fixture.load("default", into: state)
         select(.claude)
         state.calls.removeAll()
-        check.visible("Code无感换号", "Claude 页出现 Code 无感换号条")
-        if !Driver.press("开启…", .exact) { check.expect(false, "找到「开启…」按钮") }
+        Driver.press("换号与设置", .prefix)
+        check.visible("Code无感换号", "换号与设置里有 Code 无感换号条")
+        // OCR reads the ellipsis as a dot.
+        if !Driver.press("开启", .prefix) { check.expect(false, "找到「开启…」按钮") }
         check.visible("管理员密码框", "安装确认框说明首次开启会弹管理员密码框")
         check.expect(Driver.visible("托管策略") || Driver.visible("托管配置"), "安装确认框主动解释 Claude 桌面的托管配置提示属正常现象")
         check.expect(Driver.visible("短期访问令牌") && Driver.visible("原生直连"), "安装确认框写明只领短期访问令牌且由桌面内置引擎原生直连")
@@ -2038,9 +2042,12 @@ extension NSWindow {
         Fixture.load("coderelayon", into: state)
         select(.claude)
         state.calls.removeAll()
+        check.visible("无感换号开", "开启后桌面对话一条写「无感换号 开」")
+        Driver.press("换号与设置", .prefix)
         // The strip's small grey line reads unevenly (当前 as 当刖, 接力 as 接刀); match the parts OCR keeps.
         check.visible("账号Claude", "开启后状态条展示当前接力账号")
         check.visible("3次", "开启后展示已接力次数")
+        closePopovers()
         check.expect(!Driver.visible("桌面也换上", wait: 0.3), "开启无感换号时不弹账号不一致横幅")
         if let hit = Driver.hits("卸载插件").first {
             // Vision OCR merges the footer text and trailing link into one line; click the trailing link.
@@ -2086,28 +2093,27 @@ extension NSWindow {
         Driver.press("取消", .exact)
     }
     section(35, "文案跟着规则走：没有规则会重置时哪里都不说会重置；确认框只写这些规则会做的事") {
-        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
         Fixture.load("switchonly", into: state)
         select(.accounts)
-        select(.automation)
-        check.visible("桌面没连上：现在不会换号", "都只换号、桌面没连上：只写不会换号")
+        select(.codex)
+        check.visible("现在换不了号", "都只换号、桌面没连上：只写换不了号")
         check.expect(!Driver.visible("只会重置", wait: 0.3), "都只换号时页面上不出现「只会重置」")
         func rule(_ id: String, _ order: CodexStrategyOrder, on: Bool = true) -> CodexStrategyConfig.Rule {
             CodexStrategyConfig.Rule(id: id, order: order, participate: on)
         }
         let tool: (String) -> String? = { $0.hasPrefix("claude") ? "claude" : "codex" }
         // The report this fix came from: one Claude account, 只换号.
-        var text = AutomationPage.confirmation([rule("claude-a", .switchOnly)], tool: tool)
+        var text = RelayRules.confirmation([rule("claude-a", .switchOnly)], tool: tool).joined()
         check.expect(text.contains("没有账号会自动用重置卡") && !text.contains("用掉") && !text.contains("官方"),
                      "Claude 账号只换号：确认框只说不会用重置卡，不再说会用掉官方的卡")
         check.expect(text.contains("Claude 直接换默认登录") && !text.contains("Codex"), "只有 Claude 换号时不提 Codex")
-        text = AutomationPage.confirmation([rule("claude-a", .resetFirst), rule("codex-a", .switchOnly)], tool: tool)
+        text = RelayRules.confirmation([rule("claude-a", .resetFirst), rule("codex-a", .switchOnly)], tool: tool).joined()
         check.expect(text.contains("会自动用掉重置卡") && text.contains("官方排的下一张") && !text.contains("没有账号会自动用重置卡"),
                      "有 Claude 账号会重置：写明会用卡、用的是官方排的下一张")
-        text = AutomationPage.confirmation([rule("codex-a", .resetOnly), rule("claude-a", .switchOnly, on: false)], tool: tool)
+        text = RelayRules.confirmation([rule("codex-a", .resetOnly), rule("claude-a", .switchOnly, on: false)], tool: tool).joined()
         check.expect(text.contains("会自动用掉重置卡") && !text.contains("官方") && !text.contains("换号按接力顺序") && !text.contains("Fable"),
                      "只有 Codex 只重置：不提换号、Claude 的卡和 Fable")
-        text = AutomationPage.confirmation([rule("claude-a", .resetOnly, on: false)], tool: tool)
+        text = RelayRules.confirmation([rule("claude-a", .resetOnly, on: false)], tool: tool).joined()
         check.expect(text.contains("现在没有账号参与") && !text.contains("见底线"), "没有账号参与：只说现在什么都不会自动做")
         // The same answer from the service is not news: the directory is published only when it changes.
         let json = try! JSONSerialization.data(withJSONObject: Fixture.directory("default"))
@@ -2134,57 +2140,50 @@ extension NSWindow {
         Fixture.load("default", into: state)
     }
 
-    section(37, "Claude 页改版（11-22，11-23 换成指位标）：在用两个位置、按现行规则在「第 N 位」上标指位、接力队列和不参与抽屉、周额度用完只写回满") {
+    section(37, "Claude 页（11-25 Gemini 稿）：桌面对话收成页头下一条，在用旁放服务给的下一个号；指位标在「第 N 位」上；接力队列和不参与抽屉，加入接力点了就发；周额度用完只写回满") {
         main.setContentSize(NSSize(width: 1020, height: 1300))
         defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("inuse", into: state)
         select(.claude)
         // OCR turns the middle dot and slash into other glyphs; match the words.
-        check.expect(Driver.visible("对话") && Driver.visible("工作") && Driver.visible("桌面与CLI"), "两个在用位置：桌面对话 · 工作和 Code · 桌面与 CLI")
-        check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不再写「Code 见底后接…」和「下一棒」")
-        check.expect(Driver.hits("第1位").count >= 2, "按现行规则：指位标在桌面卡底栏和队列的第 1 位上（桌面在用的那个号）")
+        check.expect(Driver.visible("桌面对话") && Driver.visible("换号与设置") && Driver.visible("桌面与CLI"), "桌面对话是页头下一条，在用只放 Code · 桌面与 CLI")
+        check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不写「Code 见底后接…」和「下一棒」")
+        check.expect(Driver.hits("第1位").count >= 2, "指位标在在用旁的卡和队列的第 1 位上（桌面在用的那个号）")
         // 方 reads as 万 now and then.
         check.expect(Driver.hits("在上").count == 2, "在用的两个号在队列里留顺位锚点")
-        check.expect(Driver.visible("7天剩0%") && Driver.visible("自动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
+        // OCR reads 自 as 目 in this small amber line.
+        check.expect(Driver.visible("7天剩0%") && Driver.visible("动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
         check.expect(Driver.visible("不参与自动接力") && Driver.visible("desk-only") && Driver.visible("补登Code"), "只在桌面登录过的号放进不参与抽屉，给「补登 Code」")
         state.calls.removeAll()
         Driver.press("提前换", .suffix)
         check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-a\""), "「提前换」把 Code 换到第 1 位 a***")
         check.expect(main.attachedSheet == nil, "换 Code 不弹框")
         state.calls.removeAll()
-        if !Driver.press("+加入接力", .exact) { check.expect(false, "找到 lab 那行的「+ 加入接力」") }
-        check.visible("让lab加入自动接力", "规则开着时加入接力先确认")
-        check.expect(check.lastCall("accounts.strategy") == nil, "确认前不发请求")
-        if !Driver.press("保存", .exact) { check.expect(false, "找到确认框的「保存」") }
-        // The sheet saves from a Task; give it a moment to record the call.
+        if !Driver.press("加入接力") { check.expect(false, "找到 lab 那行的「加入接力」") }
         for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
-        // Key order in the recorded JSON varies from run to run: look the rules up by id.
-        let saved = (check.lastCall("accounts.strategy") ?? "").drop { $0 != "{" }
-        let sent = ((try? JSONSerialization.jsonObject(with: Data(saved.utf8))) as? [String: Any])?["strategy"] as? [String: Any]
-        let rules = sent?["accounts"] as? [[String: Any]] ?? []
-        let lab = rules.first { $0["id"] as? String == "c-lab" }
-        check.expect(lab?["participate"] as? Bool == true && rules.contains { $0["id"] as? String == "c-b4" }, "确认后发送 lab 参与的完整规则")
+        let lab = sentRules(check.lastCall("accounts.strategy")).first { $0["id"] as? String == "c-lab" }
+        check.expect(lab?["participate"] as? Bool == true && main.attachedSheet == nil, "「加入接力」不弹框，发送 lab 参与的完整规则")
         Driver.press("展开", .exact)
-        check.expect(UserDefaults.standard.bool(forKey: ClaudeRelayDeck.expandedKey) && Driver.hits("用1张重置卡").count >= 5, "「展开」换成整卡并记住")
+        // The Code card and the three queue cards each offer one.
+        check.expect(UserDefaults.standard.bool(forKey: ClaudeRelayDeck.expandedKey) && Driver.hits("用1张重置卡").count >= 4, "「展开」换成整卡并记住")
         Driver.press("紧凑", .exact)
         check.expect(!UserDefaults.standard.bool(forKey: ClaudeRelayDeck.expandedKey), "「紧凑」换回一行一个")
         print("  → 周额度用完")
         Fixture.load("inuselow", into: state)
         select(.claude)
         check.expect(!Driver.visible("59分钟后回满", wait: 0.3), "桌面在用号周额度用完：不再写 5 小时额度")
-        check.visible("7天剩0%·见底线3%", "条下写 7 天剩 0% 和见底线")
-        check.visible("接下来换到第3位beta-2", "Code 到了见底线：写明接下来换到谁（第 1 位周额度用完，被跳过）")
+        check.expect(Driver.hits("第3位").count >= 2 && Driver.visible("beta-2"), "Code 到了见底线：在用旁换成第 3 位 beta-2（第 1 位周额度用完，被跳过）")
         print("  → 队列里没有能接力的号")
         Fixture.load("inusenone", into: state)
         select(.claude)
-        check.visible("队列里没有能接力", "队列里没有能接的号时写明")
+        check.visible("队列里都见底了", "队列里没有能接的号时写明")
         state.calls.removeAll()
-        if !Driver.press("换上lab", .exact) { check.expect(false, "找到「换上 lab」") }
+        if !Driver.press("换上", .exact) { check.expect(false, "找到推荐卡上的「换上」") }
         check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-lab\""), "推荐不参与但有余量的 lab，一键换上")
         print("  → 同号")
         Fixture.load("inusesame", into: state)
         select(.claude)
-        check.expect(Driver.visible("当前同号") && Driver.visible("第3位"), "桌面和 Code 同号时合成一张卡，指位标在第 3 位")
+        check.expect(Driver.visible("Code在用") && Driver.hits("第3位").count >= 2, "桌面和 Code 同号时锚点写「桌面 + Code 在用」，指位标在第 3 位")
         print("  → 只用桌面")
         Fixture.load("inusedesk", into: state)
         select(.claude)
@@ -2197,17 +2196,30 @@ extension NSWindow {
         print("  → 只用 Code")
         Fixture.load("inusecode", into: state)
         select(.claude)
-        check.expect(Driver.visible("Code无感换号") && !Driver.visible("个桌面会话", wait: 0.3), "只用 Code：Code 卡底下留着无感换号开关，没有桌面会话")
+        check.expect(Driver.visible("Code无感换号") && !Driver.visible("桌面对话", wait: 0.3), "只用 Code：Code 卡底下留着无感换号开关，没有桌面对话那一条")
         // A drag's new order: Claude's rules take it, every other rule keeps its place.
-        if let directory = state.directory, let config = directory.relayConfig(order: ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]) {
+        if let directory = state.directory, let config = directory.relayConfig("claude", order: ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]) {
             let ids = config.accounts.map(\.id)
             check.expect(ids.filter { $0.hasPrefix("c-") } == ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]
                          && ids.prefix(ids.count - 6).allSatisfy { !$0.hasPrefix("c-") }, "拖动后的顺位：Claude 规则换成新顺序，其余规则原地不动")
         } else {
             check.expect(false, "拖动后的顺位能生成规则")
         }
+        print("  → 桌面换号与设置")
+        Fixture.load("inuse", into: state)
+        select(.claude)
+        if !Driver.press("换号与设置", .prefix) { check.expect(false, "找到「换号与设置」") }
+        check.expect(Driver.visible("仅手动切换") && Driver.visible("下一个有额度") && Driver.visible("和Code共用这个号", wait: 0.3) == false,
+                     "浮层写仅手动切换和三种挑法")
+        state.calls.removeAll()
+        if !Driver.press("换到桌面…", .prefix) { check.expect(false, "找到浮层里的「换到桌面…」") }
+        check.expect(main.attachedSheet != nil && check.lastCall("accounts.claude_desktop") == nil, "换桌面号先弹确认，不直接发")
+        if let sheet = main.attachedSheet { Driver.escape(sheet) }
     }
     section(38, "按账号选续期方：卡片「…」两套菜单；没配对先引导；转到云端 / 转回本机两个确认框写明在用和别的 Mac；仅桌面登录的号不能上云；转换失败给放弃 / 重试") {
+        // The Codex queue drawn as cards: this section is about what a card shows. OCR misses the white 重试 on amber
+        // in a taller window, so this one keeps the usual height; what it presses is on the first screen.
+        UserDefaults.standard.set(true, forKey: CodexRelayDeck.expandedKey)
         select(.codex)
         more("lab team", choose: "转到云端续期…")
         let local = Driver.lastMenu.map(\.title)
@@ -2251,13 +2263,16 @@ extension NSWindow {
         Fixture.load("cloudtransfer", into: state)
         select(.codex)
         state.calls.removeAll()
+        // Each failed move's buttons sit at the end of its own line, so find them by that line: the in-use card is
+        // wide now and its buttons are far from its name. Wait for the page first; these presses do not.
+        check.expect(Driver.visible("转回本机失败") && Driver.visible("转到云端失败"), "两种转换失败都写在卡上")
         for (name, id, action) in [("lab team", "synthetic-team", "resume_import"), ("orbit", "synthetic-orbit", "export")] {
-            if !Driver.pressNear(name, "重试") { check.expect(false, "找到 \(name) 卡上的「重试」") }
+            if !Driver.pressBeside(name == "orbit" ? "转回本机失败" : "转到云端失败", "重试") { check.expect(false, "找到 \(name) 卡上的「重试」") }
             check.expect(check.lastCall("accounts.cloud").map { $0.contains("\"cloud_action\":\"\(action)\"") && $0.contains(id) } == true,
                          "\(name)：「重试」发送 \(action)")
         }
         for (name, id, action) in [("lab team", "synthetic-team", "cancel_import"), ("orbit", "synthetic-orbit", "cancel_export")] {
-            if !Driver.pressNear(name, "放弃") { check.expect(false, "找到 \(name) 卡上的「放弃」") }
+            if !Driver.pressBeside(name == "orbit" ? "转回本机失败" : "转到云端失败", "放弃") { check.expect(false, "找到 \(name) 卡上的「放弃」") }
             check.expect(check.lastCall("accounts.cloud").map { $0.contains("\"cloud_action\":\"\(action)\"") && $0.contains(id) } == true,
                          "\(name)：「放弃」发送 \(action)")
         }
@@ -2341,8 +2356,7 @@ extension NSWindow {
         } else {
             Fixture.load("full", into: state)
         }
-        UserDefaults.standard.set(true, forKey: AutomationPage.onboardedKey)
-        var pages: [(String, Page)] = [("账号", .accounts), ("Codex", .codex), ("Claude", .claude), ("换号与重置", .automation),
+        var pages: [(String, Page)] = [("账号", .accounts), ("Codex", .codex), ("Claude", .claude),
                                       ("客户端与服务", .clients), ("个人云端", .cloud), ("网络", .network)]
         // PERF_ONLY=Claude,网络 keeps the run to those pages, for sampling one of them.
         if let only = ProcessInfo.processInfo.environment["PERF_ONLY"]?.split(separator: ",").map(String.init) {
@@ -2378,7 +2392,7 @@ extension NSWindow {
 
 @main struct Preview {
     static func page(_ name: String) -> Page {
-        ["accounts": .accounts, "codex": .codex, "claude": .claude, "automation": .automation,
+        ["accounts": .accounts, "codex": .codex, "claude": .claude,
          "clients": .clients, "cloud": .cloud, "network": .network][name]!
     }
     @MainActor static func main() {
@@ -2405,6 +2419,11 @@ extension NSWindow {
         if args.count >= 2 && args[1] == "dump" {
             app.setActivationPolicy(.accessory)
             Fixture.load(args.count > 2 ? args[2] : "default", into: ServiceController.shared)
+            // EDITING=<account id> draws that queue row's rule line open.
+            CodexRelayDeck.previewEditing = ProcessInfo.processInfo.environment["EDITING"]
+            ClaudeRelayDeck.previewEditing = ProcessInfo.processInfo.environment["EDITING"]
+            // EXPANDED=1 draws the Codex queue as cards.
+            UserDefaults.standard.set(ProcessInfo.processInfo.environment["EXPANDED"] != nil, forKey: CodexRelayDeck.expandedKey)
             if !(args.count > 3 && args[3] == "menubar") {
                 AppNavigation.shared.show(page(args.count > 3 ? args[3] : "accounts"), select: args.count > 4 ? args[4] : nil)
             }
@@ -2459,7 +2478,7 @@ extension NSWindow {
             let output = URL(fileURLWithPath: args[4], isDirectory: true)
             try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let claude = state.directory!.accounts.first { $0.provider == "claude" }?.id
-            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude), ("automation", .automation, nil)] {
+            for (name, page, selection) in [("accounts", Page.accounts, nil), ("codex", .codex, nil), ("claude-home", .claude, nil), ("claude", .claude, claude)] {
                 AppNavigation.shared.show(page, select: selection)
                 let size = (ProcessInfo.processInfo.environment["DUMP_SIZE"] ?? "1020x660").split(separator: "x").compactMap { Double($0) }
                 _ = render(DashboardView(), size: NSSize(width: size[0], height: size[1]), appearance: "light", to: output.appendingPathComponent("live-\(name).png"))
@@ -2474,13 +2493,15 @@ extension NSWindow {
         try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let state = ServiceController.shared
         let window = NSSize(width: 1020, height: 660)
-        for appearance in ["light", "dark"] {
+        // APPEARANCE=light or dark draws one of them: render.sh runs each in its own process, since one process
+        // drawing every page twice runs SwiftUI's attribute graph out of room.
+        for appearance in ProcessInfo.processInfo.environment["APPEARANCE"].map({ [$0] }) ?? ["light", "dark"] {
             let pages: [(String, String, Page, String?)] = [
                 ("accounts", "default", .accounts, nil), ("accounts-attention", "attention", .accounts, nil), ("accounts-empty", "empty", .accounts, nil),
                 ("accounts-connected", "connected", .accounts, nil), ("accounts-plain", "plain", .accounts, nil), ("accounts-claude2", "claude2", .accounts, nil),
                 ("codex", "default", .codex, nil), ("codex-attention", "attention", .codex, nil),
                 // 按账号选续期方: the centre's accounts next to this Mac's, a move under way or failed, another Mac's new one.
-                ("codex-cloudmix", "cloudmix", .codex, nil), ("claude-cloudmix", "cloudmix", .claude, nil), ("automation-cloudmix", "cloudmix", .automation, nil),
+                ("codex-cloudmix", "cloudmix", .codex, nil), ("claude-cloudmix", "cloudmix", .claude, nil),
                 ("codex-cloudtransfer", "cloudtransfer", .codex, nil), ("codex-cloudother", "cloudother", .codex, nil),
                 ("cloud-paired", "cloudmix", .cloud, nil), ("cloud-trouble", "cloudtrouble", .cloud, nil),
                 ("claude-cloudtrouble", "cloudtrouble", .claude, nil), ("claude-cloud-account", "cloudtrouble", .claude, "synthetic-claude"),
@@ -2490,10 +2511,11 @@ extension NSWindow {
                 ("claude2", "claude2", .claude, "synthetic-claude-b"), ("claude-lab", "default", .claude, "h-lab"),
                 ("claude-switchblock", "switchblock", .claude, "synthetic-claude-b"),
                 ("claude-low", "claudelow", .claude, nil), ("claude-low5", "claudelow5", .claude, nil), ("claude-lowboth", "claudelowboth", .claude, nil),
-                ("automation", "default", .automation, nil), ("automation-running", "running", .automation, nil), ("automation-hotoff", "hotoff", .automation, nil),
-                ("automation-onboard", "off", .automation, nil), ("automation-onboard-empty", "offempty", .automation, nil),
-                ("automation-on-hint", "default", .automation, nil), ("automation-drag", "default", .automation, "synthetic-nova"),
-                ("automation-claude2", "claude2", .automation, "synthetic-claude"), ("automation-many", "many", .automation, nil),
+                // The relay on each tool's page (11-25): the run, switched off, a rule line open, a drag under way, full.
+                ("codex-running", "running", .codex, nil), ("codex-off", "offconnected", .codex, nil), ("codex-rule", "connected", .codex, nil),
+                ("codex-expanded", "connected", .codex, nil), ("codex-many", "many", .codex, nil),
+                ("claude-inuse", "inuse", .claude, nil), ("claude-rule", "inuse", .claude, nil), ("claude-inusecode", "inusecode", .claude, nil),
+                ("claude-inuselow", "inuselow", .claude, nil), ("claude-inusenone", "inusenone", .claude, nil),
                 ("codex-connected", "connected", .codex, nil), ("codex-plain", "hotoff", .codex, nil), ("codex-cli", "hotoff", .codex, nil),
                 ("codex-onboard", "fresh", .codex, nil), ("claude-onboard", "fresh", .claude, nil), ("codex-next", "codexone", .codex, nil),
                 ("claude-desktop-behind", "desktopbehind", .claude, nil), ("claude-deskquota", "deskquota", .claude, nil),
@@ -2504,12 +2526,14 @@ extension NSWindow {
                 // The page column at other window widths: 1020 is the default, 833 the smallest.
                 ("claude-full", "full", .claude, nil), ("claude-full-833", "full", .claude, nil),
                 ("claude-full-1300", "full", .claude, nil), ("claude-full-1600", "full", .claude, nil),
-                ("codex-1300", "full", .codex, nil), ("automation-1300", "default", .automation, nil),
+                ("codex-1300", "full", .codex, nil), ("codex-relay-1300", "connected", .codex, nil),
                 ("accounts-1300", "default", .accounts, nil), ("clients-1300", "default", .clients, nil),
             ]
             let sizes: [String: NSSize] = ["claude-full-833": NSSize(width: 833, height: 600),
                                            "claude-full-1300": NSSize(width: 1300, height: 830), "claude-full-1600": NSSize(width: 1600, height: 900),
-                                           "codex-1300": NSSize(width: 1300, height: 830), "automation-1300": NSSize(width: 1300, height: 830),
+                                           "codex-1300": NSSize(width: 1300, height: 830), "codex-relay-1300": NSSize(width: 1300, height: 830),
+                                           "codex-many": NSSize(width: 1020, height: 2300), "claude-inuse": NSSize(width: 1020, height: 1300),
+                                           "claude-rule": NSSize(width: 1020, height: 1300),
                                            "accounts-1300": NSSize(width: 1300, height: 830), "clients-1300": NSSize(width: 1300, height: 830)]
             // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
             let modes: [String: ClaudeUse] = ["claude-code": .code, "claude-desktop": .desktop]
@@ -2521,10 +2545,10 @@ extension NSWindow {
                 for key in [CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey] { UserDefaults.standard.removeObject(forKey: key) }
                 if let use = codexModes[name] { UserDefaults.standard.set(use.rawValue, forKey: CodexUse.key) }
                 if name == "codex-next" { UserDefaults.standard.set(Onboarding.started, forKey: Onboarding.codexKey) }
-                // The relay page's first-time card and its note after turning on, only where drawn.
-                UserDefaults.standard.set(!name.hasPrefix("automation-onboard"), forKey: AutomationPage.onboardedKey)
-                if name == "automation-on-hint" { UserDefaults.standard.set("show", forKey: AutomationPage.hintKey) } else { UserDefaults.standard.removeObject(forKey: AutomationPage.hintKey) }
-                AutomationPage.previewDragging = name == "automation-drag" ? "synthetic-nova" : nil
+                // A rule line drawn open, the queue drawn as cards, only where named so.
+                CodexRelayDeck.previewEditing = name == "codex-rule" ? "synthetic-p" : nil
+                ClaudeRelayDeck.previewEditing = name == "claude-rule" ? "c-b3" : nil
+                UserDefaults.standard.set(name == "codex-expanded", forKey: CodexRelayDeck.expandedKey)
                 AppNavigation.shared.show(page, select: selection)
                 if selection == nil { AppNavigation.shared.selection = nil }
                 let size = render(DashboardView(), size: sizes[name] ?? window, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
@@ -2544,6 +2568,9 @@ extension NSWindow {
                 ("sheet-rename", AnyView(RenameSheet(account: nova, close: {}))),
                 ("history", AnyView(ResetHistoryView(accountID: nil))),
                 ("menubar", AnyView(MenuBarPanel(openWindow: {}))),
+                // 换号与设置 on the Claude page's desktop bar, drawn as the popover shows it.
+                ("claude-desk-panel", AnyView(ClaudeDeskPanel(status: state.directory!.claudeDesktop!, entries: ClaudeEntry.all(state.directory!, use: .both),
+                                                              directory: state.directory!, present: { _ in }))),
                 ("sheet-desktop-switch", AnyView(ClaudeSwitchSheet(request: ClaudeSwitchRequest(entryID: "synthetic-claude", code: false, desk: true, choice: false), close: {}, login: {}))),
                 ("sheet-network-new", AnyView(NetworkSwitchSheet(initial: .wifi("Cafe Guest"), started: {}, close: {}))),
                 ("sheet-network-phone", AnyView(NetworkSwitchSheet(initial: .phone("我的 iPhone"), started: {}, close: {}))),

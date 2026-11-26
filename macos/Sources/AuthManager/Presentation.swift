@@ -260,7 +260,7 @@ struct ExpiryReminder: Identifiable {
     var detail: String {
         let when = When.countdown(to: earliest).map { "（\($0)）" } ?? ""
         return "\(count > 1 ? "最早 " : "")\(When.clock(earliest)) 到期\(when)"
-            + (provider == "claude" ? "，过期作废；可以在「换号与重置」里设成见底时自动用。" : "，过期作废。")
+            + (provider == "claude" ? "，过期作废；可以在自动接力里设成见底时自动用。" : "，过期作废。")
     }
 
     static func all(_ accounts: [ManagedAccount], dismissed: Set<String> = [], now: Date = Date()) -> [ExpiryReminder] {

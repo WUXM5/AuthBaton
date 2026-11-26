@@ -39,6 +39,8 @@ struct AccountSheetView: View {
                 if let account = account(id) { RenameSheet(account: account, close: close) }
             case .history(let id):
                 ResetHistoryView(accountID: id)
+            case .strategyStart:
+                StrategyStartSheet(close: close)
             case .strategyStop:
                 StrategyStopSheet(close: close)
             case .desktopConnection:
@@ -523,6 +525,46 @@ struct RenameSheet: View {
     }
 }
 
+// MARK: 开启自动接力
+
+// Turning the rules on lets AuthBaton switch accounts and spend reset cards by itself: what that means for the
+// rules saved now, one numbered point each. The switch is one for Codex and Claude alike.
+struct StrategyStartSheet: View {
+    @EnvironmentObject private var service: ServiceController
+    let close: () -> Void
+
+    var body: some View {
+        let directory = service.directory
+        let rules = (directory?.strategy?.config.accounts ?? []).filter { rule in directory?.accounts.contains { $0.id == rule.id } == true }
+        let points = RelayRules.confirmation(rules) { id in directory?.accounts.first { $0.id == id }?.provider }
+        SheetScaffold(title: "开启自动接力？", lead: "Codex 和 Claude 共用这个开关，随时可关。") {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(Array(points.enumerated()), id: \.offset) { offset, point in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(offset + 1)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(Palette.ink2)
+                            .frame(width: 16, height: 16).background(Circle().strokeBorder(Palette.edge, lineWidth: 1))
+                        Text(point).font(.system(size: 11.5)).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .loopPanel(radius: 10)
+            SheetError()
+        } actions: {
+            Button("暂不开启", action: close).buttonStyle(.pill(.secondary, height: 27)).keyboardShortcut(.cancelAction)
+            Button(service.accountBusy ? "正在开启…" : "确认并开启") {
+                guard var config = directory?.strategy?.config else { return }
+                config.enabled = true
+                config.accounts = rules
+                Task { await submit(service, "accounts.strategy", LoginParams(confirm: true, strategy: config.input), close: close) }
+            }
+            .buttonStyle(.pill(.primary, height: 27)).keyboardShortcut(.defaultAction)
+            .disabled(service.accountBusy || directory?.strategy == nil)
+        }
+    }
+}
+
 // MARK: 关闭自动换号
 
 struct StrategyStopSheet: View {
@@ -531,8 +573,8 @@ struct StrategyStopSheet: View {
 
     var body: some View {
         let running = service.directory?.strategy?.run != nil
-        SheetScaffold(title: running ? "停止这次换号并核对？" : "关闭自动换号与重置？",
-                      lead: running ? "不再发起新的暂停、换号或接续，自动换号与重置也会关闭。" : "见底时不再自动换号，也不再自动用重置卡；规则会保留。") {
+        SheetScaffold(title: running ? "停止这次换号并核对？" : "关闭自动接力？",
+                      lead: running ? "不会再暂停、换号或接续，自动接力也会关闭。" : "见底时不再自动换号，也不再自动用重置卡；规则会保留。") {
             VStack(alignment: .leading, spacing: 9) {
                 if running {
                     CheckItem(kind: .system, text: "已经提交的操作会收尾。")

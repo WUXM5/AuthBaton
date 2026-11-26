@@ -110,22 +110,13 @@ struct CodexPage: View {
                             if onboarding == Onboarding.started, let next = OnboardingNext.codex(directory, accounts: accounts) {
                                 NextStrip(next: next, open: { sheet = $0 }, dismiss: { onboarding = Onboarding.done })
                             }
-                            CardGrid {
-                                ForEach(accounts) { account in
-                                    CodexCard(account: account, directory: directory, selected: nav.selection == account.id) { sheet = $0 }
-                                        .frame(maxHeight: .infinity, alignment: .top)
-                                        .id(account.id)
-                                }
-                            }
-                            if directory.strategy != nil {
-                                HStack(spacing: 0) {
-                                    Text(use.desk ? "卡片按接力顺序排；改顺序和规则去"
-                                         : "卡片按接力顺序排；只用 CLI 时见底\(directory.resets("codex") ? "只会重置" : "不会换号")，改顺序和规则去")
-                                    Button("换号与重置") { nav.show(.automation) }.buttonStyle(.pill(.link))
-                                    Text("。")
-                                }
-                                .font(.system(size: 11)).foregroundStyle(Palette.ink3)
-                            }
+                            RelayStatusSlot(directory: directory, provider: "codex", present: { sheet = $0 })
+                            CodexStage(directory: directory, selection: nav.selection, open: { sheet = $0 })
+                            CodexRelayDeck(directory: directory, note: use.desk || directory.strategy?.config.enabled != true ? nil
+                                           : "只用 CLI 时见底\(directory.resets("codex") ? "只会重置" : "不会换号")。", open: { sheet = $0 })
+                            // Outside the relay: by choice, new and without a rule, or handed over by another Mac.
+                            let out = accounts.filter { directory.rule(for: $0.id)?.participate != true }
+                            if !out.isEmpty { CodexDrawer(accounts: out, directory: directory, open: { sheet = $0 }) }
                         }
                     }
                     .onAppear { if let id = nav.selection { proxy.scrollTo(id, anchor: .center) } }
@@ -142,6 +133,7 @@ struct CodexPage: View {
         .task { await service.refreshQuotaIfNeeded() }
         .onAppear { openRequestedSheet() }
         .onChange(of: nav.desktopSheet) { _, _ in openRequestedSheet() }
+        .overlay(alignment: .bottom) { RelayUndoToast(provider: "codex") }
         .sheet(item: $sheet) { item in
             AccountSheetView(item: item, close: { sheet = nil }).environmentObject(service)
         }
@@ -272,11 +264,14 @@ struct DesktopWiring {
     }
 }
 
-private struct CodexCard: View {
+struct CodexCard: View {
+    @EnvironmentObject private var service: ServiceController
     let account: ManagedAccount
     let directory: AccountDirectory
     let selected: Bool
     let open: (AccountSheet) -> Void
+    // A queue row opened in place: the card folds back into its row.
+    var collapse: (() -> Void)? = nil
 
     var body: some View {
         let rule = directory.rule(for: account.id)
@@ -294,6 +289,15 @@ private struct CodexCard: View {
                         Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
                     }
                     Spacer(minLength: 7)
+                    if let collapse {
+                        Button(action: collapse) {
+                            Icon(.chevronDown, size: 11, color: Palette.ink3, weight: 2).rotationEffect(.degrees(180))
+                                .frame(width: 26, height: 26).contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("收起")
+                        .accessibilityLabel("收起 \(account.displayName)")
+                    }
                     AccountMenu(account: account, directory: directory, open: open)
                 }
                 QuotaFigures(account: account, notch: directory.notch(for: account), size: 36, inlineCaption: true) {
@@ -317,12 +321,16 @@ private struct CodexCard: View {
                         Pill("≤ \(rule.below)%", style: rule.participate ? .neutral : .dashed)
                         Pill(rule.order.label, style: rule.participate ? .neutral : .dashed).help(rule.order.explanation)
                         if !rule.participate { Pill("不参与") }
-                    } else if account.cloud?.fresh == true {
-                        // Came from another Mac: it stays out of the relay until someone adds it.
-                        Pill("未加入接力", style: .dashed)
-                        Button("去设置") { AppNavigation.shared.show(.automation, select: account.id) }.buttonStyle(.pill(.link))
                     } else if directory.strategy != nil {
-                        Pill("还没有规则", style: .dashed).help("在「换号与重置」保存一次规则后加入接力")
+                        // New, or came from another Mac: it stays out of the relay until someone adds it. Joining
+                        // takes effect at once.
+                        Pill("未加入接力", style: .dashed)
+                        Button("加入接力") {
+                            service.clearAccountError()
+                            Task { await RelayRules.save(directory.relayConfig(account.id, participate: true), service) }
+                        }
+                        .buttonStyle(.pill(.link))
+                        .disabled(service.accountBusy || (directory.strategy?.config.accounts.count ?? 0) >= RelayRules.limit)
                     }
                 }
                 .opacity(account.transferRunning ? 0.45 : 1)
