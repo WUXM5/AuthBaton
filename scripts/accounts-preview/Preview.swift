@@ -964,7 +964,8 @@ extension NSWindow {
     // Focusable SwiftUI controls get an invisible AppKit stand-in with the control's frame. Icon-only
     // controls (the "…" menu, the move arrows) have no text for OCR, so they are found by size, right of a
     // label on its line; the nearest comes first.
-    static func controls(beside anchor: String, size: CGFloat) -> [(window: NSWindow, point: NSPoint)] {
+    // square: false matches a pill of that height that is wider than it (▶| with a seal in the menu bar).
+    static func controls(beside anchor: String, size: CGFloat, square: Bool = true) -> [(window: NSWindow, point: NSPoint)] {
         // The stand-ins are made when AppKit builds the key view loop, which a page switch does not redo.
         windows().forEach { $0.recalculateKeyViewLoop() }
         settle(0.2)
@@ -972,7 +973,7 @@ extension NSWindow {
         var found: [(window: NSWindow, point: NSPoint, distance: CGFloat)] = []
         for window in windows() {
             for view in (window.contentView!.superview ?? window.contentView!).subviewsDeep
-            where String(describing: Swift.type(of: view)) == "KeyViewProxy" && abs(view.bounds.width - size) < 1.5 && abs(view.bounds.height - size) < 1.5 {
+            where String(describing: Swift.type(of: view)) == "KeyViewProxy" && abs(view.bounds.height - size) < 1.5 && (square ? abs(view.bounds.width - size) < 1.5 : view.bounds.width > size + 4) {
                 let rect = view.convert(view.bounds, to: nil)
                 for hit in anchors where hit.window == window && rect.midX > hit.rect.maxX && abs(rect.midY - hit.rect.midY) < 34 {
                     found.append((window, NSPoint(x: rect.midX, y: rect.midY), rect.midX - hit.rect.maxX))
@@ -1822,8 +1823,10 @@ extension NSWindow {
         Fixture.load("default", into: state)
         let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 720))
         check.expect(Driver.visible("在用 #2 work") && Driver.visible("会话一致"), "菜单栏写桌面在用的账号和同步状态")
-        Driver.press("下一个", .exact)
-        check.visible("换上 #1 nova@example", "菜单栏「下一个」先在行内确认")
+        check.expect(Driver.visible("Claude桌面") && !Driver.visible("ClaudeChat", wait: 0.3), "无感换号关着：菜单栏照旧写 Claude 桌面")
+        check.expect(!Driver.visible("下一个", wait: 0.3), "菜单栏不再有「下一个」文字按钮")
+        if let skip = Driver.controls(beside: "会话一致", size: 22, square: false).first { Driver.click(skip.window, skip.point) } else { check.expect(false, "找到菜单栏的 ▶| 按钮") }
+        check.visible("换上 #1 nova@example", "菜单栏 ▶| 先在行内确认")
         check.visible("换上时会顺带打开", "菜单栏的确认同样写明会顺带打开 Bypass")
         state.calls.removeAll()
         Driver.press("换上", .exact)
@@ -2094,7 +2097,7 @@ extension NSWindow {
         Fixture.load("coderelaydeskonly", into: state)
         select(.claude)
         state.calls.removeAll()
-        if !Driver.press("换到桌面", .prefix) { check.expect(false, "找到只在桌面登录过的账号的「换到桌面…」") }
+        if !Driver.press("换到Chat", .prefix) { check.expect(false, "找到只在桌面登录过的账号的「换到 Chat…」") }
         // The long synthetic email wraps the banner after 「Code 账」; match the line OCR keeps whole.
         check.visible("这次只能重启Claude桌面", "确认框写明这个账号还没登录 Code 账号、这次只能重启 Claude 桌面")
         check.expect(!Driver.visible("只换ClaudeCode即可", wait: 0.3), "不再提示这个账号做不到的「只换 Claude Code」")
@@ -2157,7 +2160,8 @@ extension NSWindow {
         Fixture.load("inuse", into: state)
         select(.claude)
         // OCR turns the middle dot and slash into other glyphs; match the words.
-        check.expect(Driver.visible("桌面对话") && Driver.visible("换号与设置") && Driver.visible("桌面与CLI"), "桌面对话是页头下一条，在用只放 Code · 桌面与 CLI")
+        check.expect(Driver.visible("ClaudeChat") && Driver.visible("换号与设置") && Driver.visible("桌面与CLI"), "Claude Chat 是页头下一条，在用只放 Code · 桌面与 CLI")
+        check.expect(Driver.visible("Chat在用") && !Driver.visible("桌面在用", wait: 0.3), "无感换号开着：页头和队列写「Chat 在用」，不再写「桌面在用」")
         check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不写「Code 见底后接…」和「下一棒」")
         check.expect(Driver.count("第1位") >= 2, "在用旁的卡套和队列都写第 1 位（桌面在用的那个号）")
         // 方 reads as 万 now and then.
@@ -2198,7 +2202,7 @@ extension NSWindow {
         print("  → 同号")
         Fixture.load("inusesame", into: state)
         select(.claude)
-        check.expect(Driver.visible("Code在用") && Driver.count("第3位") >= 2, "桌面和 Code 同号时锚点写「桌面 + Code 在用」，在用旁和队列都是第 3 位")
+        check.expect(Driver.visible("Code在用") && Driver.count("第3位") >= 2, "桌面和 Code 同号时锚点写「Chat + Code 在用」，在用旁和队列都是第 3 位")
         print("  → 只用桌面")
         Fixture.load("inusedesk", into: state)
         select(.claude)
@@ -2211,7 +2215,7 @@ extension NSWindow {
         print("  → 只用 Code")
         Fixture.load("inusecode", into: state)
         select(.claude)
-        check.expect(Driver.visible("Code无感换号") && !Driver.visible("桌面对话", wait: 0.3), "只用 Code：Code 卡底下留着无感换号开关，没有桌面对话那一条")
+        check.expect(Driver.visible("Code无感换号") && !Driver.visible("ClaudeChat", wait: 0.3) && !Driver.visible("桌面对话", wait: 0.3), "只用 Code：Code 卡底下留着无感换号开关，没有 Claude Chat 那一条")
         // A drag's new order: Claude's rules take it, every other rule keeps its place.
         if let directory = state.directory, let config = directory.relayConfig("claude", order: ["c-b2", "c-a", "c-b3", "c-b1", "c-b4", "c-lab"]) {
             let ids = config.accounts.map(\.id)
@@ -2227,9 +2231,19 @@ extension NSWindow {
         check.expect(Driver.visible("仅手动切换") && Driver.visible("下一个有额度") && Driver.visible("和Code共用这个号", wait: 0.3) == false,
                      "浮层写仅手动切换和三种挑法")
         state.calls.removeAll()
-        if !Driver.press("换到桌面…", .prefix) { check.expect(false, "找到浮层里的「换到桌面…」") }
+        check.visible("ClaudeChat", "浮层标题写 Claude Chat")
+        if !Driver.press("换到Chat", .prefix) { check.expect(false, "找到浮层里的「换到 Chat…」") }
         check.expect(main.attachedSheet != nil && check.lastCall("accounts.claude_desktop") == nil, "换桌面号先弹确认，不直接发")
         if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        print("  → 菜单栏 Claude Chat")
+        main.orderOut(nil)
+        let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 720))
+        check.expect(Driver.visible("ClaudeChat") && !Driver.visible("下一个", wait: 0.3), "无感换号开着：菜单栏标题写 Claude Chat，没有「下一个」文字按钮")
+        if let skip = Driver.controls(beside: "会话一致", size: 22, square: false).first { Driver.click(skip.window, skip.point) } else { check.expect(false, "找到菜单栏的 ▶| 按钮") }
+        check.visible("Claude桌面会退出再打开", "点 ▶| 先在行内确认，写明会重开 Claude 桌面")
+        Driver.press("取消", .exact)
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
     }
     section(38, "按账号选续期方：卡片「…」两套菜单；没配对先引导；转到云端 / 转回本机两个确认框写明在用和别的 Mac；仅桌面登录的号不能上云；转换失败给放弃 / 重试") {
         // The Codex queue drawn as cards: this section is about what a card shows. OCR misses the white 重试 on amber

@@ -288,13 +288,14 @@ struct ClaudeHomePage: View {
         case .desktop:
             if codeRelayOn, let code {
                 if let desk, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(code.name)" }
-                return "\(entries.count) 个账号 · Code 在用 \(code.name) · 桌面在用 \(desk?.name ?? "—")"
+                return "\(entries.count) 个账号 · Code 在用 \(code.name) · Chat 在用 \(desk?.name ?? "—")"
             }
             let count = entries.filter { $0.desk != nil }.count
             return "\(count) 个桌面账号 · " + (desk.map { "在用 \($0.desk?.number.map { "#\($0) " } ?? "")\($0.name)" } ?? "桌面还没认出在用的账号")
         case .both:
             if let code, let desk, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(code.name)" }
-            return "\(entries.count) 个账号 · Code 在用 \(code?.name ?? "—") · 桌面在用 \(desk?.name ?? "—")"
+            // With 无感换号 on the desktop's login is only Chat / Cowork's (11-26); without it, its Code tab's too.
+            return "\(entries.count) 个账号 · Code 在用 \(code?.name ?? "—") · " + (codeRelayOn ? "Chat 在用" : "桌面在用") + " \(desk?.name ?? "—")"
         }
     }
 
@@ -1223,11 +1224,11 @@ struct ClaudeSwitchControl: View {
     private var remembered: SwitchScope { SwitchScope.remembered(UserDefaults.standard.string(forKey: ClaudeUse.scopeKey), directory) }
 
     // Where a click goes, said on the button (11-22): 换到 Code (the desktop's Code tab follows), 换到 CLI,
-    // 换到桌面… or 一起换…. With one client on this Mac there is nowhere else to say, so it stays 换上.
+    // 换到桌面… (换到 Chat… with 无感换号 on) or 一起换…. With one client on this Mac there is nowhere else to say, so it stays 换上.
     private func title(_ targets: (code: Bool, desk: Bool), codeRelayOn: Bool) -> String {
         guard use.desk && (use.code || codeRelayOn) else { return targets.desk ? "换上…" : "换上" }
         if targets.code && targets.desk { return "一起换…" }
-        if targets.desk { return "换到桌面…" }
+        if targets.desk { return codeRelayOn ? "换到 Chat…" : "换到桌面…" }
         return codeRelayOn ? "换到 Code" : "换到 CLI"
     }
 
@@ -1235,13 +1236,13 @@ struct ClaudeSwitchControl: View {
         switch scope {
         case .both: "一起换…"
         case .code: codeRelayOn ? "只换 Code（无感）" : "只换 Claude Code"
-        case .desktop: "只换 Claude 桌面…"
+        case .desktop: codeRelayOn ? "只换 Chat…" : "只换 Claude 桌面…"
         }
     }
 
     private func help(_ plan: ClaudeSwitchPlan, codeRelayOn: Bool) -> String {
         let targets = plan.targets(remembered)
-        return targets.code && targets.desk ? "按上次的选择：Code 和桌面一起换" : targets.code ? (codeRelayOn ? "按上次的选择：只换 Code（无感，不重启桌面）" : "按上次的选择：只换 Claude Code") : "按上次的选择：只换 Claude 桌面"
+        return targets.code && targets.desk ? "按上次的选择：Code 和桌面一起换" : targets.code ? (codeRelayOn ? "按上次的选择：只换 Code（无感，不重启桌面）" : "按上次的选择：只换 Claude Code") : codeRelayOn ? "按上次的选择：只换 Chat" : "按上次的选择：只换 Claude 桌面"
     }
 }
 

@@ -127,7 +127,7 @@ struct ClaudeChannel: View {
     var body: some View {
         // Without 无感换号 the desktop's Code tab stays with the desktop's sign-in, so its </> sits there.
         let glyphs: [Glyph] = side == .desk ? (relayOn ? [.chat] : [.chat, .code]) : (relayOn ? [.code, .terminal] : [.terminal])
-        let title = side == .desk ? (relayOn ? "桌面 · 对话 / 工作" : "Claude 桌面") : (relayOn ? "Code · 桌面与 CLI" : "Claude Code")
+        let title = side == .desk ? (relayOn ? "Claude Chat" : "Claude 桌面") : (relayOn ? "Code · 桌面与 CLI" : "Claude Code")
         HStack(spacing: 5) {
             ForEach(Array(glyphs.enumerated()), id: \.offset) { _, glyph in
                 Icon(glyph, size: 12, color: side == .code ? Palette.deep : Palette.ink2, weight: 1.9)
@@ -322,7 +322,9 @@ struct ClaudeRelayDeck: View {
         let sides = ClaudeUse.sides(use, directory)
         let code = sides.code && entry.inCode
         let desk = sides.desk && entry.inDesk
-        return code && desk ? "桌面 + Code 在用" : desk ? "桌面在用" : code ? "Code 在用" : nil
+        // With 无感换号 on, the desktop's login is only Chat / Cowork's (11-26).
+        let chat = directory.claudeDesktop?.codeRelay?.enabled == true
+        return code && desk ? (chat ? "Chat + Code 在用" : "桌面 + Code 在用") : desk ? (chat ? "Chat 在用" : "桌面在用") : code ? "Code 在用" : nil
     }
 
     @ViewBuilder private func row(_ entry: ClaudeEntry) -> some View {
