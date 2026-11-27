@@ -390,6 +390,10 @@ enum Fixture {
             inUse(&data, "inuse", now: now)
             external(&data, scenario, now: now)
         case "externalnone": data["external"] = ["sources": [Any]()]
+        case "externalconnecting":
+            data["external"] = ["sources": [["id": "src-lab", "label": "外部来源", "site_url": "https://lab-center.example.invalid",
+                                             "manage_url": "https://lab-center.example.invalid", "state": "connecting", "job": "connecting",
+                                             "default_mode": "view", "counts": ["codex": 0, "claude": 0]]]]
         case "netsafe": data["network"] = network(now, "safe")
         case "netwaiting": data["network"] = network(now, "waiting")
         case "netwrong": data["network"] = network(now, "wrong")
@@ -2586,7 +2590,7 @@ extension NSWindow {
         Driver.press("去处理", .prefix)
         check.expect(AppNavigation.shared.page == .cloud, "「去处理」去个人云端")
     }
-    section(44, "个人云端 · 外部账号来源：没连时粘贴配对串才能连接；连上后写同步账号、新账号默认权限和立即同步；配对失效时写原因，可重新连接、重试；页头写外部来源数") {
+    section(44, "个人云端 · 外部账号来源：没连时粘贴配对串才能连接；连接中只写正在连接；连上后写同步账号、新账号默认权限和立即同步；配对失效时写原因，可重新连接、重试；页头写外部来源数") {
         main.setContentSize(NSSize(width: 1020, height: 1100))
         defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
         Fixture.load("externalnone", into: state)
@@ -2599,6 +2603,10 @@ extension NSWindow {
         Driver.press("连接", .exact)
         let connect = check.lastCall("accounts.external") ?? ""
         check.expect(connect.contains("\"external_action\":\"connect\"") && connect.contains("\"enrollment\":\"eyJzaXRlX3VybCI6"), "粘贴后「连接」发送 connect 和配对串")
+        print("  → 正在连接")
+        Fixture.load("externalconnecting", into: state)
+        select(.cloud)
+        check.expect(Driver.visible("正在连接") && !Driver.visible("连不上"), "连接中只写正在连接，不报连不上")
         print("  → 已连接")
         Fixture.load("external", into: state)
         select(.cloud)

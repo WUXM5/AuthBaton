@@ -423,7 +423,9 @@ impl Accounts {
                     "site_url": s.site_url,
                     "manage_url": s.manage_url,
                     "device_label": s.device_label,
-                    "state": s.state,
+                    // Stored as "error" until the center accepts the pairing, so nothing from it is used and
+                    // a restart midway leaves it retryable; while the pairing runs it reads as connecting.
+                    "state": if self.external.job(&s.id) == Some("connecting") { "connecting" } else { s.state.as_str() },
                     "error": s.error,
                     "read_at": s.read_at,
                     "counts": {"codex": count("codex"), "claude": count("claude")},

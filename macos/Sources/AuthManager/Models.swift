@@ -177,7 +177,7 @@ struct ExternalSource: Decodable, Equatable, Identifiable, Sendable {
     var siteUrl: String? = nil
     var manageUrl: String? = nil
     var deviceLabel: String? = nil
-    // "connected" or "error".
+    // "connected" or "error"; "connecting" while a pairing runs, when nothing from it is usable yet.
     var state: String? = nil
     var error: String? = nil
     var readAt: Double? = nil

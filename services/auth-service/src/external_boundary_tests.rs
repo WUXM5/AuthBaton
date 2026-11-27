@@ -232,7 +232,20 @@ fn pairing_makes_one_row_per_account_merges_this_macs_own_and_keeps_secrets_in_t
         center.ops().is_empty(),
         "a bad string never reaches the center"
     );
-    connect(&mut m);
+    m.external_command("connect", Some(&enrollment()), None, None, false, false)
+        .unwrap();
+    let pairing = m.snapshot()["external"]["sources"][0].clone();
+    assert_eq!(
+        (pairing["state"].as_str(), pairing["job"].as_str()),
+        (Some("connecting"), Some("connecting")),
+        "a source being paired reads as connecting, not as one that cannot be reached"
+    );
+    assert_eq!(
+        m.external.config.sources[0].state, "error",
+        "nothing from it is usable until the center accepts the pairing"
+    );
+    m.external_tick();
+    m.external_tick();
     assert_eq!(&center.ops()[..2], ["enroll", "accounts"]);
     let source = m.snapshot()["external"]["sources"][0].clone();
     assert_eq!(source["label"], "lab-center");

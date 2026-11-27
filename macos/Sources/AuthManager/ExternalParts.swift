@@ -649,7 +649,7 @@ struct ExternalSourceCard: View {
                 Spacer(minLength: 8)
                 status
             }
-            if let source {
+            if let source, source.state != "connecting" {
                 if source.trouble { troubled(source) } else { connected(source) }
             } else {
                 unpaired
