@@ -149,6 +149,7 @@ impl Accounts {
             root,
             manager.platform.clone(),
             hotspot.is_file().then_some(hotspot),
+            manager.sources.codex_home.clone(),
         );
         Ok(manager)
     }

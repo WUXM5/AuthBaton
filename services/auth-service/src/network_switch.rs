@@ -3,10 +3,16 @@
 //! chosen Wi-Fi or the person's iPhone hotspot with `networksetup`, and checks the AI services
 //! answer again. Nothing here switches on its own.
 //!
-//! What "in flight" means comes from two places: the mod reports each model request of every
-//! Claude Code session it runs in (and holds the next one while a switch is pending), and the
-//! traffic of the other clients is read from mihomo's controller, or from `nettop` per process
-//! when there is none. Those clients cannot be held, only waited for.
+//! What "in flight" means comes from one place per AI client, and the page lists exactly what a
+//! switch waits for. The mod reports each model request of every Claude Code session it runs in
+//! (and holds the next one while a switch is pending). Codex, CLI and desktop alike, has a
+//! conversation running while a turn in its rollouts has started and not ended. Claude desktop's
+//! traffic is read from mihomo's controller, or from `nettop` per process when there is none;
+//! so is Claude Code's, but only while no session reports through the mod. Codex and Claude
+//! desktop cannot be held, only waited for. Nothing else is waited for: browsers, curl
+//! (AuthBaton's own quota checks among it) and other programs reaching the same hosts. Codex
+//! desktop's own window keeps a push channel and telemetry going while idle, so its traffic
+//! said nothing about a reply.
 //!
 //! Wi-Fi passwords are typed in the switch sheet, kept in memory until the join worked, then
 //! stored in the AuthBaton Vault; a refused join forgets them. An iPhone hotspot needs none: the
@@ -15,8 +21,8 @@
 use crate::platform::{Platform, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::io::Write;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,6 +39,8 @@ const HEARTBEAT_STALE: Duration = Duration::from_secs(45);
 const HELD_FRESH: Duration = Duration::from_secs(25);
 const SESSION_FORGET: Duration = Duration::from_secs(600);
 const GROUP_FORGET: Duration = Duration::from_secs(600);
+/// Rollouts last written before this are not read, as `desktop::turns_running` looks back.
+const TURN_LOOKBACK: Duration = Duration::from_secs(86400);
 /// The page or menu bar asked to watch within this long.
 const INTEREST: Duration = Duration::from_secs(15);
 /// Bytes per sample that make a connection count as busy: a streamed reply always passes the
@@ -165,6 +173,9 @@ struct State {
     monitor: Option<&'static str>,
     sampled_at: Option<Instant>,
     groups: BTreeMap<String, Group>,
+    /// Each Codex client with a rollout written within `GROUP_FORGET` or a turn running, and
+    /// whether one is.
+    codex: BTreeMap<&'static str, bool>,
     sessions: HashMap<String, Session>,
     operation: Option<Operation>,
     history: VecDeque<Record>,
@@ -211,6 +222,7 @@ fn new_state(device: Option<String>) -> State {
         monitor: None,
         sampled_at: None,
         groups: BTreeMap::new(),
+        codex: BTreeMap::new(),
         sessions: HashMap::new(),
         operation: None,
         history: VecDeque::new(),
@@ -236,7 +248,12 @@ impl Runtime {
         }
     }
 
-    pub fn start(root: &Path, platform: Platform, helper: Option<PathBuf>) -> Runtime {
+    pub fn start(
+        root: &Path,
+        platform: Platform,
+        helper: Option<PathBuf>,
+        codex_home: PathBuf,
+    ) -> Runtime {
         let device = wifi_device();
         let mut state = new_state(device.clone());
         state.remembered = load_remembered(root);
@@ -255,7 +272,7 @@ impl Runtime {
         let monitor = device.is_some().then(|| {
             let shared = shared.clone();
             let helper = helper.clone();
-            std::thread::spawn(move || monitor(&shared, helper.as_deref()))
+            std::thread::spawn(move || monitor(&shared, helper.as_deref(), &codex_home))
         });
         Runtime {
             shared,
@@ -439,8 +456,8 @@ fn current_name(state: &State) -> String {
     }
 }
 
-/// Every source the page lists: the mod's sessions (which can be held) and the traffic of the
-/// other clients (which can only be waited for).
+/// Every source the page lists: the mod's sessions (which can be held), Claude desktop's traffic
+/// and Codex's conversations (which can only be waited for).
 fn sources(state: &State, now: Instant) -> Vec<(String, &'static str, bool)> {
     let mut list = vec![];
     let mut sessions: Vec<&Session> = state
@@ -487,22 +504,19 @@ fn sources(state: &State, now: Instant) -> Vec<(String, &'static str, bool)> {
             .is_some_and(|t| now.duration_since(t) < QUIET);
         list.push((name.clone(), if live { "live" } else { "idle" }, false));
     }
+    for (name, running) in &state.codex {
+        list.push((
+            name.to_string(),
+            if *running { "live" } else { "idle" },
+            false,
+        ));
+    }
     list
 }
 
-/// Nothing in flight anywhere: no mod request without a fresh heartbeat's end, no traffic
-/// within `QUIET` (which also covers Claude Code sessions the mod does not run in).
+/// Nothing the page lists is in flight: what it shows is what a switch waits for.
 fn quiet(state: &State, now: Instant) -> bool {
-    let requests = state.sessions.values().any(|s| {
-        s.inflight
-            .values()
-            .any(|t| now.duration_since(*t) < HEARTBEAT_STALE)
-    });
-    let traffic = state
-        .groups
-        .values()
-        .any(|g| g.last_active.is_some_and(|t| now.duration_since(t) < QUIET));
-    !requests && !traffic
+    sources(state, now).iter().all(|source| source.1 != "live")
 }
 
 fn snapshot(state: &State, now: Instant) -> Value {
@@ -796,9 +810,10 @@ fn run_switch(
 
 // ---- What the monitor reads ----
 
-fn monitor(shared: &Shared, helper: Option<&Path>) {
+fn monitor(shared: &Shared, helper: Option<&Path>, codex_home: &Path) {
     let device = shared.state.lock().unwrap().device.clone().unwrap();
     let mut traffic = Traffic::default();
+    let mut turns = CodexTurns::default();
     let mut last_ip: Option<Instant> = None;
     while !shared.stop.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -821,6 +836,7 @@ fn monitor(shared: &Shared, helper: Option<&Path>) {
             continue;
         }
         let sample = traffic.sample();
+        let codex = turns.scan(codex_home);
         if last_ip.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(2)) {
             last_ip = Some(now);
             let ip = ipconfig(&device);
@@ -829,6 +845,7 @@ fn monitor(shared: &Shared, helper: Option<&Path>) {
         {
             let mut state = shared.state.lock().unwrap();
             state.monitor = traffic.source;
+            state.codex = codex;
             if let Some(sample) = sample {
                 apply_sample(&mut state, &sample, now);
                 state.sampled_at = Some(now);
@@ -938,27 +955,14 @@ fn deltas(previous: &mut HashMap<String, (u64, u64)>, readings: Vec<Reading>) ->
     sample
 }
 
-/// The display group of a client, by its process name.
-fn group(process: &str) -> Option<String> {
-    let browser = [
-        "Google Chrome",
-        "Safari",
-        "com.apple.WebKit",
-        "Microsoft Edge",
-        "Arc",
-        "Firefox",
-        "Brave",
-        "ego",
-    ];
-    Some(match process {
-        "claude" => "Claude Code".into(),
-        "codex" => "Codex CLI".into(),
-        p if p.starts_with("Claude") => "Claude 桌面".into(),
-        p if p.starts_with("Codex") || p.starts_with("ChatGPT") => "Codex 桌面".into(),
-        p if browser.iter().any(|b| p.starts_with(b)) => "浏览器".into(),
-        "" => return None,
-        p => p.into(),
-    })
+/// The client whose traffic is read, by its process name. Codex is read from its rollouts
+/// instead, and no other program counts.
+fn group(process: &str) -> Option<&'static str> {
+    match process {
+        "claude" => Some("Claude Code"),
+        p if p.starts_with("Claude") => Some("Claude 桌面"),
+        _ => None,
+    }
 }
 
 fn ai_host(host: &str) -> bool {
@@ -994,7 +998,7 @@ fn parse_mihomo(body: &[u8]) -> Option<Vec<Reading>> {
         let Some(id) = c["id"].as_str() else { continue };
         readings.push((
             id.to_owned(),
-            group,
+            group.to_owned(),
             c["upload"].as_u64().unwrap_or(0),
             c["download"].as_u64().unwrap_or(0),
         ));
@@ -1002,8 +1006,7 @@ fn parse_mihomo(body: &[u8]) -> Option<Vec<Reading>> {
     Some(readings)
 }
 
-/// `nettop -P -L 1 -x -J bytes_in,bytes_out`: `name.pid,in,out,` per process. Without host
-/// names only the AI clients themselves count, and browsers are left out.
+/// `nettop -P -L 1 -x -J bytes_in,bytes_out`: `name.pid,in,out,` per process, without host names.
 fn parse_nettop(text: &str) -> Vec<Reading> {
     let mut readings = vec![];
     for line in text.lines().skip(1) {
@@ -1016,18 +1019,110 @@ fn parse_nettop(text: &str) -> Vec<Reading> {
         let Some(group) = group(process) else {
             continue;
         };
-        if !matches!(
-            group.as_str(),
-            "Claude Code" | "Codex CLI" | "Claude 桌面" | "Codex 桌面"
-        ) {
-            continue;
-        }
         let (Ok(down), Ok(up)) = (down.trim().parse(), up.trim().parse()) else {
             continue;
         };
-        readings.push((name.to_owned(), group, up, down));
+        readings.push((name.to_owned(), group.to_owned(), up, down));
     }
     readings
+}
+
+/// Codex's conversations, from the rollouts it writes as they happen (what
+/// `desktop::turns_running` reads): each scan reads every file on from where the last one
+/// stopped, so a long rollout is read once, not every second.
+#[derive(Default)]
+struct CodexTurns {
+    files: HashMap<PathBuf, Rollout>,
+}
+
+#[derive(Default)]
+struct Rollout {
+    read: u64,
+    desktop: bool,
+    open: bool,
+}
+
+impl CodexTurns {
+    fn scan(&mut self, codex_home: &Path) -> BTreeMap<&'static str, bool> {
+        let now = SystemTime::now();
+        let mut clients = BTreeMap::new();
+        let mut seen = HashSet::new();
+        let mut dirs = vec![codex_home.join("sessions")];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let rollout = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"));
+                let age = metadata
+                    .modified()
+                    .map(|t| now.duration_since(t).unwrap_or_default())
+                    .unwrap_or(TURN_LOOKBACK);
+                if !rollout || age >= TURN_LOOKBACK {
+                    continue;
+                }
+                let file = self.files.entry(path.clone()).or_default();
+                if metadata.len() < file.read {
+                    *file = Rollout::default();
+                }
+                if metadata.len() > file.read {
+                    file.read_on(&path);
+                }
+                if file.open || age < GROUP_FORGET {
+                    let client = if file.desktop {
+                        "Codex 桌面"
+                    } else {
+                        "Codex CLI"
+                    };
+                    *clients.entry(client).or_insert(false) |= file.open;
+                }
+                seen.insert(path);
+            }
+        }
+        self.files.retain(|path, _| seen.contains(path));
+        clients
+    }
+}
+
+impl Rollout {
+    /// Reads the lines written since the last scan; one still being written waits for the next.
+    fn read_on(&mut self, path: &Path) {
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return;
+        };
+        if file.seek(SeekFrom::Start(self.read)).is_err() {
+            return;
+        }
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        while reader.read_until(b'\n', &mut line).is_ok() && line.ends_with(b"\n") {
+            self.read += line.len() as u64;
+            let text = String::from_utf8_lossy(&line);
+            if text.contains("\"session_meta\"")
+                && let Ok(value) = serde_json::from_str::<Value>(&text)
+                && value["type"] == "session_meta"
+            {
+                self.desktop = value["payload"]["originator"] == "Codex Desktop";
+            }
+            match crate::desktop::turn_event(&text) {
+                Some(crate::desktop::TurnEvent::Started(_)) => self.open = true,
+                Some(crate::desktop::TurnEvent::Ended) => self.open = false,
+                None => {}
+            }
+            line.clear();
+        }
+    }
 }
 
 fn run(binary: &str, args: &[&str], timeout: Duration) -> Option<String> {
@@ -1655,19 +1750,32 @@ mod tests {
     }
 
     #[test]
-    fn traffic_counts_only_ai_hosts_and_only_after_a_baseline() {
+    fn only_claude_traffic_on_ai_hosts_counts_and_the_mod_outranks_claude_codes() {
         let first = br#"{"connections":[
-          {"id":"a","upload":100,"download":1000,"metadata":{"host":"api.anthropic.com","process":"Codex (Service)"}},
-          {"id":"b","upload":10,"download":10,"metadata":{"host":"github.com","process":"Codex (Service)"}},
-          {"id":"c","upload":5,"download":5,"metadata":{"host":"","sniffHost":"ws.chatgpt.com","process":"Claude Helper"}}]}"#;
+          {"id":"a","upload":100,"download":1000,"metadata":{"host":"api.anthropic.com","process":"claude"}},
+          {"id":"b","upload":10,"download":10,"metadata":{"host":"github.com","process":"claude"}},
+          {"id":"c","upload":5,"download":5,"metadata":{"host":"","sniffHost":"claude.ai","process":"Claude Helper"}},
+          {"id":"d","upload":0,"download":0,"metadata":{"host":"ws.chatgpt.com","process":"Codex (Aperitif)"}},
+          {"id":"e","upload":0,"download":0,"metadata":{"host":"chatgpt.com","process":"codex"}},
+          {"id":"f","upload":0,"download":0,"metadata":{"host":"chatgpt.com","process":"curl"}},
+          {"id":"g","upload":0,"download":0,"metadata":{"host":"api.openai.com","process":"Google Chrome Helper"}}]}"#;
         let second = br#"{"connections":[
-          {"id":"a","upload":100,"download":9000,"metadata":{"host":"api.anthropic.com","process":"Codex (Service)"}},
-          {"id":"b","upload":10,"download":99999,"metadata":{"host":"github.com","process":"Codex (Service)"}},
-          {"id":"c","upload":5,"download":60,"metadata":{"host":"","sniffHost":"ws.chatgpt.com","process":"Claude Helper"}}]}"#;
+          {"id":"a","upload":100,"download":9000,"metadata":{"host":"api.anthropic.com","process":"claude"}},
+          {"id":"b","upload":10,"download":99999,"metadata":{"host":"github.com","process":"claude"}},
+          {"id":"c","upload":5,"download":60,"metadata":{"host":"","sniffHost":"claude.ai","process":"Claude Helper"}},
+          {"id":"d","upload":2100,"download":800,"metadata":{"host":"ws.chatgpt.com","process":"Codex (Aperitif)"}},
+          {"id":"e","upload":9000,"download":9000,"metadata":{"host":"chatgpt.com","process":"codex"}},
+          {"id":"f","upload":2000,"download":5400,"metadata":{"host":"chatgpt.com","process":"curl"}},
+          {"id":"g","upload":100,"download":640,"metadata":{"host":"api.openai.com","process":"Google Chrome Helper"}}]}"#;
         let mut previous = HashMap::new();
         deltas(&mut previous, parse_mihomo(first).unwrap());
         let sample = deltas(&mut previous, parse_mihomo(second).unwrap());
-        assert_eq!(sample.get("Codex 桌面"), Some(&(0, 8000)));
+        // Codex is read from its rollouts; curl, browsers and the rest never count.
+        assert_eq!(
+            sample.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Claude Code", "Claude 桌面"]
+        );
+        assert_eq!(sample.get("Claude Code"), Some(&(0, 8000)));
         assert_eq!(sample.get("Claude 桌面"), Some(&(0, 55)));
         let mut state = new_state(Some("en0".into()));
         let now = Instant::now();
@@ -1679,19 +1787,97 @@ mod tests {
             .filter(|s| s.1 == "live")
             .map(|s| s.0)
             .collect();
-        assert_eq!(names, ["Codex 桌面"]);
+        assert_eq!(names, ["Claude Code"]);
+        // Once a session reports through the mod, its reports alone say what Claude Code has in
+        // flight: the page no longer lists the process's traffic, and nothing hidden holds a switch.
+        state.sessions.insert(
+            "s1".into(),
+            Session {
+                last_seen: Some(now),
+                ..Session::default()
+            },
+        );
+        assert!(quiet(&state, now));
+        assert!(sources(&state, now).iter().all(|s| s.1 == "idle"));
     }
 
     #[test]
-    fn nettop_lines_keep_only_the_ai_clients() {
-        let text = ",bytes_in,bytes_out,\nlaunchd.1,0,0,\nclaude.15998,6590,24384,\nCodex (Service).46063,163928520,177357,\nGoogle Chrome Helper.9,5,5,\nclaude.helper.7,1,1,\n";
+    fn nettop_lines_keep_only_the_claude_clients() {
+        let text = ",bytes_in,bytes_out,\nlaunchd.1,0,0,\nclaude.15998,6590,24384,\nCodex (Service).46063,163928520,177357,\ncodex.88,5,5,\nGoogle Chrome Helper.9,5,5,\ncurl.4,9,9,\nClaude Helper.12,900,30,\nclaude.helper.7,1,1,\n";
         let readings = parse_nettop(text);
         assert_eq!(readings.len(), 2);
         assert_eq!(
             readings[0],
             ("claude.15998".into(), "Claude Code".into(), 24384, 6590)
         );
-        assert_eq!(readings[1].1, "Codex 桌面");
+        assert_eq!(readings[1].1, "Claude 桌面");
+    }
+
+    #[test]
+    fn codex_conversations_come_from_rollouts_read_on_from_where_the_last_scan_stopped() {
+        let home = std::env::temp_dir().join(format!(
+            "network-codex-{}",
+            crate::platform::random_id().unwrap()
+        ));
+        let day = home.join("sessions/2026/11/27");
+        std::fs::create_dir_all(&day).unwrap();
+        let meta = |originator: &str| {
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"originator\":\"{originator}\"}}}}\n"
+            )
+        };
+        let event = |kind: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-11-27T03:00:00.000Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n"
+            )
+        };
+        let desktop = day.join("rollout-desktop.jsonl");
+        let cli = day.join("rollout-cli.jsonl");
+        let old = day.join("rollout-old.jsonl");
+        std::fs::write(&desktop, meta("Codex Desktop") + &event("task_started")).unwrap();
+        std::fs::write(
+            &cli,
+            meta("codex_exec") + &event("task_started") + &event("task_complete"),
+        )
+        .unwrap();
+        // A turn left open in a rollout not written for a day is not waited for.
+        std::fs::write(&old, meta("codex_exec") + &event("task_started")).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - TURN_LOOKBACK - Duration::from_secs(60))
+            .unwrap();
+        let mut turns = CodexTurns::default();
+        let clients = turns.scan(&home);
+        assert_eq!(
+            clients,
+            BTreeMap::from([("Codex CLI", false), ("Codex 桌面", true)])
+        );
+        let mut state = new_state(Some("en0".into()));
+        state.codex = clients;
+        let now = Instant::now();
+        assert!(!quiet(&state, now));
+        assert!(sources(&state, now).contains(&("Codex 桌面".into(), "live", false)));
+        // A line still being written is left for the next scan.
+        let mut file = std::fs::File::options()
+            .append(true)
+            .open(&desktop)
+            .unwrap();
+        let end = event("task_complete");
+        file.write_all(&end.as_bytes()[..20]).unwrap();
+        assert!(turns.scan(&home)["Codex 桌面"]);
+        file.write_all(&end.as_bytes()[20..]).unwrap();
+        state.codex = turns.scan(&home);
+        assert!(!state.codex["Codex 桌面"]);
+        assert!(quiet(&state, now));
+        // A rewritten rollout is read again from the start.
+        std::fs::write(&desktop, meta("Codex Desktop") + &event("task_started")).unwrap();
+        assert!(turns.scan(&home)["Codex 桌面"]);
+        // A rollout that went away is forgotten.
+        std::fs::remove_file(&desktop).unwrap();
+        assert_eq!(turns.scan(&home), BTreeMap::from([("Codex CLI", false)]));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
