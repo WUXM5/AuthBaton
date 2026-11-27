@@ -35,6 +35,8 @@ extension ManagedAccount {
 
     var needsAction: Bool {
         if transferFailed != nil || cloudTrouble != nil { return true }
+        // Its source signs it in and renews it: only a row that can no longer be used here needs a hand.
+        if external != nil { return state == "reauth" }
         switch ownState {
         case "reauth", "attention", "unsaved", "backup_pending", "cloud_transfer": return true
         // The cloud renews it; the local login dates behind the notice no longer apply.
@@ -62,7 +64,11 @@ extension ManagedAccount {
     var cloudLapse: String { provider == "claude" ? "8 小时" : "10 天" }
     // The service still marks a row the centre keeps, or one on its way, with the old cloud mode's states;
     // next to `cloud` they say nothing about the login itself.
-    private var ownState: String { cloud != nil && ["cloud_managed", "cloud_transfer"].contains(state) ? "healthy" : state }
+    private var ownState: String {
+        if cloud != nil && ["cloud_managed", "cloud_transfer"].contains(state) { return "healthy" }
+        // An external row is "external" while its source still lends it; that says nothing is wrong.
+        return external != nil && state == "external" ? "healthy" : state
+    }
 
     // Claude's coordinated states, or any unsaved result. An unanswered renewal needs no hand:
     // the service reconciles it on its own.
@@ -85,6 +91,8 @@ extension ManagedAccount {
             if let error = transfer.error { return Health(tone: .attention, title: back ? "转回本机失败" : "转到云端失败", detail: error) }
         }
         if let trouble = cloudTrouble { return Health(tone: .attention, title: "云端续期出错", detail: trouble) }
+        // Gone from its source, or no longer lent, while in use: switch away; it is fixed on the source, not here.
+        if external != nil, state == "reauth" { return Health(tone: .attention, title: "外部账号不能再用", detail: external?.reason ?? message) }
         switch ownState {
         case "reauth": return Health(tone: .attention, title: "需重新登录", detail: message)
         case "unsaved":
@@ -99,7 +107,8 @@ extension ManagedAccount {
         case "cloud_managed": return Health(tone: .neutral, title: "由云端维护", detail: message)
         default: break
         }
-        if !cloudRenewed, let notice = loginNotice, notice.needsAttention {
+        // An external row's login is its source's to keep.
+        if !cloudRenewed, external == nil, let notice = loginNotice, notice.needsAttention {
             return Health(tone: .attention, title: notice.state == "expired" ? "登录已到期" : "登录即将到期", detail: notice.message)
         }
         if cloudRenewed, ["uncertain", "verification_pending"].contains(cloud?.state ?? "") {
@@ -151,6 +160,8 @@ extension ManagedAccount {
     // is saved and confirmed: the service refuses then.
     var nextReset: (creditID: String?, expiresAt: String?)? {
         if ["unsaved", "uncertain"].contains(state) { return nil }
+        // An external row spends a card only where its source allows it and while the source answers (2.4).
+        if let external, !external.allowsReset || external.sourceState == "error" { return nil }
         if provider == "claude" { return claudeDefaultOffer.map { (nil, $0.endsAt) } }
         return codexCredits.first.map { ($0.id, $0.expiresAt) }
     }
@@ -193,6 +204,7 @@ extension ManagedAccount {
 
     // Why this account cannot be removed right now, if it cannot.
     func removeBlocker(_ directory: AccountDirectory) -> String? {
+        if external != nil { return "外部账号在来源网页删除。" }
         if native || directory.desktop?.selected == id { return "在用的账号不能移除，先换上别的账号。" }
         if transferRunning { return "正在转换续期方，稍后再移除。" }
         if reset?.unresolved == true { return "先确认上次重置的结果。" }
@@ -285,7 +297,8 @@ struct ExpiryReminder: Identifiable {
             return date
         }
         var result: [ExpiryReminder] = []
-        for account in accounts {
+        // An external row a person cannot spend cards on here has nothing to be reminded of.
+        for account in accounts where account.external?.allowsReset != false {
             var items: [(id: String, count: Int, date: Date)] = []
             if account.provider == "codex" {
                 for credit in account.codexCredits { if let date = soon(credit.expiryDate) { items.append((credit.id, 1, date)) } }
@@ -367,6 +380,15 @@ extension AccountDirectory {
         recoveryNeeded || (busy && switchRoute(for: account) != .desktop)
     }
 
+    // This Mac's own accounts of a provider in relay order; external rows have a group of their own.
+    func own(_ provider: String) -> [ManagedAccount] { relay(provider).filter { $0.external == nil } }
+
+    // The source an external row came from.
+    func source(of account: ManagedAccount) -> ExternalSource? {
+        guard let id = account.external?.source else { return nil }
+        return external?.sources?.first { $0.id == id }
+    }
+
     func canSwitch(to account: ManagedAccount) -> Bool {
         !account.native || (account.provider == "codex" && desktop?.enabled == true && desktop?.selected != account.id)
     }
@@ -382,6 +404,12 @@ extension AccountDirectory {
     // A transfer under way holds the account; a failed one leaves it where it was, so it can still be switched to.
     func primaryAction(for account: ManagedAccount) -> PrimaryAction {
         if account.transferRunning || (account.cloud == nil && ["cloud_transfer", "cloud_managed"].contains(account.state)) { return .wait }
+        // An external row is signed in and renewed at its source: nothing here but switching to it, where its mode,
+        // its source and its own state allow (2.4); the service refuses the rest.
+        if let external = account.external {
+            guard canSwitch(to: account) else { return .current }
+            return external.allowsSwitch && external.sourceState != "error" && account.state == "external" ? .switchTo : .wait
+        }
         if account.staged == true { return .capture }
         if account.recoverable { return .recover }
         // For an account the centre renews, 重新登录 updates the centre's login.

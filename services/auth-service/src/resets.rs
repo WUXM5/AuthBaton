@@ -139,6 +139,17 @@ impl Credits {
             details: credits,
         })
     }
+    /// The count and the expiry of each card, as a credential center records them.
+    pub fn report(&self) -> Value {
+        let credits: Vec<Value> = self
+            .details
+            .iter()
+            .flatten()
+            .filter(|c| c.available())
+            .map(|c| serde_json::json!({"expires_at": c.expires_at.as_deref().and_then(parse_expiry)}))
+            .collect();
+        serde_json::json!({"available_count": self.available_count, "credits": credits})
+    }
     pub fn credit(&self, id: &str) -> Option<&Credit> {
         if self.available_count == 0 {
             return None;

@@ -249,10 +249,16 @@ final class ServiceController: ObservableObject {
         let path = socketPath
         do {
             let result = try await Task.detached { try IPCClient.accounts(method: method, params: params, socketPath: path) }.value
-            directory = result.directory
+            if let next = result.directory { directory = next }
             if method == "accounts.login" { login = result.attempt }
-            accountError = nil
-            accountErrorID = nil
+            if result.needsSwitch != nil {
+                // Disconnecting a source while one of its rows is in use: the service asks to switch away first.
+                accountError = "有外部账号在用：先换到本机账号再断开，或选「换回本机账号并断开」。"
+                accountErrorID = params.id
+            } else {
+                accountError = nil
+                accountErrorID = nil
+            }
         } catch { accountError = error.localizedDescription; accountErrorID = params.id }
     }
 
@@ -264,7 +270,7 @@ final class ServiceController: ObservableObject {
             // A poll that stop() cancelled must not bring back the state of the service it left.
             guard !Task.isCancelled else { return }
             reached(nil)
-            directory = result.directory
+            if let next = result.directory { directory = next }
             if directoryError != nil { directoryError = nil }
             if result.attempt?.isActive == true || (login != nil && login?.attemptId == result.attempt?.attemptId) { login = result.attempt }
         } catch {
@@ -300,7 +306,7 @@ final class ServiceController: ObservableObject {
         if let result = try? await Task.detached(operation: {
             try IPCClient.accounts(method: "accounts.clients", params: LoginParams(), socketPath: path)
         }).value, !Task.isCancelled {
-            directory = result.directory
+            if let next = result.directory { directory = next }
         }
     }
 
@@ -312,8 +318,15 @@ final class ServiceController: ObservableObject {
         if let result = try? await Task.detached(operation: {
             try IPCClient.accounts(method: "accounts.network", params: LoginParams(network_action: "watch"), socketPath: path)
         }).value, !Task.isCancelled {
-            directory = result.directory
+            if let next = result.directory { directory = next }
         }
+    }
+
+    // External account sources: pairing, syncing, letting go, and what this Mac may do with each row (contract 2.6).
+    func external(_ action: String, id: String? = nil, mode: String? = nil, enrollment: String? = nil, confirm: Bool? = nil,
+                  switchBack: Bool? = nil) async {
+        await accountOperation("accounts.external", params: LoginParams(
+            id: id, confirm: confirm, external_action: action, enrollment: enrollment, mode: mode, switch_back: switchBack))
     }
 
     // The authentication centre: pairing, and moving an account's renewal to it or back (id is the account's own).
@@ -337,7 +350,7 @@ final class ServiceController: ObservableObject {
             let result = try await Task.detached {
                 try IPCClient.accounts(method: "accounts.quota", params: LoginParams(id: id), socketPath: path)
             }.value
-            directory = result.directory
+            if let next = result.directory { directory = next }
             if let id { quotaErrors[id] = nil }
             else { directoryError = nil }
         } catch {

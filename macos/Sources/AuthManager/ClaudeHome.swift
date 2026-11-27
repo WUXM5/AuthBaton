@@ -164,8 +164,10 @@ struct ClaudeHomePage: View {
             if let directory = service.directory {
                 let use = ClaudeUse.resolve(useSetting, directory)
                 let entries = ClaudeEntry.all(directory, use: use)
-                if let detail = nav.claudeDetail, let entry = ClaudeEntry.find(detail, in: entries) {
-                    ClaudeAccountPage(entry: entry, entries: entries, use: use, directory: directory, open: { present($0, directory) },
+                // An external source's account has no page of its own: its source looks after it.
+                let own = entries.filter { $0.cli?.external == nil }
+                if let detail = nav.claudeDetail, let entry = ClaudeEntry.find(detail, in: own) {
+                    ClaudeAccountPage(entry: entry, entries: own, use: use, directory: directory, open: { present($0, directory) },
                                       switchTo: { perform($0, $1, directory: directory, use: use) })
                 } else {
                     overview(directory, use: use, entries: entries)
@@ -282,20 +284,23 @@ struct ClaudeHomePage: View {
         service.accountBusy || status.busy || !status.installed
     }
 
-    private func subtitle(_ use: ClaudeUse, entries: [ClaudeEntry], code: ClaudeEntry?, desk: ClaudeEntry?, codeRelayOn: Bool) -> String {
+    private func subtitle(_ use: ClaudeUse, entries all: [ClaudeEntry], code: ClaudeEntry?, desk: ClaudeEntry?, codeRelayOn: Bool) -> String {
+        // External sources' accounts are not counted (they have a group of their own); one in use says so.
+        let entries = all.filter { $0.cli?.external == nil }
+        let codeName = code.map { $0.name + ($0.cli?.external != nil ? "（外部）" : "") }
         switch use {
-        case .code: return "\(entries.count) 个账号 · " + (code.map { "在用 \($0.name)" } ?? "还没有在用的账号")
+        case .code: return "\(entries.count) 个账号 · " + (codeName.map { "在用 \($0)" } ?? "还没有在用的账号")
         case .desktop:
-            if codeRelayOn, let code {
-                if let desk, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(code.name)" }
-                return "\(entries.count) 个账号 · Code 在用 \(code.name) · Chat 在用 \(desk?.name ?? "—")"
+            if codeRelayOn, let code, let codeName {
+                if let desk, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(codeName)" }
+                return "\(entries.count) 个账号 · Code 在用 \(codeName) · Chat 在用 \(desk?.name ?? "—")"
             }
             let count = entries.filter { $0.desk != nil }.count
             return "\(count) 个桌面账号 · " + (desk.map { "在用 \($0.desk?.number.map { "#\($0) " } ?? "")\($0.name)" } ?? "桌面还没认出在用的账号")
         case .both:
-            if let code, let desk, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(code.name)" }
+            if let code, let desk, let codeName, code.id == desk.id { return "\(entries.count) 个账号 · 在用 \(codeName)" }
             // With 无感换号 on the desktop's login is only Chat / Cowork's (11-26); without it, its Code tab's too.
-            return "\(entries.count) 个账号 · Code 在用 \(code?.name ?? "—") · " + (codeRelayOn ? "Chat 在用" : "桌面在用") + " \(desk?.name ?? "—")"
+            return "\(entries.count) 个账号 · Code 在用 \(codeName ?? "—") · " + (codeRelayOn ? "Chat 在用" : "桌面在用") + " \(desk?.name ?? "—")"
         }
     }
 
@@ -340,8 +345,9 @@ struct ClaudeHomePage: View {
         if !sides.code {
             // Only Claude 桌面: it never switches by itself, so its numbered list stands in for the relay.
             ClaudeDeskRotation(entries: entries, use: use, directory: directory, present: present, switchTo: switchTo)
-            // Outside the numbered list: sitting out of 下一个, or never signed in to Claude 桌面 (去桌面登录).
-            let out = entries.filter { $0.desk == nil || ($0.desk?.participates != true && !$0.inDesk) }
+            // Outside the numbered list: sitting out of 下一个, or never signed in to Claude 桌面 (去桌面登录). An external
+            // source's accounts are only Code's.
+            let out = entries.filter { $0.cli?.external == nil && ($0.desk == nil || ($0.desk?.participates != true && !$0.inDesk)) }
             if !out.isEmpty {
                 ClaudeDrawer(title: "不参与「下一个」", entries: out, use: use, directory: directory, present: present, switchTo: switchTo) { entry in
                     guard let desk = entry.desk, desk.known else { return nil }
@@ -352,9 +358,10 @@ struct ClaudeHomePage: View {
             ClaudeSecondAccount { sheet = .account(.login(provider: "claude", accountID: nil)) }
         } else {
             ClaudeRelayDeck(entries: entries, use: use, directory: directory, present: present, switchTo: switchTo)
-            // Outside the relay: by choice, or with no Code login yet (only signed in to Claude 桌面).
+            // Outside the relay: by choice, or with no Code login yet (only signed in to Claude 桌面). An external
+            // source's accounts outside it are in their own group below.
             let out = entries.filter { entry in
-                if let cli = entry.cli { return !entry.inUse && directory.rule(for: cli.id)?.participate != true }
+                if let cli = entry.cli { return cli.external == nil && !entry.inUse && directory.rule(for: cli.id)?.participate != true }
                 return sides.desk && !entry.inDesk
             }
             if !out.isEmpty {
@@ -364,6 +371,12 @@ struct ClaudeHomePage: View {
                     return ("加入接力", { Task { await RelayRules.save(config, service) } })
                 }
             }
+        }
+        if sides.code {
+            // Switching an external row moves Claude Code only, as 只换 Code does: nothing to confirm beyond the click.
+            ExternalGroups(provider: "claude", directory: directory, switchTitle: "换到 Code", switchTo: { account in
+                Task { await service.accountOperation("accounts.activate", params: LoginParams(id: account.id, confirm: true)) }
+            }, open: { sheet = .account($0) })
         }
     }
 
@@ -767,24 +780,19 @@ struct ClaudeEntryCard: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
-                    Button { nav.claudeDetail = entry.id } label: {
-                        HStack(spacing: 10) {
-                            ClaudeSeal(entry: entry, size: 31, rule: rule)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 6) {
-                                    Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                                    if let cli = entry.cli { CloudBadge(account: cli) }
-                                    InUsePill(entry: entry, use: use, codeRelayOn: codeRelayOn)
-                                    if let cli = entry.cli { LowPill(account: cli, notch: directory.notch(for: cli)) }
-                                }
-                                Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
+                    if let cli = entry.cli, cli.external != nil {
+                        // An external source's account has no detail page here: its source looks after it. Its tag opens
+                        // what this Mac may do with it.
+                        identity(rule: rule, codeRelayOn: codeRelayOn) {
+                            ExternalModeButton(account: cli, directory: directory, asTag: true, large: true)
                         }
-                        .contentShape(Rectangle())
+                    } else {
+                        Button { nav.claudeDetail = entry.id } label: {
+                            identity(rule: rule, codeRelayOn: codeRelayOn) { EmptyView() }.contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(entry.name) · 点开看账号详情")
                     }
-                    .buttonStyle(.plain)
-                    .help("\(entry.name) · 点开看账号详情")
                     if let collapse {
                         Button(action: collapse) {
                             Icon(.chevronDown, size: 11, color: Palette.ink3, weight: 2).rotationEffect(.degrees(180))
@@ -810,7 +818,7 @@ struct ClaudeEntryCard: View {
                             .background(Palette.chip, in: Capsule())
                             .help("开着 5 小时窗口预热")
                         }
-                        if use.desk && entry.desk == nil {
+                        if use.desk && entry.desk == nil && cli.external == nil {
                             if directory.claudeDesktop?.codeRelay?.state == "active" {
                                 Text("Code 无感可用").font(.system(size: 11)).foregroundStyle(Palette.deep).lineLimit(1)
                                     .help(entry.inCode ? "已开启 Code 无感换号：桌面 Code 对话已经在用这个账号，无需在桌面重复登录"
@@ -846,12 +854,29 @@ struct ClaudeEntryCard: View {
         }
     }
 
+    private func identity<Tag: View>(rule: CodexStrategyConfig.Rule?, codeRelayOn: Bool, @ViewBuilder tag: () -> Tag) -> some View {
+        HStack(spacing: 10) {
+            ClaudeSeal(entry: entry, size: 31, rule: rule)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(accountName: entry.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    if let cli = entry.cli { CloudBadge(account: cli) }
+                    InUsePill(entry: entry, use: use, codeRelayOn: codeRelayOn)
+                    tag()
+                    if let cli = entry.cli { LowPill(account: cli, notch: directory.notch(for: cli)) }
+                }
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
     // The desktop's number, the relay rank, a reset card or a way to switch; without any of them no empty row.
     private func hasFooter(_ rule: CodexStrategyConfig.Rule?, codeRelayOn: Bool) -> Bool {
         let plan = ClaudeSwitchPlan(entry, use: use, directory: directory, service: service)
         let showCode = use.code || codeRelayOn
         return (use.desk && entry.desk != nil) || (showCode && rule != nil && entry.cli.flatMap(directory.rank(of:)) != nil)
-            || entry.cli?.nextReset != nil || plan.any || (use == .desktop && !codeRelayOn && entry.desk == nil)
+            || entry.cli?.nextReset != nil || plan.any || (use == .desktop && !codeRelayOn && entry.desk == nil) || entry.cli?.external != nil
     }
 
     private func footer(_ rule: CodexStrategyConfig.Rule?, showCode: Bool) -> some View {
@@ -869,6 +894,9 @@ struct ClaudeEntryCard: View {
                     }
                 }
                 Spacer(minLength: 7)
+                if let external = entry.cli?.external {
+                    ExternalWebLink(title: "去来源网页", address: external.manageUrl ?? entry.cli.flatMap(directory.source(of:))?.manageUrl)
+                }
                 if let cli = entry.cli { AccountActions(account: cli, directory: directory, open: { open(.account($0)) }, showSwitch: false, prominent: cli.weekSpent != nil) }
                 ClaudeSwitchControl(entry: entry, use: use, directory: directory, switchTo: switchTo,
                                     login: { open(.desktop(.add)) })
@@ -899,7 +927,8 @@ struct ClaudeSeal: View {
     var rule: CodexStrategyConfig.Rule? = nil
 
     var body: some View {
-        Seal(entry.name, style: entry.cli == nil ? .out : entry.inUse ? .inUse : rule?.participate == false ? .out : .standby, size: size)
+        Seal(entry.name, style: entry.cli == nil ? .out : entry.cli?.external != nil ? .external : entry.inUse ? .inUse
+                : rule?.participate == false ? .out : .standby, size: size)
     }
 }
 
@@ -1256,9 +1285,17 @@ struct ClaudeEntryMenu: View {
     let open: (ClaudeSheet) -> Void
 
     var body: some View {
+        if let cli = entry.cli, cli.external != nil {
+            ExternalAccountMenu(account: cli, directory: directory, open: { open(.account($0)) })
+        } else {
+            menu
+        }
+    }
+
+    private var menu: some View {
         let status = directory.claudeDesktop
         let count = status?.known.count ?? 0
-        Menu {
+        return Menu {
             Button("账号详情") { nav.claudeDetail = entry.id }
             if let cli = entry.cli {
                 let querying = service.quotaRequests.contains(cli.id) || cli.usage?.refreshing == true

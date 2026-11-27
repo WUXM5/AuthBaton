@@ -26,6 +26,7 @@ impl Accounts {
     /// renews, or one moving between the cloud and this Mac, stops here.
     pub(super) fn local_index(&self, id: &str) -> Result<usize> {
         let index = self.index(id)?;
+        self.external_local_guard(id)?;
         match self.cloud.config.bindings.get(id) {
             None => Ok(index),
             Some(b) if b.cloud() => Err(CLOUD_RENEWS),
@@ -53,6 +54,9 @@ impl Accounts {
     /// Whether a switch to this row can go ahead: a cloud row needs its leased access, any other
     /// a saved login in good standing.
     pub(super) fn switch_ready(&self, account: &Account) -> Result<()> {
+        if let Some(leased) = self.external_bundle(&account.id) {
+            return self.external_switchable(&account.id).and(leased.map(drop));
+        }
         match self.cloud_lease_id(&account.id) {
             Some(cloud_id) => self.cloud.lease_bundle(cloud_id).map(drop),
             None => switch_target_ready(account),
@@ -60,6 +64,9 @@ impl Accounts {
     }
     /// Quota for a cloud row waits for its leased access instead of failing without it.
     pub(super) fn quota_access_ready(&self, account: &Account) -> bool {
+        if let Some(ready) = self.external_quota_ready(&account.id) {
+            return ready;
+        }
         self.cloud_lease_id(&account.id)
             .is_none_or(|cloud_id| self.cloud.lease(cloud_id).is_some())
     }
@@ -219,6 +226,9 @@ impl Accounts {
                 let i = self.index(&id)?;
                 if self.cloud_binding(&id).is_some() {
                     return Err("这个账号已由云端续期");
+                }
+                if self.is_external(&id) {
+                    return Err("外部账号由来源续期，不能转到云端");
                 }
                 let a = self.db.accounts[i].clone();
                 if a.native && (self.client_running)(&a.provider) {
@@ -430,6 +440,7 @@ impl Accounts {
         Ok(())
     }
     pub(super) fn no_local_check(&self, id: &str) -> Result<()> {
+        self.external_local_guard(id)?;
         if self.cloud.config.bindings.contains_key(id) {
             return Err(if self.cloud_binding(id).is_some() {
                 NO_LOCAL_CHECK
@@ -456,10 +467,29 @@ impl Accounts {
         {
             return Err("云端 Access 即将到期，请稍后再试");
         }
-        if row.provider != "claude" && (self.client_running)(&row.provider) {
+        self.activate_leased(id, &row.provider, |m, native| {
+            if let Some(b) = m.cloud.config.bindings.get_mut(id) {
+                b.used = true;
+            }
+            m.cloud.activate(&m.platform, native, &cloud_id, &target)?;
+            m.release_external_selection(&target.provider);
+            Ok(())
+        })
+    }
+    /// Puts a row whose login here is leased access to use: `publish` writes it into the native
+    /// store. A local login it replaces is kept first, as a local switch keeps it; an access-only
+    /// login it replaces is not kept anywhere.
+    pub(super) fn activate_leased(
+        &mut self,
+        id: &str,
+        provider: &str,
+        publish: impl FnOnce(&mut Self, &NativeStore) -> Result<()>,
+    ) -> Result<()> {
+        let label = self.db.accounts[self.index(id)?].label.clone();
+        if provider != "claude" && (self.client_running)(provider) {
             return Err("官方客户端仍在运行，请退出后再切换");
         }
-        if row.provider == "claude" {
+        if provider == "claude" {
             for current in self
                 .db
                 .accounts
@@ -475,10 +505,14 @@ impl Accounts {
                 }
             }
         }
-        if row.provider == "codex" {
+        // A renewal of the access in use still writing would land over this switch.
+        if self.native_sync_running(provider) {
+            return Err("正在写入在用账号的登录，请几秒后再试");
+        }
+        if provider == "codex" {
             private_dir(&self.sources.codex_home)?;
         }
-        let native = self.native(&row.provider)?;
+        let native = self.native(provider)?;
         if let Some(old) = native
             .login_or_projection(&self.platform)?
             .filter(|b| b.metadata().is_ok())
@@ -502,33 +536,30 @@ impl Accounts {
             self.adopt_native(placed, "")?;
             self.save()?;
         }
-        if let Some(b) = self.cloud.config.bindings.get_mut(id) {
-            b.used = true;
-        }
-        self.cloud
-            .activate(&self.platform, &native, &cloud_id, &target)?;
+        publish(self, &native)?;
         for a in &mut self.db.accounts {
-            if a.provider == row.provider {
+            if a.provider == provider {
                 a.native = a.id == id;
             }
         }
         let index = self.index(id)?;
         self.db.accounts[index].last_local = Some(now());
-        if row.provider == "claude" {
+        if provider == "claude" {
             self.claude_mod.change = Some(crate::claude_mod::Change {
                 at: now(),
                 kind: "switch",
-                label: row.label.clone(),
+                label,
             });
         }
         let saved = self.save();
-        if row.provider == "claude" {
+        if provider == "claude" {
             self.sync_claude_desktop_relay(true);
         }
         saved
     }
-    /// A local login took the native store over from a cloud row.
+    /// A local login took the native store over from a cloud or external row.
     pub(super) fn release_cloud_use(&mut self, provider: &str) {
+        let external = self.release_external_selection(provider);
         if self.cloud.config.selected.remove(provider).is_some() {
             let _ = self
                 .platform
@@ -536,6 +567,10 @@ impl Accounts {
             if self.cloud.save().is_err() {
                 self.notice = Some("云端在用记录保存失败；下次同步会再核对".into());
             }
+        } else if external {
+            let _ = self
+                .platform
+                .delete_key(VAULT, &format!("cloud-native-{provider}"));
         }
     }
     /// pi's access for a cloud row: the leased access, never a refresh token.
@@ -833,6 +868,7 @@ impl Accounts {
                     && self.db.accounts.iter().any(|a| {
                         a.provider == b.provider
                             && !bindings.contains_key(&a.id)
+                            && !self.is_external(&a.id)
                             && a.metadata.as_ref().is_some_and(|m| m.owner == b.owner)
                     })
             })
@@ -892,6 +928,7 @@ impl Accounts {
                             self.db.accounts.iter().any(|a| {
                                 a.provider == provider
                                     && !self.cloud.config.bindings.contains_key(&a.id)
+                                    && !self.is_external(&a.id)
                                     && a.metadata.as_ref().is_some_and(|m| m.owner == *owner)
                             })
                         })

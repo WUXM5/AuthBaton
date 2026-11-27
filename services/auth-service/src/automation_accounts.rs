@@ -17,6 +17,7 @@ impl Accounts {
             if !matches!(account.provider.as_str(), "codex" | "claude") {
                 return Err("自动额度策略只支持 Codex 和 Claude 账号");
             }
+            self.external_rule_allowed(&rule.id)?;
         }
         self.db.automation.config = config;
         self.db.automation.last_message =
@@ -138,6 +139,11 @@ impl Accounts {
     pub(super) fn strategy_account_ready(&self, a: &Account) -> bool {
         if !matches!(a.provider.as_str(), "codex" | "claude") || a.pending_profile.is_some() {
             return false;
+        }
+        // An external row is ready while it may be switched to, its source connected and its
+        // account ready there; the access for a switch is leased when it happens.
+        if self.is_external(&a.id) {
+            return self.external_switchable(&a.id).is_ok();
         }
         match self.cloud.config.bindings.get(&a.id) {
             None => {
@@ -644,6 +650,9 @@ impl Accounts {
         self.save()
     }
     fn prepare_automation(&mut self, current: &Account, target_id: &str) -> Result<()> {
+        if self.is_external(target_id) {
+            self.external_use_gate(target_id)?;
+        }
         // Read and validate both credentials before even preparing a task interruption batch.
         let source = self.bundle(current)?;
         let target = self.bundle(&self.db.accounts[self.index(target_id)?])?;

@@ -54,6 +54,18 @@ impl Status {
             .find(|c| c.kind == kind)
             .filter(|c| live(c, time))
     }
+    /// The count and the expiry of each grant, as a credential center records them; none when the
+    /// grants are unknown.
+    pub fn report(&self) -> Option<Value> {
+        let grants = self.grants.as_ref()?;
+        let credits: Vec<Value> = grants
+            .items
+            .iter()
+            .filter(|g| g.remaining > 0 && !g.paused)
+            .map(|g| json!({"expires_at": g.ends_at.as_deref().and_then(crate::resets::parse_expiry)}))
+            .collect();
+        Some(json!({"available_count": grants.remaining?, "credits": credits}))
+    }
     /// A grant that is still the server's next or the first of its kind; anything else must not be claimed.
     pub fn spendable(&self, grant_id: &str, time: u64) -> Option<&Claim> {
         self.next

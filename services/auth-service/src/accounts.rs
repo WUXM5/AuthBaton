@@ -99,6 +99,7 @@ pub struct Accounts {
     pi_last_access: Option<(String, u64)>,
     cloud: crate::cloud::Runtime,
     cloud_native_next: u64,
+    external: crate::external::Runtime,
     reset_job: Option<(String, JoinHandle<crate::resets::Outcome>)>,
     automation: crate::automation::Runtime,
     claude_mod: crate::claude_mod::Runtime,
@@ -243,6 +244,7 @@ impl Accounts {
             pi_last_access: None,
             cloud: crate::cloud::Runtime::open(root)?,
             cloud_native_next: 0,
+            external: crate::external::Runtime::open(root)?,
             reset_job: None,
             automation: crate::automation::Runtime::default(),
             claude_mod: crate::claude_mod::Runtime::default(),
@@ -424,6 +426,9 @@ impl Accounts {
         if let Some(cloud_id) = self.cloud_lease_id(&account.id) {
             return self.cloud.lease_bundle(cloud_id);
         }
+        if let Some(leased) = self.external_bundle(&account.id) {
+            return leased;
+        }
         let native = account
             .native
             .then(|| self.native(&account.provider))
@@ -449,9 +454,12 @@ impl Accounts {
         lookup: Option<crate::maintenance::Transport>,
     ) -> Result<Bundle> {
         let owner = login.metadata()?.owner;
+        // An external row has no login here: a native login of that account is this Mac's own.
         let registered = |owner: &str| {
             self.db.accounts.iter().find(|a| {
-                a.provider == "claude" && a.metadata.as_ref().is_some_and(|m| m.owner == owner)
+                a.provider == "claude"
+                    && !self.is_external(&a.id)
+                    && a.metadata.as_ref().is_some_and(|m| m.owner == owner)
             })
         };
         if registered(&owner).is_none_or(|a| a.native) {
@@ -491,7 +499,19 @@ impl Accounts {
     pub fn snapshot(&self) -> Value {
         // Persisted identity keys never cross the UI boundary.
         let paused = self.quota_paused().is_some();
-        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"staged":a.pending_profile.is_some()&&a.state=="attention","check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a),"cloud":self.cloud_view(a)})).collect();
+        let accounts:Vec<Value>=self.db.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider,"label":a.label,"identity":a.metadata.as_ref().map(|m|&m.display),"plan":a.metadata.as_ref().map(|m|&m.plan),"expires_at":a.metadata.as_ref().and_then(|m|m.expires_at),"refresh_expires_at":a.metadata.as_ref().and_then(|m|m.refresh_expires_at),"native":a.native,"automatic":a.automatic,"renewal_mode":if a.provider=="claude" && a.native{Some("claude_coordinated")}else{None},"state":a.state,"message":a.message,"staged":a.pending_profile.is_some()&&a.state=="attention","check_status":if self.active_check.as_ref().is_some_and(|r|r.id==a.id){Some("running")}else if self.check_queue.iter().any(|r|r.id==a.id){Some("queued")}else{None},"check_online":self.active_check.as_ref().filter(|r|r.id==a.id).or_else(||self.check_queue.iter().find(|r|r.id==a.id)).map(|r|r.online),"last_local":a.last_local,"last_online":a.last_online,"last_refresh":a.last_refresh,"next_check":a.next_check,"quota":a.quota,"login_notice":crate::clients::login_notice(&a.provider,a.metadata.as_ref(),now()),"reset":self.db.reset_attempts.iter().rev().find(|attempt|attempt.account_id==a.id).map(|attempt|attempt.snapshot(a.provider=="codex")),"usage":Some(self.quota.snapshot(&a.id,now(),quota_eligible(a)&&!paused)),"warmup":self.warmup_view(a),"cloud":self.cloud_view(a),"external":self.external_view(a)})).collect();
+        // An external account read only through a setup-token has no quota to wait for.
+        let accounts: Vec<Value> = accounts
+            .into_iter()
+            .map(|mut a| {
+                if a["external"]["quota_readable"] == false {
+                    a["usage"]["state"] = json!("unavailable");
+                    a["usage"]["message"] = a["external"]["reason"].clone();
+                    a["usage"]["refreshing"] = json!(false);
+                }
+                a
+            })
+            .collect();
         let mut desktop_snapshot = self.claude_desktop.snapshot(|uuid| {
             let prefix = format!("claude:{uuid}:");
             self.db
@@ -499,6 +519,7 @@ impl Accounts {
                 .iter()
                 .find(|a| {
                     a.provider == "claude"
+                        && !self.is_external(&a.id)
                         && a.metadata
                             .as_ref()
                             .is_some_and(|m| m.owner.starts_with(&prefix))
@@ -518,7 +539,7 @@ impl Accounts {
                     .snapshot(self.claude_desktop.chrome_sync_enabled(), desktop_id.as_ref()),
             );
         }
-        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot})
+        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot,"external":self.external_snapshot()})
     }
     pub fn claude_desktop(&mut self, command: crate::claude_desktop::Command<'_>) -> Result<()> {
         match command.action {
@@ -655,12 +676,14 @@ impl Accounts {
             .is_ok_and(|current| current == path)
             && self.native("codex")?.mode == "file";
         let cloud = &self.cloud.config.bindings;
+        let external = &self.external.config.rows;
         if !native
             && let Some(account) = self.db.accounts.iter_mut().find(|a| {
                 a.metadata
                     .as_ref()
                     .is_some_and(|m| m.owner == metadata.owner)
                     && !cloud.get(&a.id).is_some_and(|b| b.cloud())
+                    && !external.contains_key(&a.id)
             })
         {
             // A backup file must not replace a previously managed credential generation.
@@ -681,12 +704,14 @@ impl Accounts {
         automatic: Option<bool>,
     ) -> Result<()> {
         let metadata = bundle.metadata()?;
-        // A cloud row has no login of its own here: a full login of that account is another one.
+        // A cloud or external row has no login of its own here: a full login of that account is
+        // another one.
         let found = self.db.accounts.iter().position(|a| {
             a.metadata
                 .as_ref()
                 .is_some_and(|m| m.owner == metadata.owner)
                 && self.cloud_binding(&a.id).is_none()
+                && !self.is_external(&a.id)
         });
         let mut account = if let Some(index) = found {
             self.db.accounts[index].clone()
@@ -755,6 +780,9 @@ impl Accounts {
             return Err("不支持的账号类型");
         }
         if let Some(id) = existing {
+            if self.is_external(id) {
+                return Err(external_accounts::SOURCE_ONLY);
+            }
             // 重新登录 of a cloud row is 更新云端登录: the new login replaces the cloud's.
             if let Some(cloud_id) = self.cloud_lease_id(id) {
                 let cloud_id = cloud_id.to_string();
@@ -1081,6 +1109,9 @@ impl Accounts {
     ) -> Result<()> {
         self.ensure_idle()?;
         let index = self.index(id)?;
+        if self.is_external(id) {
+            return Err(external_accounts::SOURCE_ONLY);
+        }
         self.transfer_guard(id, false)?;
         let cloud_id = self.cloud_lease_id(id).map(str::to_string);
         if automatic.is_some() && cloud_id.is_some() {
@@ -1111,6 +1142,9 @@ impl Accounts {
     pub fn remove(&mut self, id: &str, confirmed: bool) -> Result<()> {
         if !confirmed {
             return Err("请先确认从 AuthBaton 移除账号及其保存的凭据");
+        }
+        if self.is_external(id) {
+            return Err(external_accounts::SOURCE_ONLY);
         }
         // A cloud row goes from the cloud first; this Mac drops it after.
         if self.cloud.config.bindings.contains_key(id) {
@@ -1249,6 +1283,17 @@ impl Accounts {
         }
         let index = self.index(id)?;
         self.transfer_guard(id, true)?;
+        // A switch asked for later replaces one still waiting for an external row's access.
+        if self.external.follow.as_ref().is_some_and(|f| f.row != id) {
+            self.external.follow = None;
+        }
+        // An external row goes in with access leased for this use; asked for first when missing.
+        if self.is_external(id)
+            && !self.db.accounts[index].native
+            && self.external_switch_later(id)?
+        {
+            return Ok(());
+        }
         if self.db.accounts[index].provider == "codex" && self.db.desktop.enabled {
             return self.request_desktop_switch(id);
         }
@@ -1264,6 +1309,9 @@ impl Accounts {
         }
         if self.cloud_binding(id).is_some() {
             return self.activate_cloud(id);
+        }
+        if self.is_external(id) {
+            return self.activate_external(id);
         }
         switch_target_ready(&target)?;
         if target.provider != "claude" && (self.client_running)(&target.provider) {
@@ -1456,9 +1504,14 @@ impl Accounts {
         if operation.provider != "claude" && (self.client_running)(&operation.provider) {
             return Err("请先退出相关官方客户端再恢复切换");
         }
-        // A switch away from a cloud row that stopped before its write: the store still holds the
-        // cloud account's access-only login, which stays in use.
-        if self.cloud.config.selected.contains_key(&operation.provider)
+        // A switch away from a cloud or external row that stopped before its write: the store still
+        // holds that account's access-only login, which stays in use.
+        if (self.cloud.config.selected.contains_key(&operation.provider)
+            || self
+                .external
+                .config
+                .selected
+                .contains_key(&operation.provider))
             && let Some(projection) = self
                 .platform
                 .vault_read_optional(&format!("cloud-native-{}", operation.provider))?
@@ -1555,7 +1608,7 @@ impl Accounts {
             .db
             .accounts
             .iter()
-            .filter(|account| account.provider == "claude")
+            .filter(|account| account.provider == "claude" && !self.is_external(&account.id))
             .filter_map(|account| account.metadata.as_ref().map(|meta| meta.owner.clone()))
             .collect();
         self.claude_desktop.tick_quota(|uuid| {
@@ -1566,6 +1619,7 @@ impl Accounts {
         self.tick_chrome_sync();
         self.network.tick();
         self.cloud_tick();
+        self.external_tick();
         if self
             .reset_job
             .as_ref()
@@ -1604,7 +1658,11 @@ impl Accounts {
             .db
             .accounts
             .iter()
-            .filter(|a| due(a, now()) && !self.cloud.config.bindings.contains_key(&a.id))
+            .filter(|a| {
+                due(a, now())
+                    && !self.cloud.config.bindings.contains_key(&a.id)
+                    && !self.is_external(&a.id)
+            })
             .min_by_key(|a| a.next_check)
             .map(|a| a.id.clone());
         let Some(id) = id else {
@@ -1760,6 +1818,7 @@ impl Accounts {
     pub fn stop(&mut self) {
         self.automation_shutdown();
         self.cloud.finish();
+        self.external.finish();
         self.check_queue.clear();
         if let Some(job) = &self.job {
             job.cancel.store(true, Ordering::Release);
@@ -1904,11 +1963,18 @@ impl Accounts {
             return;
         }
 
+        // External rows stay out of Claude 桌面: their access is lent to this Mac's clients only.
+        let external = &self.external.config.rows;
         let active_candidate = self
             .db
             .accounts
             .iter()
-            .find(|a| a.provider == "claude" && a.native && switch_target_ready(a).is_ok())
+            .find(|a| {
+                a.provider == "claude"
+                    && a.native
+                    && !external.contains_key(&a.id)
+                    && switch_target_ready(a).is_ok()
+            })
             .or_else(|| {
                 // Pure-Desktop users who added Code accounts without a pre-existing CLI default
                 // login have no `native` account until their first switch; pick a ready same-Team
@@ -1917,6 +1983,7 @@ impl Accounts {
                 let desk_org = desktop_org.as_deref()?;
                 let same_team = |a: &&Account| {
                     a.provider == "claude"
+                        && !external.contains_key(&a.id)
                         && switch_target_ready(a).is_ok()
                         && a.metadata
                             .as_ref()
@@ -2006,7 +2073,10 @@ impl Accounts {
                 let Some(acct) = self.db.accounts.iter().find(|a| a.id == id) else {
                     continue;
                 };
-                if acct.provider != "claude" || switch_target_ready(acct).is_err() {
+                if acct.provider != "claude"
+                    || self.is_external(&acct.id)
+                    || switch_target_ready(acct).is_err()
+                {
                     continue;
                 }
                 let Some(owner) = acct.metadata.as_ref().map(|m| m.owner.as_str()) else {
@@ -2100,6 +2170,9 @@ impl Accounts {
             "codex" | "claude"
         ) {
             return Err("此账号尚不支持独立额度查询");
+        }
+        if let Some(reason) = self.external_unreadable(id) {
+            return Err(reason);
         }
         // The scheduler never picks these, so a request would stay queued forever.
         if !quota_eligible(&self.db.accounts[index]) {
@@ -2201,6 +2274,8 @@ mod automation_accounts;
 mod cloud_accounts;
 #[path = "desktop_accounts.rs"]
 mod desktop_accounts;
+#[path = "external_accounts.rs"]
+mod external_accounts;
 #[path = "pi_accounts.rs"]
 mod pi_accounts;
 #[path = "reset_accounts.rs"]

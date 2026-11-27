@@ -3,6 +3,7 @@ use crate::warmup::{Plan, Step};
 
 /// The hour the app offers first; a plan made to show a warm-up by hand starts off with it.
 const DEFAULT_HOUR: u8 = 6;
+const EXTERNAL_NO_WARMUP: &str = "外部账号不预热";
 
 impl Accounts {
     pub fn configure_warmup(&mut self, id: &str, enabled: bool, hour: Option<u8>) -> Result<()> {
@@ -11,6 +12,9 @@ impl Accounts {
         }
         let index = self.index(id)?;
         self.transfer_guard(id, false)?;
+        if self.is_external(id) {
+            return Err(EXTERNAL_NO_WARMUP);
+        }
         let account = &mut self.db.accounts[index];
         if account.provider != "claude" {
             return Err("只有 Claude 账号有 5 小时窗口");
@@ -46,6 +50,9 @@ impl Accounts {
         }
         let index = self.index(id)?;
         self.transfer_guard(id, false)?;
+        if self.is_external(id) {
+            return Err(EXTERNAL_NO_WARMUP);
+        }
         let account = &mut self.db.accounts[index];
         if account.provider != "claude" {
             return Err("只有 Claude 账号有 5 小时窗口");

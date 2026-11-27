@@ -16,7 +16,7 @@ swiftc -sdk "$SDK" -parse-as-library ${OPT[@]+"${OPT[@]}"} \
   "$SRC/Models.swift" "$SRC/Theme.swift" "$SRC/LoopKit.swift" "$SRC/Presentation.swift" "$SRC/DashboardView.swift" \
   "$SRC/AccountsView.swift" "$SRC/AccountParts.swift" "$SRC/CodexPage.swift" "$SRC/Onboarding.swift" "$SRC/ClaudeHome.swift" "$SRC/ClaudeInUse.swift" "$SRC/ClaudePage.swift" "$SRC/ConfirmSheets.swift" \
   "$SRC/RelayQueue.swift" "$SRC/CodexQueue.swift" "$SRC/ClaudeDeskBar.swift" "$SRC/DesktopConnectionView.swift" "$SRC/ClaudeDesktopModels.swift" "$SRC/ClaudeDesktopPage.swift" "$SRC/ChromeSyncView.swift" "$SRC/NetworkModels.swift" "$SRC/NetworkPage.swift" \
-  "$SRC/MenuBarPanel.swift" "$SRC/MenuBarStatus.swift" "$SRC/LoginView.swift" "$SRC/CloudView.swift" "$SRC/CloudParts.swift" "$SRC/ResetHistoryView.swift" \
+  "$SRC/MenuBarPanel.swift" "$SRC/MenuBarStatus.swift" "$SRC/LoginView.swift" "$SRC/CloudView.swift" "$SRC/CloudParts.swift" "$SRC/ExternalParts.swift" "$SRC/ResetHistoryView.swift" \
   "$ROOT/scripts/accounts-preview/Preview.swift" -o "$BIN"
 case "${1:-}" in
   interact|dump|live|imagerender|wingrender|classes|perf|same) "$BIN" "$@" ;;

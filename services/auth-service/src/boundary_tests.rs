@@ -13,6 +13,8 @@ mod claude_guard_tests;
 mod cloud_boundary_tests;
 #[path = "desktop_boundary_tests.rs"]
 mod desktop_boundary_tests;
+#[path = "external_boundary_tests.rs"]
+mod external_boundary_tests;
 #[path = "interrupted_boundary_tests.rs"]
 mod interrupted_boundary_tests;
 #[path = "pi_boundary_tests.rs"]

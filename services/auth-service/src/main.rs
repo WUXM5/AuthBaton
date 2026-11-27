@@ -13,6 +13,7 @@ mod codex_api;
 mod credentials;
 mod desktop;
 mod desktop_quota;
+mod external;
 mod login;
 mod maintenance;
 mod network;
@@ -68,9 +69,12 @@ struct AccountParams {
     reset_kind: Option<String>,
     reset_id: Option<String>,
     cloud_action: Option<String>,
-    // Sent by views from before each account had its own renewer; ignored.
-    #[serde(rename = "mode")]
-    _mode: Option<String>,
+    external_action: Option<String>,
+    enrollment: Option<String>,
+    switch_back: Option<bool>,
+    // An external row's mode (accounts.external). Views from before each account had its own
+    // renewer still send it with accounts.cloud, where it is ignored.
+    mode: Option<String>,
     endpoint: Option<String>,
     cloud_account_id: Option<String>,
     strategy: Option<automation::Config>,
@@ -244,6 +248,7 @@ fn response(
                 } else {
                     serde_json::from_value(request.params).map_err(|_| "账号操作参数无效")?
                 };
+                let mut answer: Option<Value> = None;
                 match method {
                     // `mode` is still accepted from older views and ignored: each account has its
                     // own renewer now.
@@ -254,6 +259,17 @@ fn response(
                         params.id.as_deref(),
                         params.confirm == Some(true),
                     )?,
+                    // A disconnect while an external row is in use answers `needs_switch` too.
+                    "accounts.external" => {
+                        answer = manager.external_command(
+                            params.external_action.as_deref().ok_or("缺少外部来源操作")?,
+                            params.enrollment.as_deref(),
+                            params.id.as_deref(),
+                            params.mode.as_deref(),
+                            params.confirm == Some(true),
+                            params.switch_back == Some(true),
+                        )?
+                    }
                     "accounts.list" => {}
                     "accounts.reset_history" => {
                         return manager.reset_history(
@@ -373,7 +389,12 @@ fn response(
                 let cloud = manager.cloud_snapshot();
                 directory["busy"] = json!(directory["busy"] == true || cloud["busy"] == true);
                 directory["cloud"] = cloud;
-                json!({"directory":directory,"attempt":login.state})
+                let mut result = json!({"directory":directory,"attempt":login.state});
+                if let (Some(result), Some(Value::Object(answer))) = (result.as_object_mut(), answer)
+                {
+                    result.extend(answer);
+                }
+                result
             }
             "login.cancel" => {
                 let params: AttemptParams =
@@ -616,6 +637,24 @@ mod tests {
             assert_eq!(result["error"]["code"], "invalid_request");
             assert!(!result.to_string().contains("synthetic-secret"));
         }
+    }
+
+    #[test]
+    fn external_source_commands_take_their_parameters_and_nothing_else() {
+        let params: AccountParams = serde_json::from_value(json!({
+            "external_action": "disconnect", "confirm": true, "switch_back": true,
+            "id": "row", "mode": "switch", "enrollment": "e30"
+        }))
+        .unwrap();
+        assert_eq!(params.external_action.as_deref(), Some("disconnect"));
+        assert_eq!(params.mode.as_deref(), Some("switch"));
+        assert_eq!(params.switch_back, Some(true));
+        assert!(
+            serde_json::from_value::<AccountParams>(
+                json!({"external_action": "connect", "device_key": "synthetic-secret"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -75,6 +75,11 @@ struct LoginParams: Encodable, Sendable {
     var phone: String? = nil
     var ssid: String? = nil
     var password: String? = nil
+    // accounts.external: connect, sync, disconnect, set_mode, set_default; the pairing string once, a row's mode.
+    var external_action: String? = nil
+    var enrollment: String? = nil
+    var mode: String? = nil
+    var switch_back: Bool? = nil
 }
 
 struct LoginResult: Decodable, Sendable { let attempt: LoginAttempt? }
@@ -158,6 +163,49 @@ struct AccountDirectory: Decodable, Equatable, Sendable {
     var network: NetworkStatus? = nil
     // Who each client's default sign-in belongs to, as the service last read it (「导入」 names the account after it).
     var clients: [ClientSource]? = nil
+    // External account sources (a credential centre this Mac is paired with as an account viewer); empty when none.
+    var external: ExternalStatus? = nil
+}
+
+// The service's word on external sources (contract 2.7). Every field may be missing from an older service.
+struct ExternalStatus: Decodable, Equatable, Sendable {
+    var sources: [ExternalSource]? = nil
+}
+struct ExternalSource: Decodable, Equatable, Identifiable, Sendable {
+    let id: String
+    var label: String? = nil
+    var siteUrl: String? = nil
+    var manageUrl: String? = nil
+    var deviceLabel: String? = nil
+    // "connected" or "error".
+    var state: String? = nil
+    var error: String? = nil
+    var readAt: Double? = nil
+    var counts: [String: Int]? = nil
+    var defaultMode: String? = nil
+    // This Mac's own accounts the source also lists: shown once, as this Mac's.
+    var merged: [Merged]? = nil
+    // "connecting" or "syncing" while the service talks to the source.
+    var job: String? = nil
+    struct Merged: Decodable, Equatable, Sendable {
+        let provider: String
+        var email: String? = nil
+    }
+}
+// What an account row the source keeps carries; nil on this Mac's own accounts.
+struct AccountExternal: Decodable, Equatable, Sendable {
+    var source: String? = nil
+    var sourceLabel: String? = nil
+    var accountRef: String? = nil
+    // "view", "reset" or "switch": what this Mac may do with it.
+    var mode: String? = nil
+    var quotaReadable: Bool? = nil
+    // "ready", "needs_reauthorization", "disabled" or "gone".
+    var status: String? = nil
+    var sourceState: String? = nil
+    var manageUrl: String? = nil
+    // The service's fixed sentence when the row can not be read or used.
+    var reason: String? = nil
 }
 
 struct ClientSource: Decodable, Equatable, Sendable {
@@ -355,6 +403,8 @@ struct ManagedAccount: Decodable, Equatable, Identifiable, Sendable {
     let warmup: ClaudeWarmup?
     // Renewed by the authentication centre, or on its way there or back; nil for a plain local account.
     var cloud: AccountCloud? = nil
+    // Listed by an external source and only used here with the access it lends; nil for this Mac's own accounts.
+    var external: AccountExternal? = nil
     var checkLabel: String? {
         guard let checkStatus else { return nil }
         let kind = checkOnline == true ? "认证检查" : "本地检查"
@@ -562,6 +612,9 @@ struct ResetHistoryEntry: Decodable, Identifiable, Sendable {
     }
 }
 struct AccountResult: Decodable, Sendable {
-    let directory: AccountDirectory
+    // Absent when the service answers with a question instead, as a disconnect does while an external row is in use.
+    let directory: AccountDirectory?
     let attempt: LoginAttempt?
+    // accounts.external disconnect: the external row in use that has to be switched away from first.
+    var needsSwitch: String? = nil
 }

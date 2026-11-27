@@ -231,7 +231,8 @@ private struct AccountSwitcher: View {
     let open: (AccountSheet) -> Void
 
     var body: some View {
-        let others = directory.relay(provider).filter { !$0.native }
+        // An external source's account is offered only where its mode lets it be switched to here.
+        let others = directory.relay(provider).filter { !$0.native && $0.external?.allowsSwitch != false }
         Menu {
             ForEach(others) { account in
                 let action = directory.primaryAction(for: account)
@@ -269,8 +270,10 @@ private struct Bench: View {
     let open: (AccountSheet) -> Void
 
     var body: some View {
-        let groups = ["codex", "claude"].map { provider in (provider, directory.relay(provider).filter { !$0.native }) }.filter { !$0.1.isEmpty }
-        let singles = ["codex", "claude"].filter { provider in directory.accounts.filter { $0.provider == provider }.count == 1 }
+        // The bench is who can take over: an external source's account only where its mode lets it be switched to here.
+        let groups = ["codex", "claude"].map { provider in (provider, directory.relay(provider).filter { !$0.native && $0.external?.allowsSwitch != false }) }
+            .filter { !$0.1.isEmpty }
+        let singles = ["codex", "claude"].filter { provider in directory.own(provider).count == 1 }
         if !groups.isEmpty || !singles.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -322,7 +325,7 @@ private struct BenchRow: View {
         HStack(spacing: 12) {
             Text(directory.rank(of: account).map(String.init) ?? "").font(.system(size: 11)).foregroundStyle(Palette.ink3).monospacedDigit()
                 .frame(width: 12, alignment: .leading)
-            Seal(account.displayName, style: rule?.participate == false ? .out : .standby, size: 26)
+            Seal(account.displayName, style: account.external != nil ? .external : rule?.participate == false ? .out : .standby, size: 26)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     Text(accountName: account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)

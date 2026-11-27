@@ -147,6 +147,8 @@ enum Glyph: Sendable {
     case wifi, hotspot, key, phone, terminal, close
     // Claude 桌面's own two: a chat bubble for chat / work and </> for its Code tab; a tray for what sits out.
     case chat, code, tray, globe
+    // An external source: two links of a chain.
+    case link
 
     fileprivate var data: [String] {
         switch self {
@@ -187,6 +189,7 @@ enum Glyph: Sendable {
         case .code: ["M7 6.5 3.5 10 7 13.5", "M13 6.5l3.5 3.5-3.5 3.5", "M11.2 4.5 8.8 15.5"]
         case .tray: ["M3 9h14v5.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "M3 9l2-4.5h10L17 9", "M7.5 12h5"]
         case .globe: [circle(10, 10, 7.2), "M2.8 10h14.4", "M10 2.8a11 11 0 0 1 0 14.4", "M10 2.8a11 11 0 0 0 0 14.4"]
+        case .link: ["M8.1 11.9 11.9 8.1", "M6.6 13.4a3.25 3.25 0 0 1 0-4.6l1.5-1.5a3.25 3.25 0 0 1 4.6 0", "M13.4 6.6a3.25 3.25 0 0 1 0 4.6l-1.5 1.5a3.25 3.25 0 0 1-4.6 0"]
         }
     }
 
@@ -426,9 +429,10 @@ extension Text {
 // MARK: Seal
 
 // An account's monogram on a square turned 45°: solid while in use, soft on the bench,
-// a dashed outline when it does not take part in switching.
+// a dashed outline when it does not take part in switching. An external source's account is an outlined
+// hexagon instead, dashed when its quota cannot be read.
 struct Seal: View {
-    enum Style { case inUse, standby, out }
+    enum Style { case inUse, standby, out, external, externalDim }
     let letter: String
     var style: Style = .standby
     var size: CGFloat = 26
@@ -449,13 +453,36 @@ struct Seal: View {
             case .out:
                 shape.strokeBorder(Palette.dashStrong, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2.5]))
                     .frame(width: side, height: side).rotationEffect(.degrees(45))
+            case .external, .externalDim:
+                let dim = style == .externalDim
+                Hexagon().fill(dim ? Palette.card : Palette.chip)
+                    .overlay(Hexagon().stroke(dim ? Palette.dash : Palette.dashStrong.opacity(0.75),
+                                              style: StrokeStyle(lineWidth: 1.2, dash: dim ? [2.5, 2] : [])))
+                    .frame(width: size * 0.8, height: size * 0.9)
             }
             Text(letter)
                 .font(.system(size: min(14, max(7, size * 0.4)), weight: .bold, design: .rounded))
-                .foregroundStyle(style == .inUse ? Color.white : style == .out ? Palette.ink3 : Palette.ink)
+                .foregroundStyle(style == .inUse ? Color.white : style == .out ? Palette.ink3 : style == .external ? Palette.ink2
+                                 : style == .externalDim ? Palette.disabled : Palette.ink)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+// Pointy-top hexagon filling its frame: the outline of an external source's account.
+struct Hexagon: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let quarter = rect.height / 4
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + quarter))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - quarter))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - quarter))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + quarter))
+        path.closeSubpath()
+        return path
     }
 }
 

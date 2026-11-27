@@ -463,7 +463,7 @@ struct ClaudeAnchorRow: View {
             HStack(spacing: 9) {
                 DragGrip(active: movable)
                 RankMark(place: place, next: next)
-                Seal(entry.name, style: .inUse, size: 18)
+                Seal(entry.name, style: entry.cli?.external != nil ? .external : .inUse, size: 18)
                 Text(accountName: entry.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 if let cli = entry.cli { CloudBadge(account: cli, size: 11) }
                 Pill(slot, style: .brand, small: true)
@@ -527,6 +527,10 @@ struct ClaudeRelayRow: View {
             }
             .padding(.leading, 9).padding(.trailing, 9).padding(.vertical, 8)
             if let rule, editing?.wrappedValue == true { RelayRuleEditor(rule: rule, directory: directory) }
+            // Its source does not answer: the relay passes it by, its rule stays.
+            if let external = cli?.external, external.trouble, case .queue = kind {
+                ExternalSkipNote(external: external, source: cli.flatMap(directory.source(of:)))
+            }
         }
         .background(spent ? Palette.attentionWash.opacity(0.6) : Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -561,7 +565,8 @@ struct ClaudeRelayRow: View {
     }
 
     private var identity: some View {
-        Button { nav.claudeDetail = entry.id } label: {
+        // An external source's account has no detail page here: its source looks after it.
+        Button { if cli?.external == nil { nav.claudeDetail = entry.id } } label: {
             HStack(spacing: 8) {
                 ClaudeSeal(entry: entry, size: 24, rule: cli.flatMap { directory.rule(for: $0.id) })
                 VStack(alignment: .leading, spacing: 1) {
@@ -571,9 +576,24 @@ struct ClaudeRelayRow: View {
                         title(relayPill: false)
                     }
                     if let rule, let editing, rule.participate {
-                        HStack(spacing: 6) {
-                            RelayRuleChip(rule: rule, open: editing)
-                            Text(meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                        if let cli, cli.external != nil {
+                            // An external source's account: its source beside the rule, which opens its mode; a narrow row
+                            // keeps the rule and the source's link.
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 6) {
+                                    RelayRuleChip(rule: rule, open: editing)
+                                    ExternalModeButton(account: cli, directory: directory, asTag: true)
+                                }
+                                HStack(spacing: 6) {
+                                    RelayRuleChip(rule: rule, open: editing)
+                                    ExternalModeButton(account: cli, directory: directory, asTag: true, iconOnly: true)
+                                }
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                RelayRuleChip(rule: rule, open: editing)
+                                Text(meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                            }
                         }
                     } else {
                         Text(meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
@@ -583,7 +603,7 @@ struct ClaudeRelayRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(entry.name) · 点开看账号详情")
+        .help(cli?.external.map { "\(entry.name) · 由 \($0.name) 登录和续期" } ?? "\(entry.name) · 点开看账号详情")
     }
 
     private func title(relayPill: Bool) -> some View {
@@ -594,7 +614,7 @@ struct ClaudeRelayRow: View {
             if case .rotation = kind {} else if use.desk, let desk = entry.desk, desk.number != nil { DeskNumber(desk: desk).fixedSize() }
             if let tag { Pill(tag, style: .brand, small: true).fixedSize() }
             // Signed in to AuthBaton only, while 无感换号 lends Code logins: the desktop's Code tab can use it.
-            if relayPill, use.desk, entry.desk == nil, cli != nil, directory.claudeDesktop?.codeRelay?.state == "active" {
+            if relayPill, use.desk, entry.desk == nil, cli != nil, cli?.external == nil, directory.claudeDesktop?.codeRelay?.state == "active" {
                 Pill("Code 无感可用", style: .brand, small: true)
                     .help(entry.inCode ? "已开启 Code 无感换号：桌面 Code 对话已在用这个账号，不用在桌面重复登录"
                           : "已开启 Code 无感换号：同 Team 账号不用在桌面重复登录，点「换到 Code」就能在桌面 Code 对话里直接切换")
@@ -625,6 +645,8 @@ struct ClaudeRelayRow: View {
             } else {
                 ClaudeMiniQuota(windows: Array(cli.primaryWindows.prefix(2)), extras: cli.extraWindows, notch: notch,
                                 skipped: directory.rule(for: cli.id)?.participate == true && directory.strategy?.config.enabled == true, wide: wide)
+                    // Its source does not answer: the last numbers, faded.
+                    .opacity(cli.external?.trouble == true ? 0.48 : 1)
             }
         } else if let quota = entry.desk?.tokenQuota, !quota.primary.isEmpty {
             ClaudeMiniQuota(windows: quota.primary, extras: [], notch: nil, skipped: false, wide: wide)
@@ -667,7 +689,11 @@ struct ClaudeRelayRow: View {
     @ViewBuilder private var primary: some View {
         if let cli {
             let low = notch.map { line in cli.primaryWindows.prefix(2).contains { $0.remaining <= line } } ?? false
-            if directory.primaryAction(for: cli) == .relogin {
+            if cli.external?.trouble == true {
+                // Its source does not answer: nothing to switch to until it does.
+                Button("换到 Code") {}.buttonStyle(.pill(.secondary)).disabled(true)
+                    .help("连不上 \(cli.external?.name ?? "来源")，现在换不过去")
+            } else if directory.primaryAction(for: cli) == .relogin {
                 Button("重新登录") { present(.account(.login(provider: "claude", accountID: cli.id))) }
                     .buttonStyle(.pill(.onAttention))
                     .disabled(service.accountBusy)
@@ -700,9 +726,11 @@ struct ClaudeMiniQuota: View {
     let skipped: Bool
     // 452 wide instead of 298.
     var wide = false
+    // An external source's account outside the relay: nothing about it is amber, a used-up week included (11-27).
+    var plain = false
 
     var body: some View {
-        if let week = windows.first(where: { $0.isWeek && $0.remaining <= 0 }) {
+        if !plain, let week = windows.first(where: { $0.isWeek && $0.remaining <= 0 }) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     if let due = RefillDue(week) {

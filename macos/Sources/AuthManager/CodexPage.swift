@@ -114,9 +114,12 @@ struct CodexPage: View {
                             CodexStage(directory: directory, selection: nav.selection, open: { sheet = $0 })
                             CodexRelayDeck(directory: directory, note: use.desk || directory.strategy?.config.enabled != true ? nil
                                            : "只用 CLI 时见底\(directory.resets("codex") ? "只会重置" : "不会换号")。", open: { sheet = $0 })
-                            // Outside the relay: by choice, new and without a rule, or handed over by another Mac.
-                            let out = accounts.filter { directory.rule(for: $0.id)?.participate != true }
+                            // Outside the relay: by choice, new and without a rule, or handed over by another Mac. An external
+                            // source's accounts outside it are in their own group below.
+                            let out = accounts.filter { $0.external == nil && directory.rule(for: $0.id)?.participate != true }
                             if !out.isEmpty { CodexDrawer(accounts: out, directory: directory, open: { sheet = $0 }) }
+                            ExternalGroups(provider: "codex", directory: directory, switchTitle: "换上",
+                                           switchTo: { sheet = .switchTo($0.id) }, open: { sheet = $0 })
                         }
                     }
                     .onAppear { if let id = nav.selection { proxy.scrollTo(id, anchor: .center) } }
@@ -148,8 +151,9 @@ struct CodexPage: View {
 
     private func subtitle(_ directory: AccountDirectory, _ accounts: [ManagedAccount], use: CodexUse) -> Text {
         if accounts.isEmpty { return Text("还没有账号") }
-        var parts = ["\(accounts.count) 个账号"]
-        if let current = directory.current("codex") { parts.append("在用 \(current.displayName)") }
+        // External sources' accounts are not counted (they have a group of their own); one in use says so.
+        var parts = ["\(accounts.filter { $0.external == nil }.count) 个账号"]
+        if let current = directory.current("codex") { parts.append("在用 \(current.displayName)" + (current.external != nil ? "（外部）" : "")) }
         let pi = service.snapshot?.piFollows == true
         switch use {
         case .both: parts.append(pi ? "CLI 与 pi 同步切换" : "CLI 同步切换")
@@ -280,12 +284,13 @@ struct CodexCard: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 9) {
-                    Seal(account.displayName, style: account.native ? .inUse : rule?.participate == false ? .out : .standby, size: 31)
+                    Seal(account.displayName, style: account.external != nil ? .external : account.native ? .inUse : rule?.participate == false ? .out : .standby, size: 31)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 7) {
                             Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                             CloudBadge(account: account)
                             if account.native { Pill("在用", style: .brand, small: true) }
+                            if account.external != nil { ExternalModeButton(account: account, directory: directory, asTag: true, large: true) }
                             if !account.native, directory.desktop?.selected == account.id { Pill("桌面在用", style: .brand, small: true) }
                         }
                         Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
@@ -323,7 +328,7 @@ struct CodexCard: View {
                         Pill("≤ \(rule.below)%", style: rule.participate ? .neutral : .dashed)
                         Pill(rule.order.label, style: rule.participate ? .neutral : .dashed).help(rule.order.explanation)
                         if !rule.participate { Pill("不参与") }
-                    } else if directory.strategy != nil {
+                    } else if directory.strategy != nil, account.external?.allowsSwitch != false {
                         // New, or came from another Mac: it stays out of the relay until someone adds it. Joining
                         // takes effect at once.
                         Pill("未加入接力", style: .dashed)
@@ -337,6 +342,9 @@ struct CodexCard: View {
                 }
                 .opacity(account.transferRunning ? 0.45 : 1)
                 Spacer(minLength: 7)
+                if let external = account.external {
+                    ExternalWebLink(title: "去来源网页", address: external.manageUrl ?? directory.source(of: account)?.manageUrl)
+                }
                 // Taking the desktop over is the page band's job; the in-use card offers no 接管 of its own.
                 AccountActions(account: account, directory: directory, open: open, showSwitch: !account.native)
             }

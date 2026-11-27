@@ -56,6 +56,7 @@ impl Accounts {
         self.ensure_idle()?;
         let account = self.db.accounts[self.index(id)?].clone();
         self.transfer_guard(id, false)?;
+        let lender = self.external_reset_lender(id, trigger.is_some())?;
         let claude = account.provider == "claude";
         // The official claim accepts request IDs of at most 64 characters.
         if request_id.is_empty()
@@ -157,6 +158,33 @@ impl Accounts {
         }
         let attempt = self.db.reset_attempts[index].clone();
         let retry = existing.is_some();
+        // An external row's card is spent with access leased for this use right before the claim,
+        // in the background. Without it nothing is sent.
+        let platform = self.platform.clone();
+        let owner = attempt.owner.clone();
+        let prepare = move || -> Result<ResetAccess> {
+            let Some((source, entry)) = lender else {
+                return Ok(access);
+            };
+            let bundle = match crate::external::lease(&platform, &source, &entry, "use", None) {
+                crate::external::Done::Lease { lease, .. } => lease.bundle,
+                _ => return Err("没能向外部来源领到这次要用的 Access"),
+            };
+            if bundle.access_metadata()?.owner != owner {
+                return Err(crate::external::IDENTITY_CHANGED);
+            }
+            Ok(if claude {
+                ResetAccess::Claude(crate::claude_resets::Access::from_bundle(&bundle)?)
+            } else {
+                ResetAccess::Codex(Access::from_bundle(&bundle)?)
+            })
+        };
+        // Tests lease on the calling thread, where their synthetic transport lives.
+        #[cfg(test)]
+        let prepare = {
+            let prepared = prepare();
+            move || prepared
+        };
         #[cfg(test)]
         let (transport, claude_transport) = (
             self.reset_transport
@@ -168,11 +196,14 @@ impl Accounts {
         let (transport, claude_transport) = (crate::codex_api::http, crate::claude_resets::http);
         self.reset_job = Some((
             request_id.into(),
-            std::thread::spawn(move || match access {
-                ResetAccess::Codex(access) => {
+            std::thread::spawn(move || match prepare() {
+                // As with an expired access: a retry may follow a claim that went through.
+                Err(_) if retry => ResetOutcome::Unknown,
+                Err(_) => ResetOutcome::NotSent,
+                Ok(ResetAccess::Codex(access)) => {
                     crate::resets::run(access, &attempt, retry, transport, now())
                 }
-                ResetAccess::Claude(access) => {
+                Ok(ResetAccess::Claude(access)) => {
                     crate::claude_resets::run(access, &attempt, retry, claude_transport, now())
                 }
             }),
