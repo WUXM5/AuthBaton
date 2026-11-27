@@ -326,10 +326,14 @@ struct ResetSheet: View {
     }
 
     var body: some View {
+        // An external source's account: whose it is above the title, and that its source's own work uses the quota too.
+        let source = account.external?.name
         SheetScaffold(title: retry ? "重试「\(account.displayName)」上次的重置？" : "给「\(account.displayName)」用 1 张重置卡？",
                       lead: retry ? "会重试同一次操作，不会换用另一张卡。如果上次没生效，这次可能用掉 1 张。"
-                                  : offer != nil ? "成功后这张卡适用的额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。"
-                                  : "成功后额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。") {
+                                  : source.map { "这是 \($0) 的外部账号。用掉 1 张重置卡后额度回满，\($0) 的任务也会用到；能不能重置以官方返回为准。" }
+                                  ?? (offer != nil ? "成功后这张卡适用的额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。"
+                                  : "成功后额度回满，这个账号的重置卡少 1 张。能不能重置以官方返回为准。"),
+                      tag: source.map { "外部账号 · \($0)" }) {
             if let offer, account.claudeOffers.count > 1 {
                 PillSegments(segments: account.claudeOffers.map { .init(value: $0.kind, title: ClaudeResetKind.name($0.kind)) },
                              selection: offer.kind, select: { chosen = $0 }, fill: true)

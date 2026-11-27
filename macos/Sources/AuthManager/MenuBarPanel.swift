@@ -134,11 +134,13 @@ struct MenuBarPanel: View {
                 }
                 Ring(values: windows.map(\.remaining), size: 65).padding(.top, 7)
                 HStack(spacing: 5) {
-                    if let current { Seal(current.displayName, style: .inUse, size: 15) }
+                    if let current { Seal(current.displayName, style: current.external != nil ? .external : .inUse, size: 15) }
                     Text(accountName: current?.displayName ?? "没有在用的账号").font(.system(size: 11, weight: .semibold)).lineLimit(1)
                     if let current { CloudBadge(account: current, size: 10) }
                 }
                 .padding(.top, 7)
+                // An external source's account: its source under the name.
+                if let external = current?.external { ExternalTag(text: external.name, trouble: external.trouble).padding(.top, 3) }
                 Text(caption(current, windows)).font(.system(size: 10)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
                     .padding(.top, 2)
             }
@@ -193,7 +195,8 @@ struct MenuBarPanel: View {
     // MARK: 换账号
 
     @ViewBuilder private func switchList(_ provider: String, directory: AccountDirectory) -> some View {
-        let others = directory.relay(provider).filter { !$0.native }
+        // An external source's account is listed only where its mode lets it be switched to here.
+        let others = directory.relay(provider).filter { !$0.native && $0.external?.allowsSwitch != false }
         // Claude's list moves Claude Code; with 无感换号 the desktop's Code tab follows it (11-22: the window's Code slot).
         let relayOn = directory.claudeDesktop?.codeRelay?.enabled == true
         let title = provider == "claude" ? (relayOn ? "换 Code 账号（无感）" : "换 Claude Code 账号") : "换 \(GlyphTile.name(provider)) 账号"
@@ -522,9 +525,15 @@ private struct SwitchRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 9) {
-                Seal(account.displayName, style: .standby, size: 19)
-                Text(accountName: account.displayName).font(.system(size: 12)).lineLimit(1)
-                CloudBadge(account: account, size: 11)
+                Seal(account.displayName, style: account.external != nil ? .external : .standby, size: 19)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 9) {
+                        Text(accountName: account.displayName).font(.system(size: 12)).lineLimit(1)
+                        CloudBadge(account: account, size: 11)
+                    }
+                    // An external source's account: its source under the name.
+                    if let external = account.external { ExternalTag(text: external.name, trouble: external.trouble) }
+                }
                 if next { PointerMark().fill(Palette.brand).frame(width: 6, height: 7.5).help(PointerRank.meaning) }
                 if account.needsAction { Circle().fill(Palette.attentionDot).frame(width: 5, height: 5) }
                 Spacer(minLength: 3.5)
@@ -536,8 +545,8 @@ private struct SwitchRow: View {
                     Text(account.quotaCaption ?? "—").font(.system(size: 10)).foregroundStyle(Palette.ink3).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 7)
-            .frame(height: 31)
+            .padding(.horizontal, 7).padding(.vertical, account.external != nil ? 5 : 0)
+            .frame(minHeight: 31)
             .background(open || hovering ? Palette.rail : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }

@@ -197,6 +197,9 @@ impl Accounts {
         if self.db.switch.is_some() {
             return Err("请先处理上次未完成的切换");
         }
+        if self.is_external(id) {
+            self.external_use_gate(id)?;
+        }
         self.desktop_switch_ready(id)?;
         if self.db.accounts[self.index(id)?].provider != "codex" {
             return Err("只有 Codex 账号可以通过桌面切换");
@@ -249,7 +252,8 @@ impl Accounts {
         if (self.desktop.other_clients)() {
             return Err("检测到 VS Code 的 Codex 插件或独立 Codex CLI，切换未开始");
         }
-        let to_cloud = self.cloud_lease_id(id).is_some();
+        // A cloud or external row: its leased access reaches the default file on completion.
+        let to_cloud = self.cloud_lease_id(id).is_some() || self.is_external(id);
         let target = self.bundle(&self.db.accounts[self.index(id)?])?;
         let metadata = target.access_metadata()?;
         if metadata.expires_at.is_none_or(|t| t <= now() + 60) {
@@ -281,7 +285,12 @@ impl Accounts {
                 .db
                 .accounts
                 .iter()
-                .find(|a| a.provider == "codex" && a.native && self.cloud_binding(&a.id).is_none())
+                .find(|a| {
+                    a.provider == "codex"
+                        && a.native
+                        && self.cloud_binding(&a.id).is_none()
+                        && !self.is_external(&a.id)
+                })
                 .map(|a| a.id.clone())
                 .ok_or("请先纳管当前原生登录")?;
             let previous_bundle = Bundle::decode(self.platform.vault_read(&previous)?)?;
@@ -430,7 +439,7 @@ impl Accounts {
                             self.db.desktop.selected = Some(id.clone());
                             self.db.switch = None;
                             self.desktop_log("apply_done", Some(&id), "已切换");
-                            let cloud = self.cloud_binding(&id).is_some();
+                            let cloud = self.cloud_binding(&id).is_some() || self.is_external(&id);
                             if let Ok(i) = self.index(&id) {
                                 let a = &mut self.db.accounts[i];
                                 a.metadata = serde_json::from_value(value["metadata"].clone()).ok();
@@ -619,12 +628,13 @@ impl Accounts {
             let cloud_id = self
                 .cloud_lease_id(&refresh.account_id)
                 .map(str::to_string);
+            let external = self.is_external(&refresh.account_id);
             let bundle = match self
                 .index(&refresh.account_id)
                 .and_then(|index| self.bundle(&self.db.accounts[index]))
             {
                 Ok(bundle) => Some(bundle),
-                Err(_) if cloud_id.is_some() => None,
+                Err(_) if cloud_id.is_some() || external => None,
                 Err(_) => {
                     self.reply_refresh(None);
                     return;
@@ -651,6 +661,28 @@ impl Accounts {
             }
             if let Some(cloud_id) = cloud_id {
                 self.refresh_from_cloud(&refresh, cloud_id);
+                return;
+            }
+            if external {
+                if self.external_refreshing(&refresh.account_id) {
+                    return;
+                }
+                if refresh.attempted {
+                    self.reply_refresh(None);
+                    return;
+                }
+                if let Some(r) = self.desktop.refresh.as_mut() {
+                    r.attempted = true;
+                }
+                if self.refresh_from_external(&refresh.account_id) {
+                    self.desktop_log(
+                        "refresh_start",
+                        Some(&refresh.account_id),
+                        "向外部来源要新的 Access 给桌面",
+                    );
+                } else {
+                    self.reply_refresh(None);
+                }
                 return;
             }
             if self.job.is_none() {
@@ -874,6 +906,9 @@ impl Accounts {
             if self.cloud_binding(id).is_some() {
                 return Err("这个账号由云端续期；新的 Access 到了再给桌面");
             }
+            if self.is_external(id) {
+                return Err("这个账号由外部来源续期；新的 Access 到了再给桌面");
+            }
             if !self.desktop_owns(id) {
                 return Err("当前登录被其他 Codex 客户端占用，桌面续期已延后");
             }
@@ -941,6 +976,10 @@ impl Accounts {
     /// After the desktop logged in to `id`: a cloud row's access-only login goes into the default
     /// file and becomes the cloud row in use; a local row's login is already there.
     fn default_file_follows(&mut self, id: &str) -> Result<()> {
+        if self.is_external(id) {
+            let native = self.native("codex")?;
+            return self.publish_external(id, &native);
+        }
         let Some(cloud_id) = self.cloud_lease_id(id).map(str::to_string) else {
             self.release_cloud_use("codex");
             return Ok(());
@@ -951,7 +990,9 @@ impl Accounts {
             b.used = true;
         }
         self.cloud
-            .activate(&self.platform, &native, &cloud_id, &target)
+            .activate(&self.platform, &native, &cloud_id, &target)?;
+        self.release_external_selection("codex");
+        Ok(())
     }
     pub(super) fn desktop_stop(&mut self) {
         if let Some(job) = self.desktop.job.take() {

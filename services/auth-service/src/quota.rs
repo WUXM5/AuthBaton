@@ -27,13 +27,16 @@ pub struct Window {
     scope: Option<String>,
     kind: Option<String>,
     expires: bool,
+    /// Which of Codex's core windows this is, for the reading reported to a credential center.
+    #[serde(skip)]
+    slot: Option<&'static str>,
 }
 
 fn bucket_windows(value: &Value, scope: Option<String>, kind: Option<String>) -> Vec<Window> {
     let mut result = Vec::new();
-    for (key, fallback) in [
-        ("primary_window", "主要窗口"),
-        ("secondary_window", "次要窗口"),
+    for (key, fallback, slot) in [
+        ("primary_window", "主要窗口", "primary"),
+        ("secondary_window", "次要窗口", "secondary"),
     ] {
         let window = &value[key];
         if window.is_null() {
@@ -63,6 +66,7 @@ fn bucket_windows(value: &Value, scope: Option<String>, kind: Option<String>) ->
             resets_at: window["reset_at"].as_u64(),
             scope: scope.clone(),
             kind: kind.clone(),
+            slot: scope.is_none().then_some(slot),
             ..Window::default()
         });
     }
@@ -180,6 +184,7 @@ fn claude_windows(value: &Value) -> Result<Vec<Window>> {
                 scope,
                 kind,
                 expires: key == "cinder_cove",
+                slot: None,
             });
         }
     }
@@ -445,6 +450,25 @@ fn remaining(windows: &[Window]) -> Option<f64> {
         .filter(|w| w.scope.is_none() && w.kind.is_none())
         .map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0))
         .reduce(f64::min)
+}
+/// A Claude window by the name its usage response gives it.
+fn claude_kind(window: &Window) -> Option<&'static str> {
+    match (
+        window.label.as_str(),
+        window
+            .scope
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        window.kind.as_deref(),
+    ) {
+        ("5 小时窗口", None, None) => Some("five_hour"),
+        ("7 天窗口", None, None) => Some("seven_day"),
+        ("7 天窗口", Some("opus"), Some("model")) => Some("seven_day_opus"),
+        ("7 天窗口", Some("sonnet"), Some("model")) => Some("seven_day_sonnet"),
+        ("7 天窗口", Some("fable"), Some("model")) => Some("seven_day_fable"),
+        _ => None,
+    }
 }
 #[derive(Default)]
 pub struct Runtime {
@@ -715,6 +739,30 @@ impl Runtime {
     }
     pub fn stop(&mut self, time: u64) {
         self.finish(time);
+    }
+    /// The last successful reading of `id` as a credential center records it: when it was taken,
+    /// the remaining percent and reset time of each window the center knows, and the reset cards.
+    pub fn report(&self, id: &str) -> Option<(u64, Vec<Value>, Option<Value>)> {
+        let entry = self.entries.get(id).filter(|e| e.state == "ready")?;
+        let checked_at = entry.checked_at?;
+        let windows = entry
+            .windows
+            .iter()
+            .filter_map(|w| {
+                let kind = w.slot.or_else(|| claude_kind(w))?;
+                Some(serde_json::json!({
+                    "kind": kind,
+                    "remaining_percent": (100.0 - w.used_percent).clamp(0.0, 100.0),
+                    "resets_at": w.resets_at.or_else(|| w.resets_at_iso.as_deref().and_then(iso_time)),
+                }))
+            })
+            .collect();
+        let credits = match (&entry.claude_resets, &entry.reset_credits) {
+            (Some(status), _) => status.report(),
+            (None, Some(credits)) => Some(credits.report()),
+            (None, None) => None,
+        };
+        Some((checked_at, windows, credits))
     }
     /// The last successful reading of a Claude account, as warm-up reads it.
     pub fn warmup_reading(&self, id: &str) -> Option<crate::warmup::Reading> {

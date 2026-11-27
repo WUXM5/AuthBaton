@@ -16,11 +16,15 @@ struct CloudPage: View {
     var body: some View {
         let cloud = service.directory?.cloud
         let renewed = service.directory?.accounts.filter(\.cloudRenewed) ?? []
-        PageScaffold(title: "个人云端", subtitle: Text(subtitle(cloud, renewed: renewed.count)), spacing: 12, narrow: true) {
+        let sources = service.directory?.external?.sources?.count ?? 0
+        PageScaffold(title: "个人云端", subtitle: Text(subtitle(cloud, renewed: renewed.count) + (sources > 0 ? " · \(sources) 个外部来源" : "")),
+                     spacing: 12, narrow: true) {
             if let message = cloud?.error ?? service.accountError { Banner(text: message) }
             if cloud?.paired == true, !renewed.isEmpty { RenewalSummary(accounts: renewed) { sheet = $0 } }
             CloudConnectionView()
             if cloud?.paired == true, let cloud, !cloud.devices.isEmpty { DevicesCard(cloud: cloud) }
+            // Another centre's accounts, read here with the access it lends (contract 3).
+            ExternalSourceCard()
         }
         .sheet(item: $sheet) { item in AccountSheetView(item: item, close: { sheet = nil }).environmentObject(service) }
     }

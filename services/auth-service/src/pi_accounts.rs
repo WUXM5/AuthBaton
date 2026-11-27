@@ -4,7 +4,8 @@ use super::*;
 impl Accounts {
     pub fn pi_accounts(&self) -> Value {
         // A cloud row is listed like any other under its own id, so pi keeps its name.
-        let accounts: Vec<Value> = self.db.accounts.iter().filter(|a| a.provider == "codex" && a.metadata.is_some() && a.pending_profile.is_none() && self.cloud.config.bindings.get(&a.id).is_none_or(|b| b.cloud())).map(|a| {
+        // External rows lend their access to this Mac's own clients only, never to pi.
+        let accounts: Vec<Value> = self.db.accounts.iter().filter(|a| a.provider == "codex" && a.metadata.is_some() && a.pending_profile.is_none() && !self.is_external(&a.id) && self.cloud.config.bindings.get(&a.id).is_none_or(|b| b.cloud())).map(|a| {
             json!({"id":a.id,"label":a.label,"current":a.native,"state":self.pi_state(a),"automatic":a.automatic})
         }).collect();
         json!({"accounts":accounts,"recovery_needed":self.db.switch.is_some()})
@@ -65,6 +66,9 @@ impl Accounts {
         let account = self.db.accounts[self.index(&id)?].clone();
         if account.provider != "codex" {
             return Err("pi 接入仅支持已登记的 Codex 订阅账号");
+        }
+        if self.is_external(&id) {
+            return Err("外部账号不提供给 pi");
         }
         // A stopped transfer leaves the login where it was, as it does for 换上.
         self.transfer_guard(&id, true)?;

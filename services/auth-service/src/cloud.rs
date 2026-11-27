@@ -1030,7 +1030,38 @@ fn publish(
     id: &str,
     target: &Bundle,
 ) -> Result<()> {
-    let activate = path.is_some();
+    let Some(path) = path else {
+        return write_projection(platform, native, id, target, None);
+    };
+    let provider = target.provider.clone();
+    write_projection(
+        platform,
+        native,
+        id,
+        target,
+        Some(&mut |landed| {
+            if landed {
+                cfg.selected.insert(provider.clone(), id.into());
+                cfg.pending_activation = None;
+            } else {
+                cfg.pending_activation = Some(id.into());
+            }
+            persist(cfg, path)
+        }),
+    )
+}
+/// Writes an access-only login (a cloud account's or an external source's) into the native
+/// store under the journal a restart settles. With `mark` it puts the login in use over whatever
+/// the store holds: `mark(false)` records the activation before the write, `mark(true)` once it
+/// landed. Without, it renews the projection written last.
+pub(crate) fn write_projection(
+    platform: &Platform,
+    native: &NativeStore,
+    id: &str,
+    target: &Bundle,
+    mut mark: Option<&mut dyn FnMut(bool) -> Result<()>>,
+) -> Result<()> {
+    let activate = mark.is_some();
     let key = format!("cloud-native-{}", target.provider);
     let journal_key = format!("cloud-native-journal-{}", target.provider);
     // Reconcile the prior file/Keychain write before requesting a new write. The
@@ -1059,7 +1090,7 @@ fn publish(
                 .map_err(|_| "本机云端投影记录无效")?,
         )
     };
-    if activate {
+    if let Some(mark) = mark.as_mut() {
         if let Some(original) = expected.as_ref().filter(|b| b.metadata().is_ok()) {
             // Include an unregistered native login: it may be the only full copy.
             platform.vault_write(
@@ -1067,10 +1098,7 @@ fn publish(
                 &original.encoded(),
             )?;
         }
-        cfg.pending_activation = Some(id.into());
-        if let Some(path) = path {
-            persist(cfg, path)?;
-        }
+        mark(false)?;
     }
     platform.vault_write(
         &journal_key,
@@ -1084,10 +1112,8 @@ fn publish(
         native.cloud_initialize(platform, target)?;
     }
     platform.vault_write(&key, &target.encoded())?;
-    if let Some(path) = path {
-        cfg.selected.insert(target.provider.clone(), id.into());
-        cfg.pending_activation = None;
-        persist(cfg, path)?;
+    if let Some(mark) = mark.as_mut() {
+        mark(true)?;
     }
     platform.delete_key(VAULT, &journal_key)?;
     Ok(())
@@ -1102,12 +1128,26 @@ fn settle_activation(
     let Some(id) = cfg.pending_activation.clone() else {
         return Ok(());
     };
+    for provider in settle_projection(platform, stores, &id)? {
+        cfg.selected.insert(provider.into(), id.clone());
+    }
+    cfg.pending_activation = None;
+    persist(cfg, path)
+}
+/// Settles the journal an activation of `id` left when a restart interrupted it. Returns the
+/// providers whose native store holds the login it wrote; the journal goes either way.
+pub(crate) fn settle_projection(
+    platform: &Platform,
+    stores: &HashMap<&str, NativeStore>,
+    id: &str,
+) -> Result<Vec<&'static str>> {
+    let mut landed_in = vec![];
     for provider in ["codex", "claude"] {
         let journal_key = format!("cloud-native-journal-{provider}");
         let Some(journal) = platform.vault_read_optional(&journal_key)? else {
             continue;
         };
-        if journal["id"] != id.as_str() {
+        if journal["id"] != id {
             continue;
         }
         let target: Bundle = serde_json::from_value(journal["target"].clone())
@@ -1120,12 +1160,11 @@ fn settle_activation(
             .is_some_and(|b| b.credential == target.credential);
         if landed {
             platform.vault_write(&format!("cloud-native-{provider}"), &target.encoded())?;
-            cfg.selected.insert(provider.into(), id.clone());
+            landed_in.push(provider);
         }
         platform.delete_key(VAULT, &journal_key)?;
     }
-    cfg.pending_activation = None;
-    persist(cfg, path)
+    Ok(landed_in)
 }
 /// The cloud checks the account's login; the caller reads its quota with the leased access.
 pub fn check(cfg: Config, platform: Platform, id: String) -> Result<Patch> {

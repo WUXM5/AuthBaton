@@ -194,6 +194,10 @@ struct CodexRelayRow: View {
             // A move between this Mac and the centre that failed: its 重试 / 放弃 stay on the row.
             if !account.native, account.transferFailed != nil { TransferBox(account: account).padding(.horizontal, 12).padding(.bottom, 10) }
             if let rule, editing.wrappedValue { RelayRuleEditor(rule: rule, directory: directory) }
+            // Its source does not answer: the relay passes it by, its rule stays.
+            if !account.native, let external = account.external, external.trouble {
+                ExternalSkipNote(external: external, source: directory.source(of: account))
+            }
         }
         .background(account.native ? (next ? Palette.wash.opacity(0.5) : Color.clear) : Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -215,7 +219,7 @@ struct CodexRelayRow: View {
         HStack(spacing: 9) {
             DragGrip(active: movable)
             RankMark(place: place, next: next)
-            Seal(account.displayName, style: .inUse, size: 18)
+            Seal(account.displayName, style: account.external != nil ? .external : .inUse, size: 18)
             Text(accountName: account.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
             CloudBadge(account: account, size: 11)
             Pill("在用", style: .brand, small: true)
@@ -243,7 +247,13 @@ struct CodexRelayRow: View {
                 CodexRowQuota(account: account, directory: directory, wide: false).frame(width: 298, alignment: .leading)
             }
             HStack(spacing: 6) {
-                CodexRowActions(account: account, directory: directory, open: open)
+                if account.external?.trouble == true {
+                    // Its source does not answer: nothing to switch to until it does.
+                    Button("换上") {}.buttonStyle(.pill(.secondary)).disabled(true)
+                        .help("连不上 \(account.external?.name ?? "来源")，现在换不过去")
+                } else {
+                    CodexRowActions(account: account, directory: directory, open: open)
+                }
                 AccountMenu(account: account, directory: directory, open: open)
                 if let expand {
                     Button(action: expand) {
@@ -260,7 +270,7 @@ struct CodexRelayRow: View {
 
     private var identity: some View {
         HStack(spacing: 8) {
-            Seal(account.displayName, style: .standby, size: 24)
+            Seal(account.displayName, style: account.external != nil ? .external : .standby, size: 24)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(accountName: account.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1).layoutPriority(1)
@@ -268,9 +278,24 @@ struct CodexRelayRow: View {
                     if directory.desktop?.selected == account.id { Pill("桌面在用", style: .brand, small: true).fixedSize() }
                     if account.needsAction { Pill(account.health.title, style: .attention, small: true).fixedSize() }
                 }
-                HStack(spacing: 6) {
-                    if let rule, rule.participate { RelayRuleChip(rule: rule, open: editing) }
-                    Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                if account.external != nil {
+                    // An external source's account: its source beside the rule, which opens its mode; a narrow row keeps
+                    // the rule and the source's link.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            if let rule, rule.participate { RelayRuleChip(rule: rule, open: editing) }
+                            ExternalModeButton(account: account, directory: directory, asTag: true)
+                        }
+                        HStack(spacing: 6) {
+                            if let rule, rule.participate { RelayRuleChip(rule: rule, open: editing) }
+                            ExternalModeButton(account: account, directory: directory, asTag: true, iconOnly: true)
+                        }
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        if let rule, rule.participate { RelayRuleChip(rule: rule, open: editing) }
+                        Text(account.subtitle.isEmpty ? " " : account.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+                    }
                 }
             }
         }
@@ -290,6 +315,8 @@ struct CodexRowQuota: View {
                 .font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
         } else {
             ClaudeMiniQuota(windows: Array(account.primaryWindows.prefix(2)), extras: [], notch: directory.notch(for: account), skipped: false, wide: wide)
+                // An external source that does not answer: the last numbers, faded.
+                .opacity(account.external?.trouble == true ? 0.48 : 1)
         }
     }
 }

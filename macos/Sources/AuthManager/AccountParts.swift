@@ -277,11 +277,20 @@ struct AccountMenu: View {
     var filled = false
 
     var body: some View {
+        // An external source's account: signing in, renewing and removing happen at its source.
+        if account.external != nil {
+            ExternalAccountMenu(account: account, directory: directory, open: open, filled: filled)
+        } else {
+            menu
+        }
+    }
+
+    private var menu: some View {
         let checkDisabled = service.accountBusy || (directory.checksBlocked ?? true) || account.checkStatus != nil
         let querying = service.quotaRequests.contains(account.id) || account.usage?.refreshing == true
         // Two sets: an account this Mac renews, and one the authentication centre renews.
         let cloud = account.cloudRenewed
-        Menu {
+        return Menu {
             Button(querying ? "正在查询额度…" : "查询额度") { Task { await service.checkQuota(id: account.id) } }
                 .disabled(querying)
             if cloud {

@@ -524,6 +524,8 @@ extension Banner where Actions == EmptyView {
 struct SheetScaffold<Content: View, Actions: View>: View {
     let title: String
     var lead: String? = nil
+    // Above the title: where the account comes from, for an external source's account.
+    var tag: String? = nil
     var width: CGFloat = 408
     @ViewBuilder var content: Content
     @ViewBuilder var actions: Actions
@@ -531,6 +533,17 @@ struct SheetScaffold<Content: View, Actions: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
+                if let tag {
+                    HStack(spacing: 5) {
+                        Icon(.link, size: 11, color: Palette.ink2, weight: 2)
+                        Text(tag)
+                    }
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.ink2).lineLimit(1)
+                    .padding(.horizontal, 8).frame(height: 22)
+                    .background(Palette.chip, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1))
+                    .padding(.bottom, 2)
+                }
                 Text(title).font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 if let lead {

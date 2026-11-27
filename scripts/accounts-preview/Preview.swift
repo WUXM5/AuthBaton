@@ -43,6 +43,11 @@ import Vision
     func cloudAction(_ action: String, id: String? = nil, endpoint: String? = nil, label: String? = nil, confirm: Bool? = nil) async {
         await accountOperation("accounts.cloud", params: LoginParams(id: id, label: label, confirm: confirm, cloud_action: action, endpoint: endpoint))
     }
+    func external(_ action: String, id: String? = nil, mode: String? = nil, enrollment: String? = nil, confirm: Bool? = nil,
+                  switchBack: Bool? = nil) async {
+        await accountOperation("accounts.external", params: LoginParams(
+            id: id, confirm: confirm, external_action: action, enrollment: enrollment, mode: mode, switch_back: switchBack))
+    }
     func claudeDesktop(_ action: String, account: String? = nil, label: String? = nil, enabled: Bool? = nil, number: Int? = nil,
                        snapshot: String? = nil, confirm: Bool? = nil) async {
         await accountOperation("accounts.claude_desktop", params: LoginParams(
@@ -177,6 +182,94 @@ enum Fixture {
         if variant != "inuseexpanded" { UserDefaults.standard.removeObject(forKey: ClaudeRelayDeck.expandedKey) }
     }
 
+    // An external source (contract 2.7) next to the Claude page of the 11-22 redesign: lab-center lends four Claude and two
+    // Codex accounts in every mode. "external": none of them in the relay; "externalqueue": run-c and run-e joined it;
+    // "externalinuse": Code uses run-c; "externalerror": the pairing lapsed, the rows keep their last numbers.
+    static func external(_ data: inout [String: Any], _ variant: String, now: Double) {
+        let format = ISO8601DateFormatter()
+        func at(_ seconds: Double) -> String { format.string(from: Date(timeIntervalSince1970: now + seconds)) }
+        let trouble = variant == "externalerror"
+        let manage = "https://lab-center.example.invalid/accounts"
+        func info(_ ref: String, mode: String, readable: Bool = true) -> [String: Any] {
+            ["source": "src-lab", "source_label": "lab-center", "account_ref": ref, "mode": mode, "quota_readable": readable,
+             "status": "ready", "source_state": trouble ? "error" : "connected", "manage_url": manage,
+             "reason": readable ? NSNull() : "只有 setup-token，读不了额度和重置卡"]
+        }
+        func claude(_ id: String, _ email: String, plan: String, mode: String, five: Double, week: Double, fable: Double? = nil,
+                    fiveIn: Double = 3 * 3600, weekIn: Double = 3 * 86400, cards: [(String, Double)] = [], readable: Bool = true,
+                    native: Bool = false) -> [String: Any] {
+            var windows: [[String: Any]] = [["label": "5 小时窗口", "used_percent": 100 - five, "resets_at_iso": at(fiveIn)],
+                                            ["label": "7 天窗口", "used_percent": 100 - week, "resets_at_iso": at(weekIn)]]
+            if let fable { windows.append(["label": "7 天窗口", "used_percent": 100 - fable, "scope": "Fable", "kind": "model", "resets_at_iso": at(weekIn)]) }
+            let limits: [String: [String]] = ["session": ["5 小时额度"], "weekly": ["每周额度"], "full": ["5 小时额度", "每周额度"]]
+            let offers: [[String: Any]] = cards.map { ["kind": $0.0, "limits": limits[$0.0] ?? [], "remaining": 1, "ends_at": at($0.1 * 86400)] }
+            let items: [[String: Any]] = cards.map { ["label": "合成赠送", "kind": $0.0, "remaining": 1, "total": 1, "starts_at": at(-86400),
+                                                     "ends_at": at($0.1 * 86400), "limits": limits[$0.0] ?? [], "paused": false, "usable_now": true,
+                                                     "requires_limit": false] }
+            var resets: [String: Any] = ["offers": offers, "grants": ["eligible": true, "message": "官方提供的重置卡", "remaining": cards.count,
+                                                                       "weekly_resets_at": at(weekIn), "items": items]]
+            if let first = offers.first { resets["next"] = first }
+            var row: [String: Any] = ["id": id, "provider": "claude", "label": email, "identity": email, "plan": plan, "native": native,
+                                      "automatic": false, "state": "external", "message": "由外部来源续期；这台 Mac 只用领来的 Access",
+                                      "next_check": now + 300, "quota": [], "external": info("ref-" + id, mode: mode, readable: readable)]
+            if readable {
+                row["usage"] = ["state": "ready", "message": "额度已检查", "checked_at": now - 60, "attempted_at": now - 60, "next_update": now + 240,
+                                "refreshing": false, "windows": windows, "claude_resets": resets]
+            }
+            return row
+        }
+        let queued = variant != "external"
+        var rows = [
+            claude("x-a", "run-a@lab.example", plan: "team", mode: "view", five: 62, week: 41, fable: 80, fiveIn: 2 * 3600, weekIn: 4 * 86400,
+                   cards: [("session", 6), ("weekly", 9)]),
+            claude("x-b", "run-b@lab.example", plan: "max", mode: "reset", five: 100, week: 6, weekIn: 2 * 86400, cards: [("weekly", 4)]),
+            claude("x-c", "run-c@lab.example", plan: "team", mode: "switch", five: 88, week: 73, fiveIn: 2.5 * 3600, weekIn: 5 * 86400,
+                   cards: queued ? [] : [("session", 7), ("weekly", 8)], native: variant == "externalinuse"),
+            claude("x-d", "run-d@lab.example", plan: "team", mode: "view", five: 100, week: 100, readable: false),
+        ]
+        if queued {
+            rows.append(claude("x-e", "run-e@lab.example", plan: "max", mode: "switch", five: 100, week: 2, weekIn: 2 * 86400, cards: [("weekly", 5)]))
+        }
+        var codexRows = [
+            Fixture.codex("x-cx", "run-x@lab.example", "run-x@lab.example", plan: "team", native: false, state: "external", used: 35, resetDays: 3,
+                          credits: [credit("credit-x1", 4)]),
+            Fixture.codex("x-cy", "run-y@lab.example", "run-y@lab.example", plan: "team", native: false, state: "external", used: 12, resetDays: 6, credits: []),
+        ]
+        for index in codexRows.indices {
+            codexRows[index]["automatic"] = false
+            codexRows[index]["message"] = "由外部来源续期；这台 Mac 只用领来的 Access"
+            codexRows[index]["external"] = info("ref-" + (codexRows[index]["id"] as! String), mode: index == 0 ? "view" : "switch")
+        }
+        var accounts = (data["accounts"] as! [[String: Any]]).map { row -> [String: Any] in
+            var row = row
+            // Code uses run-c: the local account it took over from stands aside.
+            if variant == "externalinuse", row["id"] as? String == "c-b3" { row["native"] = false }
+            return row
+        }
+        accounts += rows + codexRows
+        data["accounts"] = accounts
+        if queued {
+            var strategy = data["strategy"] as! [String: Any]
+            var config = strategy["config"] as! [String: Any]
+            var rules = config["accounts"] as! [[String: Any]]
+            let place = rules.firstIndex { $0["id"] as? String == "c-b2" } ?? rules.count
+            rules.insert(contentsOf: [["id": "x-c", "order": "switch_only", "participate": true, "below": 5],
+                                      ["id": "x-e", "order": "reset_first", "participate": true, "below": 3]], at: place)
+            config["accounts"] = rules
+            strategy["config"] = config
+            data["strategy"] = strategy
+        }
+        data["external"] = ["sources": [[
+            "id": "src-lab", "label": "lab-center", "site_url": "https://lab-center.example.invalid", "manage_url": manage,
+            "device_label": "测试 MacBook Pro", "state": trouble ? "error" : "connected",
+            "error": trouble ? "lab-center 的配对已失效，暂时拉不到最新额度，也不能给外部账号用重置卡。" : NSNull(),
+            "read_at": now - (trouble ? 3 * 3600 : 60), "counts": ["codex": 2, "claude": queued ? 5 : 4], "default_mode": "view",
+            "merged": [["provider": "claude", "email": "g***@team.dev"]], "job": NSNull(),
+        ]]]
+        pairCloud(&data)
+        data["desktop"] = ["enabled": true, "port": 9522, "connected": true, "managed": true, "busy": false, "message": "已连接主窗口", "selected": "synthetic-orbit"]
+    }
+
     static func claudeDesktop(_ now: Double) -> [String: Any] {
         func usage(_ remaining: Int, _ age: Double) -> [String: Any] { ["remaining": remaining, "at": now - age, "stale": false] }
         func account(_ handle: String, _ number: Int?, _ display: String, _ email: String?, alias: String?, inUse: Bool, participates: Bool = true,
@@ -293,6 +386,10 @@ enum Fixture {
             "network": network(now, "busy"),
         ]
         switch scenario {
+        case "external", "externalqueue", "externalinuse", "externalerror":
+            inUse(&data, "inuse", now: now)
+            external(&data, scenario, now: now)
+        case "externalnone": data["external"] = ["sources": [Any]()]
         case "netsafe": data["network"] = network(now, "safe")
         case "netwaiting": data["network"] = network(now, "waiting")
         case "netwrong": data["network"] = network(now, "wrong")
@@ -1087,6 +1184,8 @@ extension NSWindow {
     let check = Checks()
     NSApp.setActivationPolicy(.accessory)
     Driver.installMenuHook()
+    // A source's web page is recorded, never opened.
+    ExternalLink.opener = { url in ServiceController.shared.calls.append("open \(url.absoluteString)") }
     UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
     func open<V: View>(_ view: V, size: NSSize) -> NSWindow {
         let (window, _) = makeWindow(view, size: size)
@@ -1153,7 +1252,7 @@ extension NSWindow {
         state.loginTarget = nil
         UserDefaults.standard.removeObject(forKey: "dismissedExpiryReminders")
         for key in [ClaudeUse.key, ClaudeUse.scopeKey, ClaudeUse.driftKey, CodexUse.key, CodexUse.hotKey, Onboarding.codexKey, Onboarding.claudeKey,
-                    ClaudeRelayDeck.expandedKey, ClaudeDrawer.openKey, CodexRelayDeck.expandedKey, CodexDrawer.openKey] {
+                    ClaudeRelayDeck.expandedKey, ClaudeDrawer.openKey, CodexRelayDeck.expandedKey, CodexDrawer.openKey, ExternalGroup.openKey] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         ReminderModel.shared.reload()
@@ -1371,7 +1470,8 @@ extension NSWindow {
         check.visible("的云端登录", "「重新登录…」打开更新云端登录")
         Driver.press("取消", .exact)
         state.calls.removeAll()
-        Driver.press("断开配对…")
+        // With 外部账号来源 under it, OCR reads this button's … as a full stop.
+        Driver.press("断开配对", .prefix)
         // OCR drops a small 的 now and then.
         check.visible("断开与认证中心", "断开配对先确认")
         check.visible("先换上本机续期", "在用云端续期的号时写明不能断开")
@@ -2373,6 +2473,200 @@ extension NSWindow {
         check.expect(due?.label == "明天 16:00" && due?.caption == "回满" && due?.text == "明天 16:00 回满", "见底大字：明天 16:00 + 回满")
         check.expect(dueSoon?.label == "52 分钟" && dueSoon?.caption == "后回满" && dueSoon?.text == "52 分钟后回满", "见底大字不到 1 小时：52 分钟 + 后回满")
     }
+    // External sources (11-27, Gemini 稿). A row's button sits level with its name, to its right; the nearest such hit is it.
+    func pressRow(_ name: String, _ wanted: String, _ match: Driver.Match = .contains) -> Bool {
+        guard let anchor = Driver.hits(name).first else { return false }
+        let targets = Driver.hits(wanted, match).filter { $0.window == anchor.window && $0.rect.minX > anchor.rect.minX }
+        guard let target = targets.min(by: { abs($0.rect.midY - anchor.rect.midY) < abs($1.rect.midY - anchor.rect.midY) }) else { return false }
+        Driver.click(target.window, target.center)
+        return true
+    }
+    // The pairing string goes into its own field (个人云端 has others above it).
+    func paste(_ text: String) {
+        guard let field = Driver.views(NSTextField.self).first(where: { $0.isEditable && $0.placeholderString?.hasPrefix("粘贴") == true }),
+              let window = field.window else {
+            check.expect(false, "找到配对串输入框")
+            return
+        }
+        window.makeFirstResponder(field)
+        guard let editor = field.currentEditor() as? NSTextView else { return }
+        editor.selectAll(nil)
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        Driver.settle()
+    }
+    section(41, "外部账号组：在不参与抽屉下面，组头写来源和余几个；三档各给对应操作；读不了额度的写原因并给去网页登录；底栏写已合并；页头账号数不数外部号") {
+        main.setContentSize(NSSize(width: 1020, height: 1600))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("external", into: state)
+        select(.claude)
+        check.expect(Driver.visible("外部账号") && Driver.visible("lab-center") && Driver.visible("余4个"), "组头写外部账号、来源名和余 4 个")
+        check.expect(Driver.visible("7个账号") && !Driver.visible("11个账号", wait: 0.3), "页头账号数不数外部账号")
+        if let drawer = Driver.hits("不参与自动接力").first, let group = Driver.hits("外部账号").first {
+            check.expect(group.rect.midY < drawer.rect.midY, "外部账号组在不参与抽屉下面")
+        } else {
+            check.expect(false, "找到不参与抽屉和外部账号组")
+        }
+        check.expect(Driver.visible("只看") && Driver.visible("可用重置卡") && Driver.visible("可换上本机"), "名字下面是三档胶囊")
+        check.expect(Driver.visible("最早") && Driver.visible("日到期"), "只看：写重置卡张数和最早到期")
+        check.expect(Driver.visible("只有setup-token") && Driver.visible("仅setup-token") && Driver.visible("去网页登录"), "只有 setup-token 的号写原因、给去网页登录")
+        check.expect(Driver.visible("已合并1个本机已有账号") && Driver.visible("只显示本机这份"), "底栏写合并了的本机账号")
+        state.calls.removeAll()
+        check.expect(pressRow("run-d@lab.example", "去网页登录"), "找到 run-d 的「去网页登录」")
+        check.expect(state.calls.contains { $0.hasPrefix("open https://lab-center.example.invalid/accounts") }, "「去网页登录」打开来源的账号页")
+        state.calls.removeAll()
+        check.expect(pressRow("run-c@lab.example", "加入接力"), "找到 run-c 的「加入接力」")
+        for _ in 0..<10 where check.lastCall("accounts.strategy") == nil { Driver.settle(0.2) }
+        let joined = sentRules(check.lastCall("accounts.strategy")).first { $0["id"] as? String == "x-c" }
+        check.expect(joined?["participate"] as? Bool == true && main.attachedSheet == nil, "可换上本机的号「加入接力」点了就发规则")
+        state.calls.removeAll()
+        check.expect(pressRow("run-c@lab.example", "换到Code"), "找到 run-c 的「换到 Code」")
+        check.expect((check.lastCall("accounts.activate") ?? "").contains("\"x-c\"") && main.attachedSheet == nil, "「换到 Code」直接换 Code，不弹框")
+        state.calls.removeAll()
+        check.expect(pressRow("run-b@lab.example", "用1张重置卡"), "找到 run-b 的「用 1 张重置卡」")
+        check.expect(main.attachedSheet != nil && Driver.visible("这是lab-center的外部账号") && Driver.visible("外部账号"), "用卡框标题上方写来源，正文换成外部版")
+        check.expect(check.lastCall("accounts.reset_quota") == nil, "打开确认框不用卡")
+        Driver.press("用1张", .exact)
+        let reset = check.lastCall("accounts.reset_quota") ?? ""
+        check.expect(reset.contains("\"x-b\"") && reset.contains("\"next_grant\":true"), "确认后才用卡，按 Claude 的方式只带类别")
+        Driver.press("管理来源", .prefix)
+        check.expect(AppNavigation.shared.page == .cloud, "「管理来源」去个人云端")
+    }
+    section(42, "档位浮层：胶囊点开写三档和底注，选了就发 set_mode；队列里的号降档先在浮层里确认，确认后带 confirm；Code 在用的号低两档不可选") {
+        main.setContentSize(NSSize(width: 1400, height: 1600))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("external", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        // OCR misreads the small grey chip now and then (六有♥); it sits right under the name.
+        if let name = Driver.hits("run-a@lab.example").first {
+            Driver.click(name.window, NSPoint(x: name.rect.minX + 16, y: name.rect.midY - 20))
+        } else {
+            check.expect(false, "找到 run-a 的「只看」胶囊")
+        }
+        check.expect(Driver.visible("本机可用操作") && Driver.visible("只看额度和重置卡") && Driver.visible("外部账号不计入上方账号数"), "浮层写三档说明和底注")
+        Driver.press("可用重置卡", .exact)
+        let mode = check.lastCall("accounts.external") ?? ""
+        check.expect(mode.contains("\"external_action\":\"set_mode\"") && mode.contains("\"id\":\"x-a\"") && mode.contains("\"mode\":\"reset\"")
+                     && mode.contains("\"confirm\":false"), "选「可用重置卡」发送 set_mode，不带确认")
+        closePopovers()
+        print("  → 队列里的号降档")
+        Fixture.load("externalqueue", into: state)
+        select(.claude)
+        state.calls.removeAll()
+        // The group's header names the source too; the tag under run-c is the one level with it.
+        check.expect(pressRow("run-c@lab.example", "lab-center", .within("lab-center")), "队列行规则旁有来源签")
+        check.visible("本机可用操作", "点来源签打开同一个浮层")
+        Driver.press("可用重置卡", .exact)
+        check.expect(Driver.visible("会将此号移出自动接力队列") && check.lastCall("accounts.external") == nil, "降档先在浮层里说明会移出队列，不直接发")
+        Driver.press("移出并降档", .exact)
+        let down = check.lastCall("accounts.external") ?? ""
+        check.expect(down.contains("\"mode\":\"reset\"") && down.contains("\"id\":\"x-c\"") && down.contains("\"confirm\":true"), "「移出并降档」带 confirm 发送")
+        closePopovers()
+        print("  → Code 在用的外部号")
+        Fixture.load("externalinuse", into: state)
+        select(.claude)
+        check.expect(Driver.visible("run-c@lab.example(外部)") && Driver.visible("去来源网页"), "页头写 Code 在用 run-c（外部），在用卡底栏有「去来源网页」")
+        state.calls.removeAll()
+        check.expect(pressRow("run-c@lab.example", "lab-center", .within("lab-center")), "在用卡名字旁有「外部 · lab-center」")
+        check.expect(Driver.visible("正在使用run-c@lab.example") && Driver.visible("请先换到其他账号"), "在用的号低两档不可选，写明先换走")
+        Driver.press("只看", .prefix)
+        check.expect(check.lastCall("accounts.external") == nil, "点不可选的档位不发送")
+        closePopovers()
+    }
+    section(43, "来源连不上：组头写琥珀「配对已失效」；队列里的外部号「换到 Code」不能点，下面写自动接力会跳过、原规则保留，「去处理」去个人云端") {
+        main.setContentSize(NSSize(width: 1020, height: 1700))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("externalerror", into: state)
+        select(.claude)
+        check.expect(Driver.count("自动接力会跳过") == 2, "两个外部号各写一条「自动接力会跳过」")
+        check.expect(Driver.visible("配对已失效") && Driver.visible("原规则已保留"), "写明配对已失效、原规则已保留")
+        state.calls.removeAll()
+        _ = pressRow("run-c@lab.example", "换到Code")
+        check.expect(check.lastCall("accounts.activate") == nil, "来源连不上时「换到 Code」不能点")
+        Driver.press("去处理", .prefix)
+        check.expect(AppNavigation.shared.page == .cloud, "「去处理」去个人云端")
+    }
+    section(44, "个人云端 · 外部账号来源：没连时粘贴配对串才能连接；连上后写同步账号、新账号默认权限和立即同步；配对失效时写原因，可重新连接、重试；页头写外部来源数") {
+        main.setContentSize(NSSize(width: 1020, height: 1100))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("externalnone", into: state)
+        select(.cloud)
+        check.expect(Driver.visible("外部账号来源") && Driver.visible("未连接") && Driver.visible("连接AuthBaton"), "没连时写说明和去哪复制配对串")
+        state.calls.removeAll()
+        Driver.press("连接", .exact)
+        check.expect(check.lastCall("accounts.external") == nil, "没粘贴配对串时「连接」不能点")
+        paste("eyJzaXRlX3VybCI6Imh0dHBzOi8vbGFiLmV4YW1wbGUuaW52YWxpZCJ9")
+        Driver.press("连接", .exact)
+        let connect = check.lastCall("accounts.external") ?? ""
+        check.expect(connect.contains("\"external_action\":\"connect\"") && connect.contains("\"enrollment\":\"eyJzaXRlX3VybCI6"), "粘贴后「连接」发送 connect 和配对串")
+        print("  → 已连接")
+        Fixture.load("external", into: state)
+        select(.cloud)
+        check.expect(Driver.visible("已连接") && Driver.visible("共6个账号") && Driver.visible("新账号默认权限") && Driver.visible("两边读数一致"), "已连接：来源、同步账号、默认权限和回报说明")
+        check.expect(Driver.visible("1个外部来源"), "页头副标题写 1 个外部来源")
+        state.calls.removeAll()
+        Driver.press("可换上本机", .exact)
+        let fallback = check.lastCall("accounts.external") ?? ""
+        check.expect(fallback.contains("\"external_action\":\"set_default\"") && fallback.contains("\"mode\":\"switch\""), "默认权限点了就发 set_default")
+        state.calls.removeAll()
+        Driver.press("立即同步", .suffix)
+        check.expect((check.lastCall("accounts.external") ?? "").contains("\"external_action\":\"sync\""), "「立即同步」发送 sync")
+        state.calls.removeAll()
+        Driver.press("打开网页", .prefix)
+        check.expect(state.calls.contains { $0.hasPrefix("open https://lab-center.example.invalid") }, "「打开网页」打开来源网页")
+        print("  → 配对失效")
+        Fixture.load("externalerror", into: state)
+        select(.cloud)
+        check.expect(Driver.visible("配对已失效") && Driver.visible("暂时拉不到最新额度") && Driver.visible("重新配对"), "配对失效：写原因，给重新配对")
+        state.calls.removeAll()
+        Driver.press("重试", .exact)
+        check.expect((check.lastCall("accounts.external") ?? "").contains("\"external_action\":\"sync\""), "「重试」发送 sync")
+    }
+    section(45, "断开来源：先确认，写明外部账号会消失、本机设置留 30 天、来源那边不受影响；有外部号在用时先提示换走，按钮改成换回本机账号并断开") {
+        main.setContentSize(NSSize(width: 1020, height: 1100))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("external", into: state)
+        select(.cloud)
+        state.calls.removeAll()
+        Driver.press("断开来源", .prefix)
+        check.expect(main.attachedSheet != nil && Driver.visible("断开lab-center?"), "「断开来源…」先弹确认框")
+        check.expect(Driver.visible("会从AuthBaton消失") && Driver.visible("留30天") && Driver.visible("不受影响"), "写明外部账号会消失、设置留 30 天、来源不受影响")
+        check.expect(check.lastCall("accounts.external") == nil, "打开确认框不发送")
+        Driver.press("断开来源", .exact)
+        let leave = check.lastCall("accounts.external") ?? ""
+        check.expect(leave.contains("\"external_action\":\"disconnect\"") && leave.contains("\"confirm\":true") && !leave.contains("switch_back"), "确认后发送 disconnect")
+        print("  → 有外部号在用")
+        Fixture.load("externalinuse", into: state)
+        select(.cloud)
+        state.calls.removeAll()
+        Driver.press("断开来源", .prefix)
+        check.expect(Driver.visible("是lab-center的外部账号") && Driver.visible("先换回上一个本机账号"), "有外部号在用时先提示换走")
+        Driver.press("换回本机账号并断开", .exact)
+        check.expect((check.lastCall("accounts.external") ?? "").contains("\"switch_back\":true"), "「换回本机账号并断开」带 switch_back")
+    }
+    section(46, "Codex 页也有外部账号组，页头账号数不数外部号；可换上本机的号「换上」走换号框；菜单栏只列能换上的外部号，名字下面带来源签") {
+        main.setContentSize(NSSize(width: 1020, height: 1100))
+        defer { main.setContentSize(NSSize(width: 1020, height: 765)) }
+        Fixture.load("external", into: state)
+        select(.codex)
+        check.expect(Driver.visible("外部账号") && Driver.visible("余2个") && Driver.visible("4个账号"), "Codex 页有外部账号组，页头 4 个账号")
+        state.calls.removeAll()
+        check.expect(pressRow("run-y@lab.example", "换上", .exact), "找到 run-y 的「换上」")
+        check.expect(main.attachedSheet != nil && check.lastCall("accounts.activate") == nil, "外部号「换上」先走换号确认框")
+        if let sheet = main.attachedSheet { Driver.escape(sheet) }
+        print("  → 菜单栏")
+        main.orderOut(nil)
+        Fixture.load("externalinuse", into: state)
+        let panel = open(MenuBarPanel(openWindow: {}), size: NSSize(width: 306, height: 900))
+        // The ring card cuts the name short.
+        check.expect(Driver.visible("run-c@lab") && Driver.count("lab-center") >= 3, "在用和可换上的外部号名字下面带来源签")
+        check.expect(Driver.visible("run-e@lab.example") && Driver.visible("run-y@lab.example"), "可换上本机的外部号列进换号")
+        check.expect(!Driver.visible("run-a@lab.example", wait: 0.3) && !Driver.visible("run-b@lab.example", wait: 0.3) && !Driver.visible("run-x@lab.example", wait: 0.3),
+                     "只看和可用重置卡的外部号不列进换号")
+        panel.orderOut(nil)
+        main.orderFrontRegardless()
+    }
+
     section(39, "菜单栏：在用云端续期的号时「退出」下一行写后果，点退出先确认，默认保持运行；没有时直接退出") {
         Fixture.load("cloudmix", into: state)
         main.orderOut(nil)
@@ -2649,6 +2943,12 @@ extension NSWindow {
                 ("claude-full-1300", "full", .claude, nil), ("claude-full-1600", "full", .claude, nil),
                 ("codex-1300", "full", .codex, nil), ("codex-relay-1300", "connected", .codex, nil),
                 ("accounts-1300", "default", .accounts, nil), ("clients-1300", "default", .clients, nil),
+                // External sources (11-27): the group in each mode, two of its rows in the relay, one in use, the pairing lapsed;
+                // 个人云端 with the source connected or lapsed (not connected is "cloud").
+                ("claude-external", "external", .claude, nil), ("claude-external-queue", "externalqueue", .claude, nil),
+                ("claude-external-inuse", "externalinuse", .claude, nil), ("claude-external-error", "externalerror", .claude, nil),
+                ("codex-external", "external", .codex, nil), ("cloud-external", "external", .cloud, nil),
+                ("cloud-external-error", "externalerror", .cloud, nil), ("cloud-external-none", "externalnone", .cloud, nil),
             ]
             let sizes: [String: NSSize] = ["claude-full-833": NSSize(width: 833, height: 600),
                                            "claude-full-1300": NSSize(width: 1300, height: 830), "claude-full-1600": NSSize(width: 1600, height: 900),
@@ -2656,7 +2956,11 @@ extension NSWindow {
                                            "codex-many": NSSize(width: 1020, height: 2300), "claude-inuse": NSSize(width: 1020, height: 1300),
                                            "claude-wing": NSSize(width: 1020, height: 1300),
                                            "claude-rule": NSSize(width: 1020, height: 1300),
-                                           "accounts-1300": NSSize(width: 1300, height: 830), "clients-1300": NSSize(width: 1300, height: 830)]
+                                           "accounts-1300": NSSize(width: 1300, height: 830), "clients-1300": NSSize(width: 1300, height: 830),
+                                           "claude-external": NSSize(width: 1020, height: 1520), "claude-external-queue": NSSize(width: 1020, height: 1600),
+                                           "claude-external-inuse": NSSize(width: 1020, height: 1600), "claude-external-error": NSSize(width: 1020, height: 1700),
+                                           "codex-external": NSSize(width: 1020, height: 1000), "cloud-external": NSSize(width: 1020, height: 1000),
+                                           "cloud-external-error": NSSize(width: 1020, height: 1000), "cloud-external-none": NSSize(width: 1020, height: 1000)]
             // How this Mac uses Claude, for the pages drawn in one mode; the rest decide it themselves.
             let modes: [String: ClaudeUse] = ["claude-code": .code, "claude-desktop": .desktop]
             let codexModes: [String: CodexUse] = ["codex-plain": .both, "codex-cli": .cli]
@@ -2727,6 +3031,29 @@ extension NSWindow {
             _ = render(PairFirstSheet(account: state.directory!.accounts.first { $0.id == "synthetic-team" }!, close: {}).background(Palette.card),
                        size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-pair-first.png"))
             print("\(appearance)/cloud sheets")
+            // External sources: the mode choice (as it opens, lowering a row in the relay, the account in use), the reset card
+            // for an external row, letting the source go (plain, and with one of its rows in use), and the menu bar.
+            func externalViews(_ scenario: String) -> (ManagedAccount, ManagedAccount, ManagedAccount, ExternalSource) {
+                Fixture.load(scenario, into: state)
+                let accounts = state.directory!.accounts
+                return (accounts.first { $0.id == "x-a" }!, accounts.first { $0.id == "x-b" }!, accounts.first { $0.id == "x-c" }!,
+                        state.directory!.external!.sources!.first!)
+            }
+            var externalRenders: [(String, String, (ManagedAccount, ManagedAccount, ManagedAccount, ExternalSource) -> AnyView)] = []
+            externalRenders.append(("external-mode", "external", { a, _, _, _ in AnyView(ExternalModePanel(account: a, directory: state.directory!, close: {})) }))
+            externalRenders.append(("external-mode-downgrade", "externalqueue", { _, _, c, _ in
+                AnyView(ExternalModePanel(account: c, directory: state.directory!, close: {}, pending: .reset)) }))
+            externalRenders.append(("external-mode-locked", "externalinuse", { _, _, c, _ in AnyView(ExternalModePanel(account: c, directory: state.directory!, close: {})) }))
+            externalRenders.append(("sheet-reset-external", "external", { _, b, _, _ in
+                AnyView(ResetSheet(account: b, creditID: nil, requestID: "r", expiresAt: b.nextReset?.expiresAt, retry: false, close: {})) }))
+            externalRenders.append(("sheet-external-disconnect", "external", { _, _, _, source in AnyView(ExternalDisconnectSheet(source: source, close: {})) }))
+            externalRenders.append(("sheet-external-disconnect-inuse", "externalinuse", { _, _, _, source in AnyView(ExternalDisconnectSheet(source: source, close: {})) }))
+            externalRenders.append(("menubar-external", "externalinuse", { _, _, _, _ in AnyView(MenuBarPanel(openWindow: {})) }))
+            for (name, scenario, make) in externalRenders {
+                let (a, b, c, source) = externalViews(scenario)
+                let size = render(make(a, b, c, source).background(Palette.card), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-\(name).png"))
+                print("\(appearance)/\(name): \(size.width) × \(size.height)")
+            }
             UserDefaults.standard.removeObject(forKey: ClaudeUse.key)
             Fixture.load("default", into: state)
             let consentSize = render(TokenQuotaSheet(close: {}), size: nil, appearance: appearance, to: output.appendingPathComponent("\(appearance)-sheet-token-quota.png"))
