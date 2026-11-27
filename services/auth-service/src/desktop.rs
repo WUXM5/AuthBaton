@@ -579,22 +579,39 @@ fn open_turns(codex_home: &Path, cutoff: std::time::SystemTime) -> Result<Vec<Op
             }
             let text = std::fs::read_to_string(&path).map_err(|_| "无法读取 Codex 会话记录")?;
             let mut open = None;
-            for line in text.lines().filter(|l| l.contains("\"event_msg\"")) {
-                let Ok(value) = serde_json::from_str::<Value>(line) else {
-                    continue;
-                };
-                match value["payload"]["type"].as_str() {
-                    Some("task_started") => {
-                        open = Some(value["timestamp"].as_str().and_then(crate::quota::iso_time))
-                    }
-                    Some("task_complete" | "turn_aborted") => open = None,
-                    _ => {}
+            for line in text.lines() {
+                match turn_event(line) {
+                    Some(TurnEvent::Started(at)) => open = Some(at),
+                    Some(TurnEvent::Ended) => open = None,
+                    None => {}
                 }
             }
             starts.extend(open);
         }
     }
     Ok(starts)
+}
+
+pub enum TurnEvent {
+    /// With the start time, when it is readable.
+    Started(Option<u64>),
+    Ended,
+}
+
+// What one rollout line says about its thread's turn, if anything. Safe network switching reads
+// Codex's conversations the same way.
+pub fn turn_event(line: &str) -> Option<TurnEvent> {
+    if !line.contains("\"event_msg\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    match value["payload"]["type"].as_str()? {
+        "task_started" => Some(TurnEvent::Started(
+            value["timestamp"].as_str().and_then(crate::quota::iso_time),
+        )),
+        "task_complete" | "turn_aborted" => Some(TurnEvent::Ended),
+        _ => None,
+    }
 }
 
 // Only the inspected desktop's descendants may share the managed native credential file.
