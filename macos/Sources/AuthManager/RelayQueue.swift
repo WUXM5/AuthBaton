@@ -596,8 +596,11 @@ struct RelayNoneCard: View {
                 Text("队列里都见底了").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.attentionText)
             }
             if let first = earliest {
-                Text("最早回满：\(first.account.displayName)，\(first.when)").font(.system(size: 11)).foregroundStyle(Palette.attentionInk)
+                // Which window it waits for: the 5-hour one of one account and the week of another read alike (11-28).
+                Text("最早回满：\(first.account.displayName)，\(first.window.shortLabel)额度 \(first.window.refill())")
+                    .font(.system(size: 11)).foregroundStyle(Palette.attentionInk)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(first.window.refillHelp())
             }
             Spacer(minLength: 0)
             if let spare {
@@ -623,15 +626,15 @@ struct RelayNoneCard: View {
             .strokeBorder(Palette.attentionDash.opacity(0.45), lineWidth: 1))
     }
 
-    // The queue account whose lowest window comes back first.
-    private var earliest: (account: ManagedAccount, when: String)? {
+    // The queue account that is back first: each waits for the last of its windows at or below its line.
+    private var earliest: (account: ManagedAccount, window: AccountQuota)? {
         let ids = directory.relayRules(provider).filter(\.participate).map(\.id)
         return directory.accounts.filter { ids.contains($0.id) && !$0.native }
-            .compactMap { account -> (ManagedAccount, Double, String)? in
+            .compactMap { account -> (ManagedAccount, Double, AccountQuota)? in
                 guard let window = account.primaryWindows.filter({ $0.remaining <= (directory.notch(for: account) ?? 0) })
                         .max(by: { ($0.resetDate ?? .distantPast) < ($1.resetDate ?? .distantPast) }),
                       let date = window.resetDate else { return nil }
-                return (account, date.timeIntervalSince1970, window.refill())
+                return (account, date.timeIntervalSince1970, window)
             }
             .min { $0.1 < $1.1 }
             .map { ($0.0, $0.2) }

@@ -2295,7 +2295,8 @@ extension NSWindow {
         check.expect(!Driver.visible("Code见底后接", wait: 0.3) && !Driver.visible("下一棒", wait: 0.3), "不写「Code 见底后接…」和「下一棒」")
         check.expect(Driver.count("第1位") >= 2, "在用旁的卡套和队列都写第 1 位（桌面在用的那个号）")
         // 方 reads as 万 now and then.
-        check.expect(Driver.hits("在上").count == 2, "在用的两个号在队列里留顺位锚点")
+        // Only Code's account is shown with its quota above; Chat's is a line under the header, so its row shows it (11-28).
+        check.expect(Driver.hits("在上").count == 1, "只有 Code 在用的号在队列里留锚点，Chat 在用的号整行写额度")
         // OCR reads 自 as 目 in this small amber line.
         check.expect(Driver.visible("7天剩0%") && Driver.visible("动跳过"), "周额度用完的 beta-4 写 7 天剩 0% 和自动跳过")
         check.expect(Driver.visible("不参与自动接力") && Driver.visible("desk-only") && Driver.visible("补登Code"), "只在桌面登录过的号放进不参与抽屉，给「补登 Code」")
@@ -2326,6 +2327,7 @@ extension NSWindow {
         Fixture.load("inusenone", into: state)
         select(.claude)
         check.visible("队列里都见底了", "队列里没有能接的号时写明")
+        check.expect(Driver.visible("beta-1，7天额度"), "最早回满写是哪个号的哪个额度（beta-1 的 7 天）")
         state.calls.removeAll()
         if !Driver.press("换上", .exact) { check.expect(false, "找到推荐卡上的「换上」") }
         check.expect((check.lastCall("accounts.activate") ?? "").contains("\"c-lab\""), "推荐不参与但有余量的 lab，一键换上")
@@ -2532,7 +2534,8 @@ extension NSWindow {
         Driver.press("用1张", .exact)
         let reset = check.lastCall("accounts.reset_quota") ?? ""
         check.expect(reset.contains("\"x-b\"") && reset.contains("\"next_grant\":true"), "确认后才用卡，按 Claude 的方式只带类别")
-        Driver.press("管理来源", .prefix)
+        // OCR may read it together with the sync time beside it; aim at the words inside that line.
+        Driver.press("管理来源")
         check.expect(AppNavigation.shared.page == .cloud, "「管理来源」去个人云端")
     }
     section(42, "档位浮层：胶囊点开写三档和底注，选了就发 set_mode；队列里的号降档先在浮层里确认，确认后带 confirm；Code 在用的号低两档不可选") {
