@@ -44,9 +44,7 @@ impl Accounts {
     /// One warm-up by hand: sent whatever the window and with the plan on or off, never retried.
     pub fn warmup_now(&mut self, id: &str) -> Result<()> {
         if self.quota_paused().is_some() {
-            return Err(
-                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号），暂不能预热",
-            );
+            return Err("AuthBaton 有待处理的问题（数据库故障或换号恢复），暂不能预热");
         }
         let index = self.index(id)?;
         self.transfer_guard(id, false)?;

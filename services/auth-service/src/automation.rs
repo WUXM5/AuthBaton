@@ -207,6 +207,9 @@ pub struct Runtime {
     pub observation: Option<(String, Observation)>,
     pub account_messages: HashMap<String, String>,
     pub retry_after: HashMap<String, u64>,
+    /// How long a relay switch waits for the desktop to show the target before asking the person to
+    /// check. A login whose reply was lost is finished by the desktop poll meanwhile.
+    pub switch_until: Option<u64>,
 }
 
 #[derive(PartialEq, Debug)]
