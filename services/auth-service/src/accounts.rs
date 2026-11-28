@@ -366,9 +366,21 @@ impl Accounts {
         }
         Ok(())
     }
+    /// A relay batch at work: a bridge call in flight, or a run from preparing to resuming. A run
+    /// stopped for the person to check holds back only the next Codex desktop switch: quota, checks,
+    /// renewals and cloud work go on, for Claude and for every other account.
+    fn automation_busy(&self) -> bool {
+        self.automation.job.is_some()
+            || self
+                .db
+                .automation
+                .run
+                .as_ref()
+                .is_some_and(|r| r.phase != crate::automation::Phase::Attention)
+    }
     fn ensure_check_admission(&self) -> Result<()> {
-        if self.automation.job.is_some() || self.db.automation.run.is_some() {
-            return Err("自动额度流程正在处理或待核对；请先停止并核对");
+        if self.automation_busy() {
+            return Err("自动换号正在进行；请稍后重试");
         }
         // Only a transfer, removal, pairing or leaving holds work back; routine cloud reads do not.
         if self.cloud.job.is_some() {
@@ -539,7 +551,7 @@ impl Accounts {
                     .snapshot(self.claude_desktop.chrome_sync_enabled(), desktop_id.as_ref()),
             );
         }
-        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation.job.is_some()||self.db.automation.run.is_some(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot,"external":self.external_snapshot()})
+        json!({"accounts":accounts,"clients":self.clients_snapshot(),"busy":self.job.is_some()||!self.check_queue.is_empty()||self.pending_login.is_some()||self.reset_job.is_some()||self.automation_busy(),"checks_blocked":self.ensure_check_admission().is_err(),"recovery_needed":self.db.switch.is_some(),"notice":if self.storage_fault.get(){Some("账号数据库保存失败；已暂停账号变更和自动维护")}else{self.notice.as_deref()},"maintenance_running":!self.storage_fault.get(),"desktop":self.desktop_snapshot(),"strategy":self.strategy_snapshot(),"claude_mod":self.claude_mod.snapshot(),"network":self.network.snapshot(),"claude_desktop":desktop_snapshot,"external":self.external_snapshot()})
     }
     pub fn claude_desktop(&mut self, command: crate::claude_desktop::Command<'_>) -> Result<()> {
         match command.action {
@@ -1084,11 +1096,7 @@ impl Accounts {
         Ok(())
     }
     fn start_next_check(&mut self) {
-        if self.storage_fault.get()
-            || self.db.switch.is_some()
-            || self.db.automation.run.is_some()
-            || self.automation.job.is_some()
-        {
+        if self.storage_fault.get() || self.db.switch.is_some() || self.automation_busy() {
             self.check_queue.clear();
             return;
         }
@@ -1643,8 +1651,7 @@ impl Accounts {
             || self.pending_login.is_some()
             || self.db.switch.is_some()
             || self.storage_fault.get()
-            || self.automation.job.is_some()
-            || self.db.automation.run.is_some()
+            || self.automation_busy()
             || self.desktop.job.is_some()
             || self.desktop.refresh.is_some()
             || self.desktop.pending_switch.is_some()
@@ -2179,9 +2186,7 @@ impl Accounts {
             return Err("此账号的认证状态待处理，暂不能查询额度");
         }
         if self.quota_paused().is_some() {
-            return Err(
-                "AuthBaton 有待处理的问题（数据库故障、换号恢复或自动换号），暂不能查询额度",
-            );
+            return Err("AuthBaton 有待处理的问题（数据库故障或换号恢复），暂不能查询额度");
         }
         self.quota.request(id, now());
         Ok(())
@@ -2206,8 +2211,6 @@ impl Accounts {
             Some("账号数据库保存失败")
         } else if self.db.switch.is_some() {
             Some("有中断的换号待恢复")
-        } else if self.db.automation.run.is_some() {
-            Some("自动换号流程正在处理或待核对")
         } else {
             None
         }
@@ -2222,8 +2225,7 @@ impl Accounts {
         // Quota work does not reserve the authentication job or require official clients to exit.
         // Start after our credential commits finish; the network worker receives no store/writer.
         if self.storage_fault.get()
-            || self.automation.job.is_some()
-            || self.db.automation.run.is_some()
+            || self.automation_busy()
             || self.reset_job.is_some()
             || self.db.switch.is_some()
             || self.pending_login.is_some()

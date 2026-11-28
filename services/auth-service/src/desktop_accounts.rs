@@ -607,11 +607,18 @@ impl Accounts {
                 }
             }
         }
+        // A relay run waiting on the switch, or stopped for the person to check, still needs the poll:
+        // it finishes a login whose reply was lost and answers the desktop's renewal requests.
         if !self.db.desktop.enabled
             || self.storage_fault.get()
             || self.desktop.job.is_some()
             || self.automation.job.is_some()
-            || self.db.automation.run.is_some()
+            || self.db.automation.run.as_ref().is_some_and(|r| {
+                !matches!(
+                    r.phase,
+                    crate::automation::Phase::Switching | crate::automation::Phase::Attention
+                )
+            })
         {
             return;
         }

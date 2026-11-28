@@ -1,6 +1,9 @@
 use super::*;
 use crate::automation::{self, Action, Job as AutoJob, Latch, LatchKind, Phase, Run, Task};
 
+/// Seconds a relay switch waits for the desktop poll to confirm the target (two polls and a retry).
+const SWITCH_WAIT: u64 = 60;
+
 impl Accounts {
     pub fn configure_strategy(
         &mut self,
@@ -786,6 +789,7 @@ impl Accounts {
                 },
             );
             self.save()?;
+            self.automation.switch_until = None;
             self.commit_desktop(&target, value)?;
         } else {
             self.save()?;
@@ -861,8 +865,20 @@ impl Accounts {
                     || !self.desktop.connected
                     || !self.desktop.bound
                 {
+                    // Codex replaces its main window when the account changes, so the reply to a login
+                    // that landed can be lost; the desktop poll then finishes it from what it sees.
+                    let until = *self
+                        .automation
+                        .switch_until
+                        .get_or_insert(now() + SWITCH_WAIT);
+                    if now() < until {
+                        self.automation.message = "正在确认桌面已换到目标账号".into();
+                        return Ok(());
+                    }
+                    self.automation.switch_until = None;
                     return Err("尚未确认目标身份，未接续任何会话");
                 }
+                self.automation.switch_until = None;
                 self.db.automation.run.as_mut().unwrap().phase = Phase::Resuming;
                 self.save()?;
                 self.automation.observation = None;

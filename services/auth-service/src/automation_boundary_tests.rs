@@ -74,13 +74,13 @@ fn settle(m: &mut Accounts) {
             m.desktop_tick();
         }
         m.automation_tick();
+        // Stopped for the person, or a switch waiting for the desktop poll to confirm the target.
         if m.automation.job.is_none()
             && m.desktop.job.is_none()
-            && m.db
-                .automation
-                .run
-                .as_ref()
-                .is_none_or(|r| r.phase == Phase::Attention)
+            && m.db.automation.run.as_ref().is_none_or(|r| {
+                r.phase == Phase::Attention
+                    || (r.phase == Phase::Switching && m.automation.switch_until.is_some())
+            })
         {
             break;
         }
@@ -255,6 +255,18 @@ fn auth_partial_failure_never_resumes_and_leaves_no_auth_journal() {
     let mut m = setup(&f);
     fs::write(f.root.join("fail-completion"), b"1").unwrap();
     settle(&mut m);
+    // The login never landed: the polls meanwhile show the source, so the wait runs out.
+    assert_eq!(
+        m.db.automation.run.as_ref().unwrap().phase,
+        Phase::Switching
+    );
+    poll_desktop(&mut m);
+    assert_eq!(
+        m.db.automation.run.as_ref().unwrap().phase,
+        Phase::Switching
+    );
+    m.automation.switch_until = Some(0);
+    m.automation_tick();
     assert!(m.db.switch.is_none());
     assert_eq!(
         m.db.automation.run.as_ref().unwrap().phase,
@@ -1849,4 +1861,105 @@ fn a_claude_grant_lapsing_within_30_minutes_is_claimed_before_the_line() {
     m.automation_tick();
     assert!(m.reset_job.is_none());
     assert_eq!(CLAIMS.lock().unwrap().len(), 1);
+}
+
+// One poll of the desktop and whatever it starts, as the service tick runs them.
+fn poll_desktop(m: &mut Accounts) {
+    m.desktop.last_poll = 0;
+    m.desktop_tick();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while m.desktop.job.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "desktop did not settle"
+        );
+        if m.desktop.job.as_ref().is_some_and(|j| j.is_finished()) {
+            m.desktop_tick();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+#[test]
+fn a_login_whose_reply_was_lost_is_finished_from_the_desktop_and_sessions_resume() {
+    // 2026-11-28: Codex 26.11 replaces its main window when the account changes, so the bridge's
+    // answer to a login that landed was lost. The relay stopped for checking at once, and the poll
+    // that would have seen the new login does not run while a relay run exists.
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    fs::write(f.root.join("fail-after-login"), b"1").unwrap();
+    settle(&mut m);
+    assert_eq!(
+        m.db.automation.run.as_ref().unwrap().phase,
+        Phase::Switching
+    );
+    assert!(m.db.accounts[0].native);
+    poll_desktop(&mut m);
+    settle(&mut m);
+    assert!(m.db.automation.run.is_none());
+    assert!(m.db.accounts[1].native);
+    assert_eq!(m.db.desktop.selected.as_deref(), Some("b"));
+    assert!(m.db.automation.config.enabled);
+    let operations = fs::read_to_string(f.root.join("desktop-operations")).unwrap();
+    assert_eq!(
+        operations
+            .lines()
+            .filter(|op| *op != "poll")
+            .collect::<Vec<_>>(),
+        vec![
+            "auto_prepare",
+            "auto_pause",
+            "auto_pause",
+            "auto_verify",
+            "apply",
+            "bind",
+            "auto_resume",
+            "auto_resume",
+            "auto_cancel"
+        ]
+    );
+}
+#[test]
+fn a_run_stopped_for_checking_blocks_only_the_next_desktop_switch() {
+    let f = Fixture::new();
+    let mut m = setup(&f);
+    fs::write(f.root.join("fail-after-login"), b"1").unwrap();
+    settle(&mut m);
+    m.automation.switch_until = Some(0);
+    m.automation_tick();
+    assert_eq!(
+        m.db.automation.run.as_ref().unwrap().phase,
+        Phase::Attention
+    );
+    // Quota, checks and renewals go on for every account while the person has not looked yet.
+    assert!(m.quota_paused().is_none());
+    assert!(m.request_quota(Some("a")).is_ok());
+    assert_eq!(m.snapshot()["checks_blocked"], false);
+    assert_eq!(m.snapshot()["busy"], false);
+    assert!(m.ensure_idle().is_ok());
+    assert!(m.request_desktop_switch("a").is_err());
+    // The desktop is still polled: the login that landed is finished, so the page shows the target.
+    poll_desktop(&mut m);
+    assert!(m.desktop.connected);
+    assert!(m.db.accounts[1].native);
+    assert_eq!(m.db.desktop.selected.as_deref(), Some("b"));
+    assert_eq!(default_file_account(&m), "workspace-b");
+    // Nothing is resumed: the run waits for the person.
+    assert_eq!(
+        m.db.automation.run.as_ref().unwrap().phase,
+        Phase::Attention
+    );
+    assert!(
+        !fs::read_to_string(f.root.join("desktop-operations"))
+            .unwrap()
+            .contains("auto_resume")
+    );
+    m.forget_strategy(true).unwrap();
+    assert!(m.db.automation.run.is_none());
+}
+fn default_file_account(m: &Accounts) -> String {
+    let file = fs::read_to_string(m.sources.codex_home.join("auth.json")).unwrap();
+    serde_json::from_str::<Value>(&file).unwrap()["tokens"]["account_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }

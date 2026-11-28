@@ -625,8 +625,7 @@ impl Accounts {
         self.cloud.poll();
         self.reconcile_cloud_rows();
         if self.cloud.job.is_some()
-            || self.automation.job.is_some()
-            || self.db.automation.run.is_some()
+            || self.automation_busy()
             || self.job.is_some()
             || !self.check_queue.is_empty()
             || self.pending_login.is_some()
